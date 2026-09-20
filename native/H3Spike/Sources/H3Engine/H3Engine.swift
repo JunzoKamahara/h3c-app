@@ -26,16 +26,105 @@ public struct H3GenerationResult: Sendable {
     public let outputPath: String
 }
 
+public enum H3ReferenceKind: Sendable {
+    case image, video, audio, videoAudio
+
+    var cValue: h3_reference_kind {
+        switch self {
+        case .image: return H3_REFERENCE_IMAGE
+        case .video: return H3_REFERENCE_VIDEO
+        case .audio: return H3_REFERENCE_AUDIO
+        case .videoAudio: return H3_REFERENCE_VIDEO_AUDIO
+        }
+    }
+}
+
+public struct H3ReferenceInput: Sendable, Identifiable {
+    public let id = UUID()
+    public var kind: H3ReferenceKind
+    public var path: String
+    public var audioPath: String?
+    public var includeEmbeddedAudio: Bool
+
+    public init(kind: H3ReferenceKind = .image, path: String, audioPath: String? = nil,
+                includeEmbeddedAudio: Bool = false) {
+        self.kind = kind
+        self.path = path
+        self.audioPath = audioPath
+        self.includeEmbeddedAudio = includeEmbeddedAudio
+    }
+}
+
 public struct H3GenerationParams: Sendable {
-    public var width: Int32 = 256
-    public var height: Int32 = 256
-    public var frames: Int32 = 41
-    public var steps: Int32 = 8
+    public var width: Int32 = 512
+    public var height: Int32 = 512
+    public var renderWidth: Int32 = 0
+    public var renderHeight: Int32 = 0
+    public var frames: Int32 = 56
+    public var steps: Int32 = 20
     public var seed: UInt64 = 42
     public var ditLayers: Int32 = 50
     public var denoiseReuse: Int32 = 1
     public var coreReuse: Int32 = 1
+    public var firstFrame: String?
+    public var lastFrame: String?
+    public var references: [H3ReferenceInput] = []
+    // libh3.a reads this from the environment rather than h3_params (see
+    // H3_ATTENTION_CACHE in h3_dit.c), so H3Engine sets it just before each
+    // call instead of once at process startup - different generation modes
+    // (default/Ref2VA) need different prebuilt caches.
+    public var attentionCachePath: String?
+    // H3_LORA_PATH / H3_LORA_SCALE (see h3_lora.c/h3_dit.c on the
+    // int8-cache-lora branch): fuses one diffusers/peft-format LoRA adapter
+    // into the DiT weights at load time - works for either the resident
+    // BF16 path or, combined with attentionCachePath, the streamed int8
+    // path (which then transparently materializes and reuses a fused H3AC
+    // cache keyed by the LoRA file's hash). nil scale means auto-detect the
+    // adapter's own alpha/rank metadata, falling back to 1.0.
+    public var loraPath: String?
+    public var loraScale: Float?
     public init() {}
+}
+
+/* Matches align_frames() in gui/server.py, itself matching h3_align_frame_count
+ * (h3_host.c): the engine only accepts frame counts of the form 5 + 17*k, so a
+ * caller offering a "seconds" control has to round up to one itself. Not
+ * calling into libh3.a for this since h3_align_frame_count lives in the
+ * internal h3_host.h, not the public h3.h surface CH3 exposes. */
+public func h3AlignedFrameCount(seconds: Double) -> Int32 {
+    var requested = max(5, Int((seconds * 24).rounded()))
+    let remainder = (requested - 5) % 17
+    if remainder != 0 {
+        requested += 17 - remainder
+    }
+    return Int32(requested)
+}
+
+/* Calls `body` with a C string for `string`, or nil if `string` is nil. */
+private func withOptionalCString<R>(_ string: String?, _ body: (UnsafePointer<CChar>?) -> R) -> R {
+    if let string {
+        return string.withCString(body)
+    }
+    return body(nil)
+}
+
+/* Builds the h3_reference array by nesting one withCString/withOptionalCString
+ * per path so all of them stay valid for the single call to `body`, without
+ * resorting to manual strdup/free bookkeeping. */
+private func withReferenceArray<R>(_ references: [H3ReferenceInput], built: [h3_reference] = [],
+                                    _ body: (UnsafeBufferPointer<h3_reference>) -> R) -> R {
+    guard let reference = references.first else {
+        return built.withUnsafeBufferPointer(body)
+    }
+    let rest = Array(references.dropFirst())
+    return reference.path.withCString { pathC in
+        withOptionalCString(reference.audioPath) { audioC in
+            var next = built
+            next.append(h3_reference(kind: reference.kind.cValue, path: pathC, audio_path: audioC,
+                                      include_embedded_audio: reference.includeEmbeddedAudio ? 1 : 0))
+            return withReferenceArray(rest, built: next, body)
+        }
+    }
 }
 
 public enum H3EngineError: Error, LocalizedError {
@@ -147,9 +236,28 @@ public final class H3Engine: @unchecked Sendable {
             DispatchQueue.global(qos: .userInitiated).async {
                 defer { bridgeHandle.release() }
 
+                if let attentionCachePath = params.attentionCachePath {
+                    setenv("H3_ATTENTION_CACHE", attentionCachePath, 1)
+                } else {
+                    unsetenv("H3_ATTENTION_CACHE")
+                }
+                if let loraPath = params.loraPath, !loraPath.isEmpty {
+                    setenv("H3_LORA_PATH", loraPath, 1)
+                    if let loraScale = params.loraScale {
+                        setenv("H3_LORA_SCALE", String(loraScale), 1)
+                    } else {
+                        unsetenv("H3_LORA_SCALE")
+                    }
+                } else {
+                    unsetenv("H3_LORA_PATH")
+                    unsetenv("H3_LORA_SCALE")
+                }
+
                 var cParams = h3_params()
                 cParams.width = params.width
                 cParams.height = params.height
+                cParams.render_width = params.renderWidth
+                cParams.render_height = params.renderHeight
                 cParams.frames = params.frames
                 cParams.steps = params.steps
                 cParams.seed = params.seed
@@ -160,10 +268,20 @@ public final class H3Engine: @unchecked Sendable {
                 cParams.on_frame = h3FrameTrampoline
                 cParams.callback_opaque = bridgeHandle.toOpaque()
 
-                let result: UnsafeMutablePointer<h3_result>? = outputPath.withCString { outputPathC in
-                    prompt.withCString { promptC in
-                        cParams.output_path = outputPathC
-                        return h3_generate(ctx, promptC, &cParams)
+                let result: UnsafeMutablePointer<h3_result>? = withReferenceArray(params.references) { refBuffer in
+                    outputPath.withCString { outputPathC in
+                        prompt.withCString { promptC in
+                            withOptionalCString(params.firstFrame) { firstFrameC in
+                                withOptionalCString(params.lastFrame) { lastFrameC in
+                                    cParams.output_path = outputPathC
+                                    cParams.first_frame = firstFrameC
+                                    cParams.last_frame = lastFrameC
+                                    cParams.references = refBuffer.baseAddress
+                                    cParams.reference_count = refBuffer.count
+                                    return h3_generate(ctx, promptC, &cParams)
+                                }
+                            }
+                        }
                     }
                 }
 

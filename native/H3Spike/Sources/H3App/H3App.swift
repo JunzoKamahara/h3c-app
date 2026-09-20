@@ -12,17 +12,10 @@ struct H3App: App {
            FileManager.default.fileExists(atPath: resourcePath + "/h3_shaders.metal") {
             FileManager.default.changeCurrentDirectoryPath(resourcePath)
         }
-
-        // Dev-time default: use the validated int8 attention cache (symlinked
-        // into the repo root, see dit_int8_v2.cache) instead of the slower
-        // close-reference BF16 path libh3.a falls back to when this is unset.
-        // `open`/LaunchServices launches don't inherit the shell's
-        // environment, so without this the app silently runs uncached.
-        // TODO: replace with a real setting once packaging is figured out -
-        // this 19GB cache can't be bundled into the .app itself.
-        if getenv("H3_ATTENTION_CACHE") == nil {
-            setenv("H3_ATTENTION_CACHE", "/Users/kamahara/Documents/work/h3c-app/dit_int8_v2.cache", 1)
-        }
+        // H3_ATTENTION_CACHE is no longer set here: GenerationViewModel now
+        // picks the right cache (default/Ref2VA/Turbo) per job and passes it
+        // through H3GenerationParams.attentionCachePath instead, since which
+        // one is correct depends on that job's mode.
     }
 
     var body: some Scene {
