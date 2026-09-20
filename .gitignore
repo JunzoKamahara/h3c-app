@@ -3,6 +3,7 @@ misc/
 MiniMax-H3/
 outputs/
 .ruff_cache/
+lora/
 
 # Compiler and test outputs.
 *.o
@@ -29,7 +30,9 @@ h3_semantic_vae_test
 libh3.a
 h3_baseline
 build_attention_cache
+build_lora_cache
 *.cache
+*.h3ac
 .DS_Store
 gui/outputs/
 gui/uploads/

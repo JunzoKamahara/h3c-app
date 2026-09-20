@@ -554,6 +554,169 @@ interactive DiT is ready for its next denoiser evaluation. Measurements reached
 about 13--14.6 GiB/s from the internal SSD. `H3_PROFILE=1` reports total bytes,
 read throughput, and the part of the read wait that was not hidden by GPU work.
 
+### Streamed int8 attention cache and LoRA fusion
+
+`H3_ATTENTION_CACHE=path/to/cache` is a lighter-weight alternative to
+`--ssd-streaming`: QKV/attention-output stream per block from a cache
+pre-quantized to int8 (~147 MiB/layer, versus ~735 MiB for BF16 all four
+matrices) through two double-buffered slots, instead of being resident.
+The MLP (FC1/FC2) still stays int8-resident by default, same as the plain
+resident-int8 path. `H3_INT8_STREAM_MLP=1` streams FC1/FC2 from the same
+cache too, dropping DiT weight residency to just the two slots - the
+tradeoff a long (~15s/362-frame) run needs, and, on measurement, is
+consistently faster than `--ssd-streaming` even on short clips once set
+(a short 22-frame/512-square clip: 141s on `--ssd-streaming` versus ~78s
+on `H3_ATTENTION_CACHE`+`H3_INT8_STREAM_MLP=1`, both 20 denoising steps).
+Without `H3_INT8_STREAM_MLP`, the cache only avoids the resident path's
+one-time MLP quantization cost, which mostly shows up on longer runs -
+short clips can come out slower than `--ssd-streaming` in that
+configuration. Passing `--ssd-streaming` itself always wins over
+`H3_ATTENTION_CACHE` if both are set, rather than erroring. The cache
+needs the int8 QKV/attention-output path available (so not
+`--ssd-streaming`, `--use-slower-bf16-qkv`,
+`--use-slower-bf16-attention-output`, a sequence under 128 rows, or a GPU
+without the int8 path). Both paths measured bit-for-bit identical output
+against plain resident-int8 at matched seed. Build one with
+`build_attention_cache <FL2VA/transformer dir> <output cache file>`.
+
+The cache format's header (v3) tags which transformer directory it was
+quantized from - `model_kind` (FL2VA or Ref2VA) and `model_id` (a cheap,
+non-cryptographic fingerprint of the checkpoint's own shard paths/sizes/
+mtimes, not a hash of the ~18GB of weight bytes). `H3_ATTENTION_CACHE`
+refuses a cache whose `model_kind` does not match the generation actually
+running (e.g. an FL2VA cache used once `--ref-image`/`--ref-video`
+switches to Ref2VA) with a clear error, rather than silently streaming
+structurally-compatible-but-wrong weights - both models share the same
+DiT dimensions, so nothing else would have caught this:
+
+```
+h3: Ref2VA generation cannot use a FL2VA attention cache (dit_int8_v2.cache) - rebuild it against the matching transformer directory
+```
+
+A `model_id` mismatch (rewritten weights, a LoRA baked in after the cache
+was built, or a moved/copied checkpoint) is a warning, not a hard error,
+since the fingerprint can occasionally shift for benign reasons (e.g. a
+copy that resets mtimes) that `model_kind` never would. This is a
+breaking format change: v2 caches (from before this) fail the version
+check and must be rebuilt with the new `build_attention_cache`. The same
+check applies to a LoRA-fused cache materialized via `H3_LORA_PATH`
+below - it inherits `model_kind`/`model_id` from the base cache it was
+fused from, checked before fusing, not re-derived after.
+
+For a model directory with both FL2VA and Ref2VA (most releases),
+`build_attention_cache <model root dir> <output cache directory>` builds
+both in one pass - detected by the presence of `<model root
+dir>/FL2VA/transformer/config.json` - writing `<dir>/fl2va.cache` and,
+if a Ref2VA transformer is present, `<dir>/ref2va.cache` too. Point
+`H3_ATTENTION_CACHE_DIR` at that directory instead of `H3_ATTENTION_CACHE`
+at a single file, and h3.c auto-selects the matching cache the same way
+it already selects between the two transformer directories (by whether
+`--ref-image`/`--ref-video`/etc. are present):
+
+```
+build_attention_cache MiniMax-H3 ./h3-cache
+H3_ATTENTION_CACHE_DIR=./h3-cache ./h3 -d MiniMax-H3 -p "..."
+```
+
+`H3_ATTENTION_CACHE_DIR` needs the standard `FL2VA/transformer`/
+`Ref2VA/transformer` layout to know which file to pick; use
+`H3_ATTENTION_CACHE` (a single file) for a non-standard directory
+instead - setting both at once is an error.
+
+`build_lora_cache <FL2VA/transformer dir> <lora .safetensors> <output cache
+file> [lora_scale]` fuses a diffusers/peft-format LoRA adapter (separate
+to_q/to_k/to_v/to_out/ff.net lora_A/lora_B pairs) into the base BF16 weights
+offline on the CPU, then quantizes the result into the exact same cache
+format `build_attention_cache` produces - `H3_ATTENTION_CACHE` streams it
+unmodified, with no way to tell it apart from a non-LoRA cache. QKV's three
+separate low-rank deltas are concatenated in Q,K,V order to match h3.c's
+pre-fused `attn.qkv_proj.weight`. `lora_scale` defaults to `1.0`
+(`delta = scale * B @ A`), matching adapters that ship `alpha == rank`, such
+as lightx2v's [Minimax-h3-Turbo](https://huggingface.co/lightx2v/Minimax-h3-Turbo)
+4-step distillation LoRAs - verified working for both its FL2VA
+(`minimax_h3_fl2v_turbo_4step_v1.1_768p_bf16.safetensors`) and Ref2VA
+(`minimax_h3_ref2v_turbo_4step_v0.1_bf16.safetensors`) releases, each fused
+against its matching transformer directory.
+
+The same run also writes a second, much smaller `_refiner`-suffixed file for
+the two BF16-resident text token_refiner blocks, which the main int8 cache
+never covers. Point `H3_TOKEN_REFINER_LORA=path/to/cache_refiner.bin` at it
+to swap in the LoRA-fused refiner weights; unlike `H3_ATTENTION_CACHE` this
+is a plain BF16 override, not a streaming path, so the refiner stays
+resident either way. Leaving it unset falls back to the checkpoint's own
+refiner weights even when `H3_ATTENTION_CACHE` is active, silently mixing an
+un-fused refiner into an otherwise LoRA-fused DiT - set both together for a
+fully LoRA-fused run:
+
+```
+build_attention_cache MiniMax-H3/FL2VA dit_int8_v2.cache
+build_lora_cache MiniMax-H3/FL2VA lora/turbo4.safetensors dit_int8_v2_lora_turbo4.cache
+
+H3_ATTENTION_CACHE=dit_int8_v2_lora_turbo4.cache \
+H3_TOKEN_REFINER_LORA=dit_int8_v2_lora_turbo4_refiner.cache \
+./h3 -d MiniMax-H3 -p "..." --steps 4
+```
+
+`H3_LORA_PATH=lora/turbo4.safetensors` (plus optional `H3_LORA_SCALE`) is a
+newer, simpler alternative that needs no `build_lora_cache`/
+`H3_TOKEN_REFINER_LORA` step at all and works with *every* residency mode,
+not just `H3_ATTENTION_CACHE`: it reads the adapter directly and fuses it
+at model-load time, using the same math (`h3_lora.c`, shared with
+`build_lora_cache`) either way.
+
+- **Resident BF16** (`--use-slower-bf16-qkv`/`-attention-output`/`-mlp`):
+  `load_block()` fuses each of qkv/out/fc1/fc2 right after reading it from
+  the checkpoint, in place of the plain BF16 load - no extra step, no cache
+  file.
+- **Resident int8** (the default): the same fused-BF16 tensor then goes
+  through the existing `quantize_block_qkv`/`_attention_out`/`_mlp` calls
+  unchanged, so LoRA composes with resident int8 for free.
+- **`H3_ATTENTION_CACHE`**: rather than teach the streaming path anything
+  about LoRA, `h3_dit.c` fuses the whole 50-block base cache into an
+  ordinary H3AC file once (the in-process equivalent of running
+  `build_lora_cache` against `H3_ATTENTION_CACHE`'s target), and streams
+  that unmodified. Fusing all 50 blocks costs real CPU time (~30s, matching
+  `build_lora_cache`'s own measurement), so the result is cached next to
+  the base cache as `<cache>.lora_<hash>.h3ac`, named from the LoRA file's
+  path/size/mtime, the base cache's path/size/mtime, and the scale - a
+  changed input simply produces a different (cache-missing) name rather
+  than invalidating anything, and nothing deletes stale ones. If
+  `H3_INT8_STREAM_MLP` is unset, FC1/FC2 stay resident and are fused the
+  same way `load_block()` does, so a run never silently mixes a LoRA-fused
+  streamed QKV/OUT with an un-fused resident MLP.
+- **token_refiner**: `refine_text()`'s own `load_block()` call fuses it
+  too (with the LoRA's `token_refiner.refiner_blocks.0/1` tensors), so a
+  separate `H3_TOKEN_REFINER_LORA` file is never needed with
+  `H3_LORA_PATH` - though it is still honored if both are set, taking
+  priority as the pre-built override.
+
+Verified bit-for-bit identical output between a from-scratch
+`H3_ATTENTION_CACHE`+`H3_LORA_PATH` run (paying the ~30s fusion) and a
+second run reusing the cached `.lora_<hash>.h3ac` file, at matched seed.
+
+`H3_LORA_SCALE` defaults to the adapter's own `alpha` metadata divided by
+its rank (`h3_lora_detect_scale()`, reading the safetensors `__metadata__`
+object's `alpha` key and the block-0 `to_q` LoRA's rank) rather than a flat
+`1.0` - the diffusers/peft convention when `alpha != rank`. This matters in
+practice: lightx2v's own Minimax-h3-Turbo releases are inconsistent about
+it - the FL2VA 4-step `v1.1` adapter ships `alpha == rank` (scale `1.0`,
+no metadata-driven adjustment needed), but the 4-step `v1.2`, the 8-step
+`v1.0`, and the Ref2VA 4-step adapter all ship `alpha = 8` against rank
+128 (scale `0.0625`). Forcing `1.0` on those applies the delta 16x too
+strong and silently produces badly corrupted output with no error -
+exactly what a scale mismatch looks like before this detection existed.
+`h3.c` prints `h3: detected LoRA alpha metadata -> scale=...` when this
+kicks in; set `H3_LORA_SCALE` explicitly to override it (e.g. for an
+adapter that omits `alpha` metadata entirely, where the default silently
+stays `1.0`).
+
+```
+H3_LORA_PATH=lora/turbo4.safetensors ./h3 -d MiniMax-H3 -p "..." --steps 4
+
+H3_ATTENTION_CACHE=dit_int8_v2.cache H3_LORA_PATH=lora/turbo4.safetensors \
+./h3 -d MiniMax-H3 -p "..." --steps 4
+```
+
 ### Metal 4 and TensorOps paths
 
 M5 GPUs automatically use native BF16 Metal 4/TensorOps for the DiT QKV and
