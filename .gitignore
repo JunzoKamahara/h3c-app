@@ -34,3 +34,6 @@ build_attention_cache
 gui/outputs/
 gui/uploads/
 gui/testinputs/
+
+# Swift Package Manager build output.
+native/H3Spike/.build/

@@ -27,7 +27,8 @@ from pathlib import Path
 
 GUI_DIR = Path(__file__).resolve().parent
 REPO_DIR = GUI_DIR.parent
-DEFAULT_MODEL_DIR = REPO_DIR.parent / "MiniMax-H3"
+DEFAULT_MODEL_DIR = (Path.home() / "Library" / "Application Support" /
+                      "h3c-analysis" / "MiniMax-H3")
 DEFAULT_ATTENTION_CACHE = REPO_DIR / "dit_int8_v2.cache"
 # Ref2VA uses a separate transformer checkpoint from FL2VA, so it needs its
 # own int8 cache (built the same way, pointed at Ref2VA/transformer).
@@ -40,12 +41,27 @@ REF2VA_ATTENTION_CACHE = REPO_DIR / "dit_int8_v2_ref2va.cache"
 TURBO_ATTENTION_CACHE = REPO_DIR / "dit_int8_v2_lora_turbo4.cache"
 TURBO_STEPS = 4
 H3_BINARY = REPO_DIR / "h3"
+# Builds DEFAULT_ATTENTION_CACHE / REF2VA_ATTENTION_CACHE from the resident
+# BF16 weights on demand (see h3_build_attention_cache.c) - the Turbo cache
+# is out of scope here since building it needs build_lora_cache, which
+# isn't part of this branch (see the comment on TURBO_ATTENTION_CACHE
+# above); that one still just tells the user to build it themselves.
+BUILD_ATTENTION_CACHE_BINARY = REPO_DIR / "build_attention_cache"
+FL2VA_TRANSFORMER_DIR = DEFAULT_MODEL_DIR / "FL2VA" / "transformer"
+REF2VA_TRANSFORMER_DIR = DEFAULT_MODEL_DIR / "Ref2VA" / "transformer"
+# Building writes the whole cache file from scratch and reads every DiT
+# weight off disk - two jobs racing to build the same missing cache would
+# corrupt each other's output file, so only one build runs at a time and
+# the second job's ensure_attention_cache() call just finds it already
+# there once it gets the lock.
+cache_build_lock = threading.Lock()
 OUTPUT_DIR = GUI_DIR / "outputs"
 UPLOAD_DIR = GUI_DIR / "uploads"
 STATIC_DIR = GUI_DIR / "static"
 
 # H3_DIT_BLOCKS in h3_dit_schedule.h - --layers must fall in this range.
 LAYERS_MIN, LAYERS_MAX = 35, 50
+SECONDS_MIN, SECONDS_MAX = 1, 15
 
 # (output_width, output_height, render_width, render_height). render_* is
 # None for the profile that generates directly at output size. All render
@@ -122,6 +138,10 @@ class Job:
         self.started_at = time.time()
         self.finished_at = None
         self.process = None
+        # (transformer_dir, cache_path) when the requested attention cache
+        # is missing but buildable - set by build_job(), consumed by
+        # run_job() as a prerequisite step before the actual h3 run.
+        self.cache_build = None
 
     def to_json(self):
         return {
@@ -142,19 +162,26 @@ class Job:
         }
 
 
-def run_job(job):
-    job.state = "running"
+def _stream_subprocess(job, argv, env):
+    """Runs one subprocess to completion, feeding job.phase/completed/total
+    from its progress lines (h3's cli_progress format, which
+    build_attention_cache's per-block lines also happen to match) and
+    everything else into job.log_tail. Shared by the optional cache-build
+    step and the main h3 run so both report through the same polling API.
+    Returns the exit code, or None if the process couldn't even start -
+    job.state/error/finished_at are already set in that case, so callers
+    should just return."""
     try:
         job.process = subprocess.Popen(
-            job.argv, cwd=str(REPO_DIR), env=job.env,
+            argv, cwd=str(REPO_DIR), env=env,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             bufsize=1, universal_newlines=True,
         )
     except OSError as error:
         job.state = "error"
-        job.error = f"cannot start h3: {error}"
+        job.error = f"cannot start {argv[0]}: {error}"
         job.finished_at = time.time()
-        return
+        return None
 
     buffer = ""
     assert job.process.stdout is not None
@@ -181,7 +208,39 @@ def run_job(job):
     if buffer.strip():
         job.log_tail.append(buffer.strip())
 
-    return_code = job.process.wait()
+    return job.process.wait()
+
+
+def run_job(job):
+    job.state = "running"
+
+    if job.cache_build:
+        transformer_dir, cache_path = job.cache_build
+        # Two jobs can both see the cache missing before either starts
+        # building it; only one should actually build (the loser would
+        # otherwise clobber the same output file mid-write).
+        with cache_build_lock:
+            if not cache_path.exists():
+                build_argv = [str(BUILD_ATTENTION_CACHE_BINARY),
+                              str(transformer_dir), str(cache_path)]
+                return_code = _stream_subprocess(job, build_argv,
+                                                 dict(os.environ))
+                if return_code is None:
+                    return
+                if return_code != 0 or not cache_path.exists():
+                    job.state = "error"
+                    job.finished_at = time.time()
+                    if not job.error:
+                        job.error = (
+                            job.log_tail[-1] if job.log_tail else
+                            f"build_attention_cache exited with status "
+                            f"{return_code}")
+                    return
+        job.phase, job.completed, job.total = "", 0, 0
+
+    return_code = _stream_subprocess(job, job.argv, job.env)
+    if return_code is None:
+        return
     job.finished_at = time.time()
     if return_code == 0 and job.output_path.exists():
         job.state = "done"
@@ -265,7 +324,9 @@ def build_job(params):
             f"Turbo cache not found at {TURBO_ATTENTION_CACHE} - build it "
             "first with build_lora_cache")
 
-    seconds = float(params.get("seconds", 5))
+    seconds = int(params.get("seconds", 5))
+    if not (SECONDS_MIN <= seconds <= SECONDS_MAX):
+        raise ValueError(f"seconds must be between {SECONDS_MIN} and {SECONDS_MAX}")
     frames = align_frames(seconds)
 
     layers = int(params.get("layers", 50))
@@ -312,17 +373,31 @@ def build_job(params):
 
     env = dict(os.environ)
     env["H3_QWEN_PREFETCH_DEPTH"] = "1"
+    cache_build = None
     if turbo:
         attention_cache = TURBO_ATTENTION_CACHE
     elif ref_image_path:
         attention_cache = REF2VA_ATTENTION_CACHE
+        if not attention_cache.exists():
+            cache_build = (REF2VA_TRANSFORMER_DIR, attention_cache)
     else:
         attention_cache = DEFAULT_ATTENTION_CACHE
-    if attention_cache.exists():
+        if not attention_cache.exists():
+            cache_build = (FL2VA_TRANSFORMER_DIR, attention_cache)
+    if cache_build and not (BUILD_ATTENTION_CACHE_BINARY.is_file() and
+                             cache_build[0].is_dir()):
+        # Can't build it ourselves - the tool isn't compiled yet, or the
+        # source BF16 weights aren't where we expect. Fall through to the
+        # old behavior (run without a cache, which is slower but works)
+        # instead of failing the job outright.
+        cache_build = None
+    if attention_cache.exists() or cache_build:
         env["H3_ATTENTION_CACHE"] = str(attention_cache)
         env["H3_INT8_STREAM_MLP"] = "1"
 
-    return Job(job_id, argv, env, output_path, seed)
+    job = Job(job_id, argv, env, output_path, seed)
+    job.cache_build = cache_build
+    return job
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -417,12 +492,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "model_dir": str(DEFAULT_MODEL_DIR),
                 "model_dir_ok": DEFAULT_MODEL_DIR.exists(),
                 "attention_cache_ok": DEFAULT_ATTENTION_CACHE.exists(),
+                "attention_cache_buildable": (
+                    BUILD_ATTENTION_CACHE_BINARY.is_file() and
+                    FL2VA_TRANSFORMER_DIR.is_dir()),
                 "ref2va_available": (DEFAULT_MODEL_DIR / "Ref2VA").is_dir(),
                 "ref2va_cache_ok": REF2VA_ATTENTION_CACHE.exists(),
                 "turbo_cache_ok": TURBO_ATTENTION_CACHE.exists(),
                 "turbo_steps": TURBO_STEPS,
                 "layers_min": LAYERS_MIN,
                 "layers_max": LAYERS_MAX,
+                "seconds_min": SECONDS_MIN,
+                "seconds_max": SECONDS_MAX,
             })
         elif parts[:2] == ["api", "assets"] and len(parts) == 4 and parts[3] == "preview":
             asset_id = parts[2]
@@ -522,8 +602,12 @@ def main():
     if not DEFAULT_MODEL_DIR.is_dir():
         print(f"warning: model directory not found at {DEFAULT_MODEL_DIR}")
     if not DEFAULT_ATTENTION_CACHE.exists():
-        print(f"warning: attention cache not found at {DEFAULT_ATTENTION_CACHE} "
-              "- falling back to slower resident weight loading")
+        if BUILD_ATTENTION_CACHE_BINARY.is_file() and FL2VA_TRANSFORMER_DIR.is_dir():
+            print(f"warning: attention cache not found at {DEFAULT_ATTENTION_CACHE} "
+                  "- will build it from the resident weights on the first job")
+        else:
+            print(f"warning: attention cache not found at {DEFAULT_ATTENTION_CACHE} "
+                  "- falling back to slower resident weight loading")
 
     class ThreadingServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
         daemon_threads = True

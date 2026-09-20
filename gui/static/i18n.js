@@ -32,9 +32,7 @@ const I18N = {
     "refframe.unavailable": "Ref2VA checkpoint not found - reference images are unavailable.",
 
     "seconds.legend": "Length",
-    "seconds.5": "5 sec",
-    "seconds.10": "10 sec",
-    "seconds.15": "15 sec (about 30–40 min)",
+    "seconds.label": "Seconds (longer takes proportionally more time)",
 
     "turbo.legend": "Turbo (experimental)",
     "turbo.enable": "4-step Turbo LoRA (faster, lower fidelity - forces Steps to 4)",
@@ -52,6 +50,7 @@ const I18N = {
 
     "generate": "Generate",
     "alert.promptRequired": "Please enter a prompt.",
+    "alert.secondsRange": "Seconds must be a whole number between {min} and {max}.",
     "alert.rejected": "The request was rejected.",
 
     "progress.queued": "Queued...",
@@ -66,7 +65,8 @@ const I18N = {
     "error.default": "Generation failed.",
 
     "banner.modelDir": "Model directory not found: {path}",
-    "banner.cache": "int8 cache not found (falling back to slower resident weight loading if missing)",
+    "banner.cache": "int8 cache not found (falling back to slower resident weight loading)",
+    "banner.cacheBuildable": "int8 cache not found - it will be built automatically on the first job (adds time to that run only)",
   },
 
   ja: {
@@ -97,9 +97,7 @@ const I18N = {
     "refframe.unavailable": "Ref2VAチェックポイントが見つからないため、参照画像は使用できません。",
 
     "seconds.legend": "長さ",
-    "seconds.5": "5秒",
-    "seconds.10": "10秒",
-    "seconds.15": "15秒(約30〜40分)",
+    "seconds.label": "秒数(長いほど時間がかかります)",
 
     "turbo.legend": "Turbo(実験的)",
     "turbo.enable": "4-step Turbo LoRA(高速・品質はやや低下 - ステップ数を4に固定)",
@@ -117,6 +115,7 @@ const I18N = {
 
     "generate": "生成",
     "alert.promptRequired": "プロンプトを入力してください。",
+    "alert.secondsRange": "秒数は{min}〜{max}の整数で指定してください。",
     "alert.rejected": "リクエストが拒否されました。",
 
     "progress.queued": "待機中...",
@@ -131,7 +130,8 @@ const I18N = {
     "error.default": "生成に失敗しました。",
 
     "banner.modelDir": "モデルディレクトリが見つかりません: {path}",
-    "banner.cache": "int8キャッシュが見つかりません(未生成なら低速なレジデントロードにフォールバックします)",
+    "banner.cache": "int8キャッシュが見つかりません(低速なレジデントロードにフォールバックします)",
+    "banner.cacheBuildable": "int8キャッシュが見つかりません - 最初のジョブ実行時に自動でビルドします(その回だけ時間がかかります)",
   },
 };
 

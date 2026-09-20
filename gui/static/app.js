@@ -109,13 +109,18 @@ async function loadConfig() {
   const banner = $("config-banner");
   const problems = [];
   if (!config.model_dir_ok) problems.push(t("banner.modelDir", { path: config.model_dir }));
-  if (!config.attention_cache_ok) problems.push(t("banner.cache"));
+  if (!config.attention_cache_ok) {
+    problems.push(t(config.attention_cache_buildable ?
+      "banner.cacheBuildable" : "banner.cache"));
+  }
   if (problems.length) {
     banner.textContent = problems.join(" / ");
     banner.classList.remove("hidden");
   }
   $("layers").max = config.layers_max;
   $("layers").min = config.layers_min;
+  $("seconds").max = config.seconds_max;
+  $("seconds").min = config.seconds_min;
 
   if (!config.ref2va_available) {
     $("ref-choose-image").disabled = true;
@@ -155,10 +160,18 @@ $("generate").addEventListener("click", async () => {
     $("form-error").classList.remove("hidden");
     return;
   }
+  const seconds = Number($("seconds").value);
+  const secondsMin = Number($("seconds").min);
+  const secondsMax = Number($("seconds").max);
+  if (!Number.isInteger(seconds) || seconds < secondsMin || seconds > secondsMax) {
+    $("form-error").textContent = t("alert.secondsRange", { min: secondsMin, max: secondsMax });
+    $("form-error").classList.remove("hidden");
+    return;
+  }
   const body = {
     prompt,
     profile: document.querySelector('input[name="profile"]:checked').value,
-    seconds: Number(document.querySelector('input[name="seconds"]:checked').value),
+    seconds,
     layers: Number($("layers").value),
     reuse: Number($("reuse").value),
     steps: Number($("steps").value),
