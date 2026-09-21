@@ -22,6 +22,18 @@ struct H3App: App {
         WindowGroup {
             ContentView()
         }
-        .windowResizability(.contentSize)
+        // .contentSize forced the window to match the form's full ideal
+        // height, which now runs taller than the screen with every control
+        // added - .automatic lets it size within screen bounds and be
+        // resized by hand, with ContentView's own ScrollView covering the
+        // rest. defaultSize keeps the initial window at a sane size instead
+        // of AppKit's own default (which ended up stretched full-width).
+        .windowResizability(.automatic)
+        .defaultSize(width: 640, height: 700)
+        // Without this, AppKit cascades each new window progressively
+        // down/right from the last - after many relaunches during
+        // development the window had drifted low enough to push its bottom
+        // (Save As...) past the dock. Centering keeps it reachable.
+        .defaultPosition(.center)
     }
 }

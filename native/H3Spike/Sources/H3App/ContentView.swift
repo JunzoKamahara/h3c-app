@@ -95,6 +95,7 @@ final class VideoPlaybackModel: ObservableObject {
 struct SimpleVideoPlayer: View {
     @StateObject private var model: VideoPlaybackModel
     let sourceURL: URL
+    let aspectRatio: CGFloat
     // While the user is dragging, the slider shows this instead of
     // model.currentTime - otherwise the periodic time observer (which lags
     // one seek behind while scrubbing) snaps the thumb back every ~0.1s and
@@ -102,15 +103,17 @@ struct SimpleVideoPlayer: View {
     @State private var isScrubbing = false
     @State private var scrubTime: Double = 0
 
-    init(url: URL) {
+    init(url: URL, aspectRatio: CGFloat) {
         sourceURL = url
+        self.aspectRatio = aspectRatio
         _model = StateObject(wrappedValue: VideoPlaybackModel(url: url))
     }
 
     var body: some View {
         VStack(spacing: 6) {
             PlayerView(player: model.player)
-                .frame(minWidth: 320, minHeight: 320)
+                .aspectRatio(aspectRatio, contentMode: .fit)
+                .frame(maxWidth: .infinity, maxHeight: 360)
             HStack {
                 Button(action: model.togglePlayback) {
                     Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
@@ -250,6 +253,7 @@ final class GenerationViewModel: ObservableObject {
     @Published var isGenerating = false
     @Published var errorMessage: String?
     @Published var resultURL: URL?
+    @Published var resultAspectRatio: CGFloat = 1
     @Published var lastSeedUsed: UInt64?
 
     @Published var sizeProfile: SizeProfile = .square
@@ -413,6 +417,7 @@ final class GenerationViewModel: ObservableObject {
                     case .finished(let result):
                         self.phase = "Done: \(result.frames) frames @ \(result.fps)fps"
                         self.resultURL = URL(fileURLWithPath: result.outputPath)
+                        self.resultAspectRatio = CGFloat(dimensions.width) / CGFloat(dimensions.height)
                         self.lastSeedUsed = result.seed
                     }
                 }
@@ -453,6 +458,16 @@ struct ContentView: View {
     @StateObject private var viewModel = GenerationViewModel()
 
     var body: some View {
+        ScrollView {
+            formBody
+                .padding(20)
+                .frame(maxWidth: 640)
+        }
+        .frame(minWidth: 480, minHeight: 400, idealHeight: 780)
+        .onAppear { viewModel.loadModel() }
+    }
+
+    private var formBody: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("h3c-app").font(.title2).bold()
             Text(viewModel.deviceLine).font(.caption).foregroundStyle(.secondary)
@@ -576,13 +591,8 @@ struct ContentView: View {
             }
 
             if let url = viewModel.resultURL {
-                SimpleVideoPlayer(url: url)
+                SimpleVideoPlayer(url: url, aspectRatio: viewModel.resultAspectRatio)
             }
-
-            Spacer()
         }
-        .padding(20)
-        .frame(minWidth: 480, minHeight: 560)
-        .onAppear { viewModel.loadModel() }
     }
 }
