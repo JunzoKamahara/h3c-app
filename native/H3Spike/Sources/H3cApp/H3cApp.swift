@@ -2,7 +2,7 @@ import Foundation
 import SwiftUI
 
 @main
-struct H3App: App {
+struct H3cApp: App {
     init() {
         // libh3.a resolves "h3_shaders.metal" relative to the process's
         // working directory (see h3.c). When running from inside an .app
@@ -19,7 +19,7 @@ struct H3App: App {
     }
 
     var body: some Scene {
-        // The Swift type/module is still named H3App (Swift module names
+        // The Swift type/module is named H3cApp (Swift module names
         // can't contain a hyphen), but every user-visible name - this
         // window's title, the app/menu-bar name from Info.plist, the
         // bundle and executable filenames from package_app.sh - is

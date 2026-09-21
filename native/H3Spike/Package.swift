@@ -36,9 +36,9 @@ let package = Package(
             linkerSettings: h3LinkerSettings
         ),
         .executableTarget(
-            name: "H3App",
+            name: "H3cApp",
             dependencies: ["H3Engine"],
-            path: "Sources/H3App",
+            path: "Sources/H3cApp",
             linkerSettings: h3LinkerSettings
         ),
     ]
