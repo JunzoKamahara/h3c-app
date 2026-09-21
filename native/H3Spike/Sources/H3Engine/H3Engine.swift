@@ -236,10 +236,32 @@ public final class H3Engine: @unchecked Sendable {
             DispatchQueue.global(qos: .userInitiated).async {
                 defer { bridgeHandle.release() }
 
+                // A GUI app that's occluded or in the background is eligible
+                // for App Nap, which lowers CPU/disk I/O priority - measured
+                // at ~1.5x slower on this pipeline (see taskpolicy -b trace).
+                // Generation is user-requested work, so opt out for its
+                // duration.
+                let activity = ProcessInfo.processInfo.beginActivity(
+                    options: [.userInitiated, .idleSystemSleepDisabled],
+                    reason: "Generating video")
+                defer { ProcessInfo.processInfo.endActivity(activity) }
+
                 if let attentionCachePath = params.attentionCachePath {
                     setenv("H3_ATTENTION_CACHE", attentionCachePath, 1)
+                    // Same pairing gui/server.py always used with a cache:
+                    // stream FC1/FC2 from it too instead of keeping ~10.8GiB
+                    // of int8 MLP resident for every block, which on a 24GB
+                    // machine turns into memory pressure on longer clips
+                    // (and measured +10s of setup even on a short one).
+                    setenv("H3_INT8_STREAM_MLP", "1", 1)
                 } else {
                     unsetenv("H3_ATTENTION_CACHE")
+                    unsetenv("H3_INT8_STREAM_MLP")
+                }
+                // gui/server.py also pins the Qwen text-encoder prefetch
+                // depth to 1 (default is 3 on M5) to keep its footprint down.
+                if getenv("H3_QWEN_PREFETCH_DEPTH") == nil {
+                    setenv("H3_QWEN_PREFETCH_DEPTH", "1", 1)
                 }
                 if let loraPath = params.loraPath, !loraPath.isEmpty {
                     setenv("H3_LORA_PATH", loraPath, 1)

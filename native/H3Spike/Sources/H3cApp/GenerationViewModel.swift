@@ -1,0 +1,431 @@
+import AppKit
+import AVFoundation
+import Foundation
+import H3Engine
+
+let secondsRange = 1 ... 15
+let stepsRange = 3 ... 20
+// h3.c rejects anything outside [1, 3] ("denoise reuse must be in [1, 3]");
+// gui/server.py's looser 1-6 check just let the engine reject 4+ later.
+let reuseRange = 1 ... 3
+// The real, existing engine defaults (H3GenerationParams / H3_DEFAULT_STEPS)
+// - used only to detect whether "詳細設定" has been changed from them, not
+// as a claim that these are the only valid values.
+private let defaultSteps = 20
+// 1 = the close-reference path (h3.h); the old web GUI defaulted to 2 (the
+// validated fast path) - kept at 1 here so output doesn't silently change.
+private let defaultReuse = 1
+private let defaultSizeProfile: SizeProfile = .square
+
+extension Comparable {
+    func clamped(to range: ClosedRange<Self>) -> Self {
+        min(max(self, range.lowerBound), range.upperBound)
+    }
+}
+
+// Mirrors DEFAULT_ATTENTION_CACHE / REF2VA_ATTENTION_CACHE in gui/server.py.
+// Dev-time absolute paths, same caveat as the rest of this spike: these
+// 19GB caches can't be bundled into a distributable .app.
+private let repoRoot = "/Users/kamahara/Documents/work/h3c-app"
+private let defaultAttentionCache = repoRoot + "/dit_int8_v2.cache"
+private let ref2vaAttentionCache = repoRoot + "/dit_int8_v2_ref2va.cache"
+
+enum EngineState: Equatable {
+    case loading
+    case ready
+    case failed(String)
+}
+
+@MainActor
+final class GenerationViewModel: ObservableObject {
+    // MARK: Engine readiness (separate from job state and results - design
+    // spec invariant: "エンジン準備状態・生成ジョブ状態・前回結果は別々に保持する")
+    @Published private(set) var engineState: EngineState = .loading
+    @Published private(set) var deviceLine: String = "モデルを準備しています…"
+    @Published private(set) var modelDirectory: String = ""
+
+    // MARK: Draft - editable settings, never overwritten by a running job or
+    // a past result (design spec invariant #1).
+    @Published var prompt: String = "A cat playing with a ball of yarn."
+    @Published var creationMethod: CreationMethod = .text
+    @Published var imageInputMode: ImageInputMode = .firstLastFrame
+    @Published var sizeProfile: SizeProfile = defaultSizeProfile
+    @Published var seconds: Int = 5
+    @Published var steps: Int = defaultSteps
+    @Published var denoiseReuse: Int = defaultReuse
+    @Published var seedText: String = "" {
+        didSet {
+            let digitsOnly = seedText.filter(\.isNumber)
+            if digitsOnly != seedText { seedText = digitsOnly }
+        }
+    }
+    // Not cleared on mode switches - design spec section 6: "モード切替では
+    // 画像を消さない...画像からに戻すと復元する。" generate() below decides
+    // which of these actually reach the engine based on the *current* mode.
+    @Published var firstFramePath: String?
+    @Published var lastFramePath: String?
+    @Published var referenceImages: [H3ReferenceInput] = []
+    @Published var loraPath: String?
+    @Published var loraScaleText: String = "" {
+        didSet {
+            let filtered = loraScaleText.filter { $0.isNumber || $0 == "." || $0 == "-" }
+            if filtered != loraScaleText { loraScaleText = filtered }
+        }
+    }
+
+    var hasAdvancedChanges: Bool {
+        sizeProfile != defaultSizeProfile || steps != defaultSteps || denoiseReuse != defaultReuse || !seedText.isEmpty || loraPath != nil
+    }
+
+    // MARK: Job state
+    @Published private(set) var isGenerating = false
+    @Published private(set) var isCancelling = false
+    @Published var phase: String = ""
+    @Published var errorMessage: String?
+
+    // MARK: Timing / progress - all derived by ProgressEstimator from the
+    // engine's real phase events plus previously measured timings.
+    @Published private(set) var elapsedSeconds: Double = 0
+    @Published private(set) var estimatedRemainingSeconds: Double?
+    @Published private(set) var estimatedFinishDate: Date?
+    @Published private(set) var progressBarFraction: Double?
+    @Published private(set) var stageTitle: String = ""
+    @Published private(set) var stageDetail: String = ""
+
+    private var estimator: ProgressEstimator?
+    private var elapsedTimerTask: Task<Void, Never>?
+
+    // MARK: Result - immutable once set, independent of the live draft.
+    @Published private(set) var resultURL: URL?
+    @Published private(set) var resultAspectRatio: CGFloat = 1
+    @Published private(set) var lastResult: ResolvedResult?
+
+    private var engine: H3Engine?
+    private var generationTask: Task<Void, Never>?
+
+    init() {
+        // Sweep anything a previous run left behind (crash, force quit) -
+        // generated previews are meant to be throwaway unless the user
+        // explicitly exports, which copies them out.
+        Self.sweepStaleTempFiles()
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.deleteCurrentPreview() }
+        }
+    }
+
+    private static func sweepStaleTempFiles() {
+        let directory = NSTemporaryDirectory()
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: directory) else { return }
+        for name in names where name.hasPrefix("h3c-app_") && name.hasSuffix(".mp4") {
+            try? FileManager.default.removeItem(atPath: directory + name)
+        }
+    }
+
+    private func deleteCurrentPreview() {
+        if let resultURL {
+            try? FileManager.default.removeItem(at: resultURL)
+        }
+    }
+
+    func loadModel() {
+        let modelDir = NSHomeDirectory() + "/Library/Application Support/h3c-analysis/MiniMax-H3"
+        modelDirectory = modelDir
+        engineState = .loading
+        deviceLine = "モデルを準備しています…"
+        do {
+            let engine = try H3Engine(modelDirectory: modelDir)
+            self.engine = engine
+            if let device = engine.device {
+                deviceLine = "\(device.name) · \(device.architecture)"
+            } else {
+                deviceLine = "モデルは読み込めましたが、GPU情報が取得できませんでした"
+            }
+            engineState = .ready
+        } catch {
+            deviceLine = "モデルの読み込みに失敗しました"
+            engineState = .failed(error.localizedDescription)
+        }
+    }
+
+    // MARK: Image pickers
+
+    func pickLoRA() {
+        if let path = chooseFile(allowedContentTypes: safetensorsTypes) { loraPath = path }
+    }
+
+    func pickFirstFrame() {
+        if let path = chooseFile(allowedContentTypes: imageTypes) { firstFramePath = path }
+    }
+
+    func pickLastFrame() {
+        if let path = chooseFile(allowedContentTypes: imageTypes) { lastFramePath = path }
+    }
+
+    func addReferenceImages() {
+        for path in chooseFiles(allowedContentTypes: imageTypes) {
+            referenceImages.append(H3ReferenceInput(kind: .image, path: path))
+        }
+    }
+
+    func removeReferenceImages(at offsets: IndexSet) {
+        referenceImages.remove(atOffsets: offsets)
+    }
+
+    func moveReferenceImages(from source: IndexSet, to destination: Int) {
+        referenceImages.move(fromOffsets: source, toOffset: destination)
+    }
+
+    func resetAdvancedSettings() {
+        sizeProfile = defaultSizeProfile
+        steps = defaultSteps
+        denoiseReuse = defaultReuse
+        seedText = ""
+        loraPath = nil
+        loraScaleText = ""
+    }
+
+    // MARK: Validation (UI-07: block generation with a locatable reason
+    // instead of a generic disabled button)
+
+    var validationMessage: String? {
+        guard case .ready = engineState else { return nil } // covered by engine status instead
+        if prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "動画の内容を入力してください"
+        }
+        if creationMethod == .image {
+            switch imageInputMode {
+            case .firstLastFrame:
+                if firstFramePath == nil { return "最初の画像を選んでください" }
+            case .referenceImage:
+                if referenceImages.isEmpty { return "参照画像を選んでください" }
+            }
+        }
+        return nil
+    }
+
+    var canGenerate: Bool {
+        engineState == .ready && !isGenerating && validationMessage == nil
+    }
+
+    // MARK: Summary text shown above the primary button, and in "設定を見る"
+
+    var draftSummaryText: String {
+        var parts = ["\(sizeProfile.label)", "\(seconds)秒"]
+        if hasAdvancedChanges {
+            parts.append("Steps \(steps)")
+            if denoiseReuse != defaultReuse { parts.append("reuse \(denoiseReuse)") }
+            if !seedText.isEmpty { parts.append("シード固定") }
+            if let loraPath { parts.append("追加モデル: \(URL(fileURLWithPath: loraPath).lastPathComponent)") }
+        }
+        return parts.joined(separator: " ・ ")
+    }
+
+    // MARK: Generation
+
+    func generate() {
+        guard let engine, canGenerate else { return }
+
+        deleteCurrentPreview()
+        isGenerating = true
+        isCancelling = false
+        errorMessage = nil
+        resultURL = nil
+        phase = ""
+
+        let outputPath = NSTemporaryDirectory() + "h3c-app_\(Int(Date().timeIntervalSince1970)).mp4"
+        let dimensions = sizeProfile.dimensions
+        let requestedSeconds = seconds.clamped(to: secondsRange)
+        let requestedFrames = Int(h3AlignedFrameCount(seconds: Double(requestedSeconds)))
+        let seedWasRandom = seedText.isEmpty
+
+        // Which resolution the DiT actually runs at (the upscaled profiles
+        // generate at renderWidth x renderHeight, then upscale).
+        let ditPixels = dimensions.renderWidth > 0
+            ? Double(dimensions.renderWidth) * Double(dimensions.renderHeight)
+            : Double(dimensions.width) * Double(dimensions.height)
+        estimator = ProgressEstimator(
+            shape: ProgressEstimator.Shape(
+                steps: steps.clamped(to: stepsRange),
+                reuse: denoiseReuse.clamped(to: reuseRange),
+                totalFrames: requestedFrames,
+                ditUnits: Double(requestedFrames) * ditPixels,
+                decodeUnits: Double(requestedFrames) * Double(dimensions.width) * Double(dimensions.height)),
+            calibration: TimingCalibration.load(),
+            start: Date())
+        publishTiming()
+        startElapsedTimer()
+        let resolvedSeed = UInt64(seedText) ?? UInt64.random(in: UInt64.min ... UInt64.max)
+
+        // Design spec invariant #4: only the image state matching the
+        // *current* mode reaches the engine - the rest stays in the draft,
+        // untouched, for if the user switches back.
+        let effectiveFirstFrame = (creationMethod == .image && imageInputMode == .firstLastFrame) ? firstFramePath : nil
+        let effectiveLastFrame = (creationMethod == .image && imageInputMode == .firstLastFrame) ? lastFramePath : nil
+        let effectiveReferences = (creationMethod == .image && imageInputMode == .referenceImage) ? referenceImages : []
+
+        var params = H3GenerationParams()
+        params.width = dimensions.width
+        params.height = dimensions.height
+        params.renderWidth = dimensions.renderWidth
+        params.renderHeight = dimensions.renderHeight
+        params.frames = Int32(requestedFrames)
+        params.steps = Int32(steps.clamped(to: stepsRange))
+        params.denoiseReuse = Int32(denoiseReuse.clamped(to: reuseRange))
+        params.seed = resolvedSeed
+        params.firstFrame = effectiveFirstFrame
+        params.lastFrame = effectiveLastFrame
+        params.references = effectiveReferences
+        params.attentionCachePath = effectiveReferences.isEmpty ? defaultAttentionCache : ref2vaAttentionCache
+        params.loraPath = loraPath
+        params.loraScale = Float(loraScaleText)
+
+        let promptCopy = prompt
+        let capturedMode = creationMethod
+        let capturedImageMode = creationMethod == .image ? imageInputMode : nil
+        let capturedSizeProfile = sizeProfile
+        let capturedSteps = steps.clamped(to: stepsRange)
+        let capturedReuse = denoiseReuse.clamped(to: reuseRange)
+        let capturedLoraPath = loraPath
+        let capturedLoraScale = Float(loraScaleText)
+        let capturedDeviceLine = deviceLine
+
+        generationTask = Task {
+            do {
+                for try await event in engine.generate(prompt: promptCopy, outputPath: outputPath, params: params) {
+                    switch event {
+                    case .progress(let phase, let completed, let total):
+                        self.phase = phase
+                        self.estimator?.handle(phase: phase, completed: completed, total: total, now: Date())
+                        self.publishTiming()
+                    case .frame:
+                        break
+                    case .preview:
+                        break
+                    case .finished(let result):
+                        self.phase = "できあがりました"
+                        self.estimator?.finishedCalibration(now: Date()).save()
+                        let url = URL(fileURLWithPath: result.outputPath)
+                        self.resultURL = url
+                        self.resultAspectRatio = CGFloat(dimensions.width) / CGFloat(dimensions.height)
+                        self.lastResult = ResolvedResult(
+                            prompt: promptCopy,
+                            creationMethod: capturedMode,
+                            imageInputMode: capturedImageMode,
+                            sizeProfile: capturedSizeProfile,
+                            requestedSeconds: requestedSeconds,
+                            requestedFrames: requestedFrames,
+                            actualFrameCount: result.frames,
+                            fps: result.fps,
+                            actualDurationSeconds: nil,
+                            steps: capturedSteps,
+                            denoiseReuse: capturedReuse,
+                            seed: result.seed,
+                            seedWasRandom: seedWasRandom,
+                            loraPath: capturedLoraPath,
+                            loraScale: capturedLoraScale,
+                            deviceLine: capturedDeviceLine,
+                            completedAt: Date()
+                        )
+                        self.loadActualDuration(for: url)
+                    }
+                }
+            } catch is CancellationError {
+                self.phase = "生成を中止しました"
+            } catch {
+                if case H3EngineError.cancelled = error {
+                    self.phase = "生成を中止しました"
+                } else {
+                    self.errorMessage = Self.userFacingMessage(for: error)
+                }
+            }
+            self.isGenerating = false
+            self.isCancelling = false
+            self.stopElapsedTimer()
+        }
+    }
+
+    // 指定秒数と実際のメディア長は一致するとは限らない（design spec 7章:
+    // 「長さの不一致」）ため、生成結果のフレーム数/fpsからの概算ではなく、
+    // 実際に書き出されたファイルをAVFoundationで読んで確認する。
+    private func loadActualDuration(for url: URL) {
+        Task {
+            let asset = AVURLAsset(url: url)
+            if let duration = try? await asset.load(.duration) {
+                self.lastResult?.actualDurationSeconds = duration.seconds
+            }
+        }
+    }
+
+    private static func userFacingMessage(for error: Error) -> String {
+        // Best-effort mapping of known engine failure text to the design
+        // spec's Japanese error copy (section 8) - anything unrecognized
+        // falls through to the generic message with the real detail kept
+        // alongside it rather than guessing at a specific cause.
+        let raw = error.localizedDescription
+        if raw.contains("out of memory") || raw.contains("insufficient memory") {
+            return "この設定ではメモリが足りませんでした。もっと小さいサイズや短い長さをお試しください。（詳細: \(raw)）"
+        }
+        return "動画をつくれませんでした。（詳細: \(raw)）"
+    }
+
+    func cancel() {
+        guard isGenerating else { return }
+        isCancelling = true
+        engine?.cancelCurrentGeneration()
+    }
+
+    // MARK: Timing
+
+    private func startElapsedTimer() {
+        elapsedTimerTask?.cancel()
+        elapsedTimerTask = Task { [weak self] in
+            while let self, !Task.isCancelled {
+                self.publishTiming()
+                try? await Task.sleep(nanoseconds: 200_000_000)
+            }
+        }
+    }
+
+    private func stopElapsedTimer() {
+        elapsedTimerTask?.cancel()
+        elapsedTimerTask = nil
+    }
+
+    private func publishTiming() {
+        guard let estimator else { return }
+        let now = Date()
+        let snapshot = estimator.snapshot(now: now)
+        elapsedSeconds = snapshot.elapsed
+        estimatedRemainingSeconds = snapshot.remaining
+        estimatedFinishDate = snapshot.remaining.map { now.addingTimeInterval($0) }
+        progressBarFraction = snapshot.fraction
+        stageTitle = snapshot.stageTitle
+        stageDetail = snapshot.detail
+    }
+
+    // MARK: Reuse
+
+    /// "この設定を使う": copies a past result's request back into the draft
+    /// without starting generation, restoring the original seed *policy*
+    /// (random stays random) rather than pinning the exact value.
+    func applyDraft(from result: ResolvedResult) {
+        prompt = result.prompt
+        creationMethod = result.creationMethod
+        if let imageInputMode = result.imageInputMode { self.imageInputMode = imageInputMode }
+        sizeProfile = result.sizeProfile
+        seconds = result.requestedSeconds
+        steps = result.steps
+        denoiseReuse = result.denoiseReuse
+        seedText = result.seedWasRandom ? "" : result.seedDecimalString
+        loraPath = result.loraPath
+        loraScaleText = result.loraScale.map { String($0) } ?? ""
+    }
+
+    /// "同じシードを使う": pins the exact seed regardless of the original
+    /// policy, for reproducing one specific past output.
+    func useSameSeed(from result: ResolvedResult) {
+        seedText = result.seedDecimalString
+    }
+}

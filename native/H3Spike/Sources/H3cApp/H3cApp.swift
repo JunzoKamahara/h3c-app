@@ -27,14 +27,11 @@ struct H3cApp: App {
         WindowGroup("h3c-app") {
             ContentView()
         }
-        // .contentSize forced the window to match the form's full ideal
-        // height, which now runs taller than the screen with every control
-        // added - .automatic lets it size within screen bounds and be
-        // resized by hand, with ContentView's own ScrollView covering the
-        // rest. defaultSize keeps the initial window at a sane size instead
-        // of AppKit's own default (which ended up stretched full-width).
+        // Design spec section 3: 1180x780 initial content area, 920x640
+        // minimum. .automatic lets the window be resized by hand within
+        // that range instead of being pinned to one exact size.
         .windowResizability(.automatic)
-        .defaultSize(width: 640, height: 700)
+        .defaultSize(width: 1180, height: 780)
         // Without this, AppKit cascades each new window progressively
         // down/right from the last - after many relaunches during
         // development the window had drifted low enough to push its bottom

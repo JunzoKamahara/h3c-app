@@ -1,0 +1,57 @@
+import SwiftUI
+
+// Toolbar-right status chip (design spec section 3): shows readiness with
+// an icon + word, not color alone, and opens a popover with the technical
+// details (GPU/model) that used to sit directly in the form.
+struct EngineStatusButton: View {
+    @ObservedObject var viewModel: GenerationViewModel
+    @State private var showingPopover = false
+
+    private var statusText: String {
+        switch viewModel.engineState {
+        case .loading: return "モデルを準備しています"
+        case .ready: return "準備完了"
+        case .failed: return "モデルが見つかりません"
+        }
+    }
+
+    private var statusIcon: String {
+        switch viewModel.engineState {
+        case .loading: return "hourglass"
+        case .ready: return "checkmark.circle.fill"
+        case .failed: return "exclamationmark.triangle.fill"
+        }
+    }
+
+    var body: some View {
+        Button {
+            showingPopover = true
+        } label: {
+            Label(statusText, systemImage: statusIcon)
+                .font(.callout)
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $showingPopover, arrowEdge: .bottom) {
+            statusDetail
+        }
+        .accessibilityLabel(statusText)
+    }
+
+    private var statusDetail: some View {
+        VStack(alignment: .leading, spacing: H3Spacing.sm) {
+            Text("動作環境").font(.headline)
+            Text(viewModel.deviceLine).font(.body).textSelection(.enabled)
+            Divider()
+            Text("モデルの場所").font(.caption).foregroundStyle(.secondary)
+            Text(viewModel.modelDirectory).font(.caption).textSelection(.enabled)
+            if case .failed(let message) = viewModel.engineState {
+                Divider()
+                Text("読み込みエラー").font(.caption).foregroundStyle(.secondary)
+                Text(message).font(.caption).foregroundStyle(.red)
+                Button("もう一度試す") { viewModel.loadModel() }
+            }
+        }
+        .padding(H3Spacing.lg)
+        .frame(minWidth: 320)
+    }
+}

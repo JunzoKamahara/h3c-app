@@ -19,9 +19,12 @@ final class GenerationContext {
     var previewsReceived = 0
 }
 
+let traceStart = Date()
+setvbuf(stdout, nil, _IOLBF, 0)
+
 let progressCallback: h3_progress_callback = { phase, completed, total, _ in
     let phaseName = phase.map { String(cString: $0) } ?? "?"
-    print("[progress] \(phaseName) \(completed)/\(total)")
+    print(String(format: "[%7.2fs] [progress] ", Date().timeIntervalSince(traceStart)) + "\(phaseName) \(completed)/\(total)")
     return 0 // return non-zero from here to cancel generation
 }
 
@@ -34,7 +37,7 @@ let frameCallback: h3_frame_callback = { framePtr, opaque in
         print("[preview] denoise step \(frame.denoise_step + 1)/\(frame.denoise_steps)")
     } else {
         context.framesReceived += 1
-        print("[frame] \(frame.frame_index + 1)/\(frame.frame_count) (\(frame.width)x\(frame.height))")
+        print(String(format: "[%7.2fs] [frame] ", Date().timeIntervalSince(traceStart)) + "\(frame.frame_index + 1)/\(frame.frame_count)")
     }
     return 0
 }
@@ -67,17 +70,18 @@ if let model = h3_model(ctx)?.pointee {
 // checkout so this spike runs the same fast int8 path the CLI/GUI use by
 // default, rather than the slower close-reference BF16 path.
 if getenv("H3_ATTENTION_CACHE") == nil {
-    setenv("H3_ATTENTION_CACHE", "/Users/kamahara/Documents/work/h3c/dit_int8_v2.cache", 1)
+    setenv("H3_ATTENTION_CACHE", "/Users/kamahara/Documents/work/h3c-app/dit_int8_v2.cache", 1)
 }
 
 let context = GenerationContext()
 let opaque = Unmanaged.passUnretained(context).toOpaque()
 
 var params = h3_params()
-params.width = 256
-params.height = 256
-params.frames = 9
-params.steps = 4
+let sizeArg = Int32(ProcessInfo.processInfo.environment["H3SPIKE_SIZE"] ?? "") ?? 256
+params.width = sizeArg
+params.height = sizeArg
+params.frames = Int32(ProcessInfo.processInfo.environment["H3SPIKE_FRAMES"] ?? "") ?? 9
+params.steps = Int32(ProcessInfo.processInfo.environment["H3SPIKE_STEPS"] ?? "") ?? 4
 params.seed = 42
 params.dit_layers = 50
 params.denoise_reuse = 1
