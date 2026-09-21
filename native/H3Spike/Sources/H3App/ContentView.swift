@@ -316,7 +316,7 @@ final class GenerationViewModel: ObservableObject {
     private static func sweepStaleTempFiles() {
         let directory = NSTemporaryDirectory()
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: directory) else { return }
-        for name in names where name.hasPrefix("h3app_") && name.hasSuffix(".mp4") {
+        for name in names where name.hasPrefix("h3c-app_") && name.hasSuffix(".mp4") {
             try? FileManager.default.removeItem(atPath: directory + name)
         }
     }
@@ -384,7 +384,7 @@ final class GenerationViewModel: ObservableObject {
         framesDone = 0
         framesTotal = 0
 
-        let outputPath = NSTemporaryDirectory() + "h3app_\(Int(Date().timeIntervalSince1970)).mp4"
+        let outputPath = NSTemporaryDirectory() + "h3c-app_\(Int(Date().timeIntervalSince1970)).mp4"
         let dimensions = sizeProfile.dimensions
         var params = H3GenerationParams()
         params.width = dimensions.width

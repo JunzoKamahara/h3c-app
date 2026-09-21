@@ -19,7 +19,12 @@ struct H3App: App {
     }
 
     var body: some Scene {
-        WindowGroup {
+        // The Swift type/module is still named H3App (Swift module names
+        // can't contain a hyphen), but every user-visible name - this
+        // window's title, the app/menu-bar name from Info.plist, the
+        // bundle and executable filenames from package_app.sh - is
+        // h3c-app, matching the actual product/repo name.
+        WindowGroup("h3c-app") {
             ContentView()
         }
         // .contentSize forced the window to match the form's full ideal
