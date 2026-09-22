@@ -14,6 +14,10 @@ let h3LinkerSettings: [LinkerSetting] = [
     .linkedFramework("MetalPerformanceShaders"),
     .linkedFramework("MetalPerformanceShadersGraph"),
     .linkedFramework("Accelerate"),
+    .linkedFramework("AVFoundation"),
+    .linkedFramework("CoreMedia"),
+    .linkedFramework("CoreVideo"),
+    .linkedFramework("CoreAudio"),
 ]
 
 let package = Package(
