@@ -56,9 +56,10 @@ final class GenerationViewModel: ObservableObject {
     // See ComputeMode: cache vs SSD streaming are mutually exclusive, and
     // LoRA only exists on the cache side.
     @Published var computeMode: ComputeMode = .attentionCache
-    // The int8 path (and so the cache) needs an M5-class GPU - h3_gpu.m only
-    // enables tensor ops when the device name contains "M5". Set from the
-    // real device in loadModel().
+    // The int8 path (and so the cache) needs the Metal 4 hardware tensor
+    // units first shipped in M5 - h3_gpu.m enables tensor ops based on the
+    // device's actual supportsFamily: capability (H3DeviceInfo.hasTensorHardware),
+    // not its marketing name. Set from the real device in loadModel().
     @Published private(set) var supportsInt8Cache = true
     var defaultComputeMode: ComputeMode { supportsInt8Cache ? .attentionCache : .ssdStreaming }
     @Published var seedText: String = "" {
@@ -160,7 +161,7 @@ final class GenerationViewModel: ObservableObject {
             self.engine = engine
             if let device = engine.device {
                 deviceLine = "\(device.name) · \(device.architecture)"
-                supportsInt8Cache = device.name.contains("M5")
+                supportsInt8Cache = device.hasTensorHardware
                 if !supportsInt8Cache { computeMode = .ssdStreaming }
             } else {
                 deviceLine = "モデルは読み込めましたが、GPU情報が取得できませんでした"

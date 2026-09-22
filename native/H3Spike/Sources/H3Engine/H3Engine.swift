@@ -17,6 +17,17 @@ public struct H3DeviceInfo: Sendable {
     public let architecture: String
     public let unifiedMemory: Bool
     public let metal4: Bool
+    /// Highest Apple GPU family the device reports supporting (h3_metal.m
+    /// probes MTLGPUFamilyApple1...10 and keeps the highest match). 10 is the
+    /// family Apple introduced the Metal 4 hardware tensor/matmul units
+    /// (Neural Accelerators) with, first shipping in M5 - this is the real
+    /// capability the int8 attention cache path needs, not the device name.
+    public let appleGPUFamily: Int
+    /// True when this device has the hardware tensor units the int8
+    /// attention cache path relies on - mirrors h3_gpu.m's
+    /// h3_device_has_tensor_ops(), which checks -supportsFamily: rather than
+    /// matching "M5" in the device's marketing name.
+    public var hasTensorHardware: Bool { appleGPUFamily >= 10 }
 }
 
 public struct H3GenerationResult: Sendable {
@@ -226,7 +237,8 @@ public final class H3Engine: @unchecked Sendable {
             name: fixedCString(device.name),
             architecture: fixedCString(device.architecture),
             unifiedMemory: device.unified_memory != 0,
-            metal4: device.metal4 != 0
+            metal4: device.metal4 != 0,
+            appleGPUFamily: Int(device.apple_gpu_family)
         )
     }
 

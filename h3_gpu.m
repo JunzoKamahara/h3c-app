@@ -130,6 +130,17 @@ static H3GPU *GPU(h3_gpu *gpu) {
     return (__bridge H3GPU *)gpu;
 }
 
+/* Whether this device actually exposes the Metal 4 hardware tensor/matmul
+ * units (Neural Accelerators) that the MetalPerformancePrimitives-based
+ * kernels in h3_shaders.metal require - not just whether its marketing name
+ * happens to contain the substring "M5". MTLGPUFamilyApple10 is the GPU
+ * family Apple introduced alongside that hardware (first shipped in M5), so
+ * querying it via -supportsFamily: reflects the real capability and, unlike
+ * a name match, keeps working for future chips in the same GPU family. */
+static BOOL h3_device_has_tensor_ops(id<MTLDevice> device) {
+    return device && [device supportsFamily:MTLGPUFamilyApple10];
+}
+
 static H3Tensor *TENSOR(const h3_gpu_tensor *tensor) {
     return (__bridge H3Tensor *)(void *)tensor;
 }
@@ -361,10 +372,9 @@ h3_gpu *h3_gpu_create(const char *shader_source_path,
             MTLCompileOptions *options = [[MTLCompileOptions alloc] init];
             options.mathMode = MTLMathModeSafe;
             const char *nax = getenv("H3_NAX");
-            BOOL m5 = [gpu.device.name rangeOfString:@"M5"].location !=
-                      NSNotFound;
+            BOOL hasTensorHardware = h3_device_has_tensor_ops(gpu.device);
             BOOL wantsTensorOps =
-                m5 && (!nax || !*nax || strcmp(nax, "0") != 0);
+                hasTensorHardware && (!nax || !*nax || strcmp(nax, "0") != 0);
             if (wantsTensorOps)
                 options.preprocessorMacros = @{ @"H3_METAL_HAS_TENSOR": @"1" };
             gpu.library = [gpu.device newLibraryWithSource:source
@@ -528,10 +538,15 @@ void h3_gpu_free(h3_gpu *gpu) {
     }
 }
 
+/* Despite the name (kept for compatibility with existing callers), this
+ * reports whether the GPU has the Metal 4 hardware tensor units the int8
+ * cache/attention path and other "M5" heuristics in this file actually
+ * depend on - see h3_device_has_tensor_ops() - rather than matching the
+ * device name string. */
 int h3_gpu_is_m5(const h3_gpu *opaque) {
     if (!opaque) return 0;
     H3GPU *gpu = GPU((h3_gpu *)(void *)opaque);
-    return [gpu.device.name rangeOfString:@"M5"].location != NSNotFound;
+    return h3_device_has_tensor_ops(gpu.device);
 }
 
 int h3_gpu_has_nax_mlp(const h3_gpu *opaque) {
@@ -614,7 +629,7 @@ static h3_gpu_tensor *h3_gpu_tensor_load_file(h3_gpu *opaque, const char *path,
     if ((uint64_t)bytes > (uint64_t)INT64_MAX - file_offset) return NULL;
     const char *zero_copy = getenv("H3_ZERO_COPY_WEIGHTS");
     int transformer_weight = strstr(path, "/transformer/") != NULL;
-    int m5 = [gpu.device.name rangeOfString:@"M5"].location != NSNotFound;
+    int m5 = h3_device_has_tensor_ops(gpu.device);
     int map_weight = bytes &&
         ((zero_copy && !strcmp(zero_copy, "1")) ||
          (transformer_weight &&

@@ -288,7 +288,7 @@ struct CreationFormView: View {
             .frame(maxWidth: 260)
             switch viewModel.computeMode {
             case .attentionCache:
-                Text("事前に作ったint8キャッシュを読みながら計算します。速く、追加モデル（LoRA）も使えます。キャッシュとM5世代のGPUが必要です。")
+                Text("事前に作ったint8キャッシュを読みながら計算します。速く、追加モデル（LoRA）も使えます。キャッシュと、Tensor演算ユニットを搭載したGPU（M5以降）が必要です。")
                     .font(.caption)
                     .foregroundStyle(palette.textSecondary)
             case .ssdStreaming:
@@ -297,7 +297,7 @@ struct CreationFormView: View {
                     .foregroundStyle(palette.textSecondary)
             }
             if !viewModel.supportsInt8Cache {
-                Text("このGPUはM5世代ではないため、int8キャッシュ方式は使えません。")
+                Text("このGPUにはTensor演算ユニットがないため、int8キャッシュ方式は使えません。")
                     .font(.caption)
                     .foregroundStyle(palette.errorColor)
             }
