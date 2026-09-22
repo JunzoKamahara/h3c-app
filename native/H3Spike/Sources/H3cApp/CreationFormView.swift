@@ -257,6 +257,8 @@ struct CreationFormView: View {
                     .frame(maxWidth: 120)
                 }
 
+                computeModeSection
+
                 reuseSection
 
                 seedSection
@@ -270,6 +272,35 @@ struct CreationFormView: View {
         } label: {
             Text(viewModel.hasAdvancedChanges ? "詳細設定・変更あり" : "詳細設定")
                 .font(.system(size: 14, weight: .semibold))
+        }
+    }
+
+    private var computeModeSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("計算方式").font(.caption).foregroundStyle(palette.textSecondary)
+            Picker("計算方式", selection: $viewModel.computeMode) {
+                ForEach(ComputeMode.allCases) { mode in
+                    Text(mode.label).tag(mode)
+                }
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .frame(maxWidth: 260)
+            switch viewModel.computeMode {
+            case .attentionCache:
+                Text("事前に作ったint8キャッシュを読みながら計算します。速く、追加モデル（LoRA）も使えます。キャッシュとM5世代のGPUが必要です。")
+                    .font(.caption)
+                    .foregroundStyle(palette.textSecondary)
+            case .ssdStreaming:
+                Text("元のBF16モデルを、必要なブロックだけSSDから読みながら計算します。メモリは少なくて済みますが遅くなります。キャッシュは使わず、追加モデル（LoRA）は使えません。")
+                    .font(.caption)
+                    .foregroundStyle(palette.textSecondary)
+            }
+            if !viewModel.supportsInt8Cache {
+                Text("このGPUはM5世代ではないため、int8キャッシュ方式は使えません。")
+                    .font(.caption)
+                    .foregroundStyle(palette.errorColor)
+            }
         }
     }
 
@@ -339,7 +370,17 @@ struct CreationFormView: View {
                     Button("取り除く") { viewModel.loraPath = nil }
                 }
             }
-            if viewModel.loraPath != nil {
+            .disabled(viewModel.computeMode == .ssdStreaming)
+
+            if viewModel.computeMode == .ssdStreaming {
+                // Not just disabled: the engine wouldn't error, it would
+                // silently not apply it, so say so where the file is shown.
+                Text(viewModel.loraPath == nil
+                     ? "SSDストリーミングでは追加モデル（LoRA）を使えません。"
+                     : "SSDストリーミングでは適用されないため、この追加モデルは今回の生成に使われません。")
+                    .font(.caption)
+                    .foregroundStyle(palette.textSecondary)
+            } else if viewModel.loraPath != nil {
                 HStack {
                     Text("強さ（空欄=自動）").font(.caption).foregroundStyle(palette.textSecondary)
                     TextField("自動", text: $viewModel.loraScaleText)

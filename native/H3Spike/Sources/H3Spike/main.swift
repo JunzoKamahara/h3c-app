@@ -69,7 +69,8 @@ if let model = h3_model(ctx)?.pointee {
 // Point at the existing validated attention cache from the h3c working
 // checkout so this spike runs the same fast int8 path the CLI/GUI use by
 // default, rather than the slower close-reference BF16 path.
-if getenv("H3_ATTENTION_CACHE") == nil {
+let useSSD = ProcessInfo.processInfo.environment["H3SPIKE_SSD"] == "1"
+if getenv("H3_ATTENTION_CACHE") == nil && !useSSD {
     setenv("H3_ATTENTION_CACHE", "/Users/kamahara/Documents/work/h3c-app/dit_int8_v2.cache", 1)
 }
 
@@ -84,6 +85,7 @@ params.frames = Int32(ProcessInfo.processInfo.environment["H3SPIKE_FRAMES"] ?? "
 params.steps = Int32(ProcessInfo.processInfo.environment["H3SPIKE_STEPS"] ?? "") ?? 4
 params.seed = 42
 params.dit_layers = 50
+params.ssd_streaming = useSSD ? 1 : 0
 params.denoise_reuse = 1
 params.core_reuse = 1
 params.reference_image_size = H3_REFERENCE_IMAGE_MATCH

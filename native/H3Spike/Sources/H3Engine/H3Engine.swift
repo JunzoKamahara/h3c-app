@@ -83,6 +83,16 @@ public struct H3GenerationParams: Sendable {
     // adapter's own alpha/rank metadata, falling back to 1.0.
     public var loraPath: String?
     public var loraScale: Float?
+    // h3_params.ssd_streaming: keep only two original BF16 DiT blocks
+    // resident and read the next from the checkpoint while the GPU runs the
+    // current one. It's an alternative to attentionCachePath, not an
+    // addition: it runs on the unquantized BF16 weights, so the int8 cache
+    // (and H3_INT8_STREAM_MLP) don't apply, and LoRA fusion isn't wired into
+    // its layer-loading path at all (h3_dit.c only fuses in load_block /
+    // load_block_norms_and_mlp) - the engine would silently skip it. So when
+    // this is set, generate() clears the cache and LoRA settings instead of
+    // passing along a combination that quietly does the wrong thing.
+    public var ssdStreaming = false
     public init() {}
 }
 
@@ -246,33 +256,42 @@ public final class H3Engine: @unchecked Sendable {
                     reason: "Generating video")
                 defer { ProcessInfo.processInfo.endActivity(activity) }
 
-                if let attentionCachePath = params.attentionCachePath {
-                    setenv("H3_ATTENTION_CACHE", attentionCachePath, 1)
-                    // Same pairing gui/server.py always used with a cache:
-                    // stream FC1/FC2 from it too instead of keeping ~10.8GiB
-                    // of int8 MLP resident for every block, which on a 24GB
-                    // machine turns into memory pressure on longer clips
-                    // (and measured +10s of setup even on a short one).
-                    setenv("H3_INT8_STREAM_MLP", "1", 1)
-                } else {
+                if params.ssdStreaming {
+                    // Exclusive with the int8 cache and with LoRA - see
+                    // H3GenerationParams.ssdStreaming.
                     unsetenv("H3_ATTENTION_CACHE")
                     unsetenv("H3_INT8_STREAM_MLP")
+                    unsetenv("H3_LORA_PATH")
+                    unsetenv("H3_LORA_SCALE")
+                } else {
+                    if let attentionCachePath = params.attentionCachePath {
+                        setenv("H3_ATTENTION_CACHE", attentionCachePath, 1)
+                        // Same pairing gui/server.py always used with a cache:
+                        // stream FC1/FC2 from it too instead of keeping ~10.8GiB
+                        // of int8 MLP resident for every block, which on a 24GB
+                        // machine turns into memory pressure on longer clips
+                        // (and measured +10s of setup even on a short one).
+                        setenv("H3_INT8_STREAM_MLP", "1", 1)
+                    } else {
+                        unsetenv("H3_ATTENTION_CACHE")
+                        unsetenv("H3_INT8_STREAM_MLP")
+                    }
+                    if let loraPath = params.loraPath, !loraPath.isEmpty {
+                        setenv("H3_LORA_PATH", loraPath, 1)
+                        if let loraScale = params.loraScale {
+                            setenv("H3_LORA_SCALE", String(loraScale), 1)
+                        } else {
+                            unsetenv("H3_LORA_SCALE")
+                        }
+                    } else {
+                        unsetenv("H3_LORA_PATH")
+                        unsetenv("H3_LORA_SCALE")
+                    }
                 }
                 // gui/server.py also pins the Qwen text-encoder prefetch
                 // depth to 1 (default is 3 on M5) to keep its footprint down.
                 if getenv("H3_QWEN_PREFETCH_DEPTH") == nil {
                     setenv("H3_QWEN_PREFETCH_DEPTH", "1", 1)
-                }
-                if let loraPath = params.loraPath, !loraPath.isEmpty {
-                    setenv("H3_LORA_PATH", loraPath, 1)
-                    if let loraScale = params.loraScale {
-                        setenv("H3_LORA_SCALE", String(loraScale), 1)
-                    } else {
-                        unsetenv("H3_LORA_SCALE")
-                    }
-                } else {
-                    unsetenv("H3_LORA_PATH")
-                    unsetenv("H3_LORA_SCALE")
                 }
 
                 var cParams = h3_params()
@@ -286,6 +305,7 @@ public final class H3Engine: @unchecked Sendable {
                 cParams.dit_layers = params.ditLayers
                 cParams.denoise_reuse = params.denoiseReuse
                 cParams.core_reuse = params.coreReuse
+                cParams.ssd_streaming = params.ssdStreaming ? 1 : 0
                 cParams.on_progress = h3ProgressTrampoline
                 cParams.on_frame = h3FrameTrampoline
                 cParams.callback_opaque = bridgeHandle.toOpaque()

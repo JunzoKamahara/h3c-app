@@ -96,22 +96,43 @@ struct TimingCalibration: Codable {
         TimingSample(units: 124.0 * 512 * 512, seconds: 0.27),
     ]
 
-    // v2: the stage model changed (v1 lumped decode into "post"/FFmpeg), so
-    // old saved numbers would mean something different.
-    private static let defaultsKey = "h3c-app.timingCalibration.v2"
+    // One calibration per compute mode: SSD streaming reads the whole BF16
+    // checkpoint every step, so its setup and per-step times have nothing
+    // in common with the int8-cache path's. (v2: stage model changed.)
+    private static func defaultsKey(_ mode: ComputeMode) -> String {
+        mode == .attentionCache ? "h3c-app.timingCalibration.v2"
+                                : "h3c-app.timingCalibration.v2.\(mode.rawValue)"
+    }
     private static let keep = 12
 
-    static func load() -> TimingCalibration {
-        guard let data = UserDefaults.standard.data(forKey: defaultsKey),
-              let value = try? JSONDecoder().decode(TimingCalibration.self, from: data) else {
-            return TimingCalibration()
+    /// Fresh calibration for a mode, seeded with timings measured on the dev
+    /// machine (same two sizes as the cache seeds). Setup is the same in both
+    /// modes; only the denoise step differs - SSD streaming re-reads the BF16
+    /// checkpoint each step: 6.24s (22 frames @256x256) and 43.0s (124
+    /// frames @512x512) vs 3.64s / 31.3s with the int8 cache. VAE decode and
+    /// FFmpeg are the same code either way, so they share the seeds.
+    static func initial(for mode: ComputeMode) -> TimingCalibration {
+        var value = TimingCalibration()
+        if mode == .ssdStreaming {
+            value.denoisePerStep = [
+                TimingSample(units: 22.0 * 256 * 256, seconds: 6.24),
+                TimingSample(units: 124.0 * 512 * 512, seconds: 43.0),
+            ]
         }
         return value
     }
 
-    func save() {
+    static func load(for mode: ComputeMode) -> TimingCalibration {
+        guard let data = UserDefaults.standard.data(forKey: defaultsKey(mode)),
+              let value = try? JSONDecoder().decode(TimingCalibration.self, from: data) else {
+            return initial(for: mode)
+        }
+        return value
+    }
+
+    func save(for mode: ComputeMode) {
         if let data = try? JSONEncoder().encode(self) {
-            UserDefaults.standard.set(data, forKey: Self.defaultsKey)
+            UserDefaults.standard.set(data, forKey: Self.defaultsKey(mode))
         }
     }
 

@@ -53,6 +53,14 @@ final class GenerationViewModel: ObservableObject {
     @Published var seconds: Int = 5
     @Published var steps: Int = defaultSteps
     @Published var denoiseReuse: Int = defaultReuse
+    // See ComputeMode: cache vs SSD streaming are mutually exclusive, and
+    // LoRA only exists on the cache side.
+    @Published var computeMode: ComputeMode = .attentionCache
+    // The int8 path (and so the cache) needs an M5-class GPU - h3_gpu.m only
+    // enables tensor ops when the device name contains "M5". Set from the
+    // real device in loadModel().
+    @Published private(set) var supportsInt8Cache = true
+    var defaultComputeMode: ComputeMode { supportsInt8Cache ? .attentionCache : .ssdStreaming }
     @Published var seedText: String = "" {
         didSet {
             let digitsOnly = seedText.filter(\.isNumber)
@@ -73,8 +81,21 @@ final class GenerationViewModel: ObservableObject {
         }
     }
 
+    /// LoRA only applies on the cache path; under SSD streaming the engine
+    /// would silently skip it, so it's excluded from the request (the chosen
+    /// file stays in the draft, like images do across modes).
+    var effectiveLoraPath: String? { computeMode == .ssdStreaming ? nil : loraPath }
+
+    /// The int8 cache this job would use - which one depends on whether it
+    /// runs the Ref2VA (reference image) transformer.
+    var currentAttentionCachePath: String {
+        let usesReferences = creationMethod == .image && imageInputMode == .referenceImage
+        return usesReferences ? ref2vaAttentionCache : defaultAttentionCache
+    }
+
     var hasAdvancedChanges: Bool {
-        sizeProfile != defaultSizeProfile || steps != defaultSteps || denoiseReuse != defaultReuse || !seedText.isEmpty || loraPath != nil
+        sizeProfile != defaultSizeProfile || steps != defaultSteps || denoiseReuse != defaultReuse
+            || computeMode != defaultComputeMode || !seedText.isEmpty || effectiveLoraPath != nil
     }
 
     // MARK: Job state
@@ -139,6 +160,8 @@ final class GenerationViewModel: ObservableObject {
             self.engine = engine
             if let device = engine.device {
                 deviceLine = "\(device.name) · \(device.architecture)"
+                supportsInt8Cache = device.name.contains("M5")
+                if !supportsInt8Cache { computeMode = .ssdStreaming }
             } else {
                 deviceLine = "モデルは読み込めましたが、GPU情報が取得できませんでした"
             }
@@ -181,6 +204,7 @@ final class GenerationViewModel: ObservableObject {
         sizeProfile = defaultSizeProfile
         steps = defaultSteps
         denoiseReuse = defaultReuse
+        computeMode = defaultComputeMode
         seedText = ""
         loraPath = nil
         loraScaleText = ""
@@ -202,6 +226,14 @@ final class GenerationViewModel: ObservableObject {
                 if referenceImages.isEmpty { return "参照画像を選んでください" }
             }
         }
+        if computeMode == .attentionCache {
+            if !supportsInt8Cache {
+                return "このGPUではint8キャッシュを使えません。詳細設定の「計算方式」でSSDストリーミングを選んでください"
+            }
+            if !FileManager.default.fileExists(atPath: currentAttentionCachePath) {
+                return "int8キャッシュが見つかりません。詳細設定の「計算方式」でSSDストリーミングに切り替えるか、キャッシュを作成してください"
+            }
+        }
         return nil
     }
 
@@ -216,8 +248,9 @@ final class GenerationViewModel: ObservableObject {
         if hasAdvancedChanges {
             parts.append("Steps \(steps)")
             if denoiseReuse != defaultReuse { parts.append("reuse \(denoiseReuse)") }
+            if computeMode != defaultComputeMode { parts.append(computeMode.summaryLabel) }
             if !seedText.isEmpty { parts.append("シード固定") }
-            if let loraPath { parts.append("追加モデル: \(URL(fileURLWithPath: loraPath).lastPathComponent)") }
+            if let loraPath = effectiveLoraPath { parts.append("追加モデル: \(URL(fileURLWithPath: loraPath).lastPathComponent)") }
         }
         return parts.joined(separator: " ・ ")
     }
@@ -252,7 +285,7 @@ final class GenerationViewModel: ObservableObject {
                 totalFrames: requestedFrames,
                 ditUnits: Double(requestedFrames) * ditPixels,
                 decodeUnits: Double(requestedFrames) * Double(dimensions.width) * Double(dimensions.height)),
-            calibration: TimingCalibration.load(),
+            calibration: TimingCalibration.load(for: computeMode),
             start: Date())
         publishTiming()
         startElapsedTimer()
@@ -277,9 +310,10 @@ final class GenerationViewModel: ObservableObject {
         params.firstFrame = effectiveFirstFrame
         params.lastFrame = effectiveLastFrame
         params.references = effectiveReferences
-        params.attentionCachePath = effectiveReferences.isEmpty ? defaultAttentionCache : ref2vaAttentionCache
-        params.loraPath = loraPath
-        params.loraScale = Float(loraScaleText)
+        params.ssdStreaming = computeMode == .ssdStreaming
+        params.attentionCachePath = computeMode == .attentionCache ? currentAttentionCachePath : nil
+        params.loraPath = effectiveLoraPath
+        params.loraScale = effectiveLoraPath != nil ? Float(loraScaleText) : nil
 
         let promptCopy = prompt
         let capturedMode = creationMethod
@@ -287,8 +321,9 @@ final class GenerationViewModel: ObservableObject {
         let capturedSizeProfile = sizeProfile
         let capturedSteps = steps.clamped(to: stepsRange)
         let capturedReuse = denoiseReuse.clamped(to: reuseRange)
-        let capturedLoraPath = loraPath
-        let capturedLoraScale = Float(loraScaleText)
+        let capturedComputeMode = computeMode
+        let capturedLoraPath = effectiveLoraPath
+        let capturedLoraScale = effectiveLoraPath != nil ? Float(loraScaleText) : nil
         let capturedDeviceLine = deviceLine
 
         generationTask = Task {
@@ -305,7 +340,7 @@ final class GenerationViewModel: ObservableObject {
                         break
                     case .finished(let result):
                         self.phase = "できあがりました"
-                        self.estimator?.finishedCalibration(now: Date()).save()
+                        self.estimator?.finishedCalibration(now: Date()).save(for: capturedComputeMode)
                         let url = URL(fileURLWithPath: result.outputPath)
                         self.resultURL = url
                         self.resultAspectRatio = CGFloat(dimensions.width) / CGFloat(dimensions.height)
@@ -321,6 +356,7 @@ final class GenerationViewModel: ObservableObject {
                             actualDurationSeconds: nil,
                             steps: capturedSteps,
                             denoiseReuse: capturedReuse,
+                            computeMode: capturedComputeMode,
                             seed: result.seed,
                             seedWasRandom: seedWasRandom,
                             loraPath: capturedLoraPath,
@@ -418,6 +454,7 @@ final class GenerationViewModel: ObservableObject {
         seconds = result.requestedSeconds
         steps = result.steps
         denoiseReuse = result.denoiseReuse
+        computeMode = result.computeMode
         seedText = result.seedWasRandom ? "" : result.seedDecimalString
         loraPath = result.loraPath
         loraScaleText = result.loraScale.map { String($0) } ?? ""

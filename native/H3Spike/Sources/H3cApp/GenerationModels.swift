@@ -98,6 +98,34 @@ enum ImageInputMode: String, CaseIterable, Identifiable {
     }
 }
 
+// How the DiT weights are served. The two are mutually exclusive in the
+// engine, not just in the UI:
+// - attentionCache: pre-quantized int8 cache streamed from disk (+ streamed
+//   MLP). Fast, needs the cache file, an M5-class GPU (tensor ops gate the
+//   int8 path, h3_gpu.m) and supports LoRA.
+// - ssdStreaming: the original BF16 checkpoint, two blocks resident at a
+//   time. No cache or quantization needed and far less memory, but slower,
+//   and the engine has no LoRA path for it (h3_dit.c only fuses LoRA when
+//   loading resident/cache blocks).
+enum ComputeMode: String, CaseIterable, Identifiable, Codable {
+    case attentionCache, ssdStreaming
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .attentionCache: return "高速（int8キャッシュ）"
+        case .ssdStreaming: return "省メモリ（SSDストリーミング）"
+        }
+    }
+
+    var summaryLabel: String {
+        switch self {
+        case .attentionCache: return "int8キャッシュ"
+        case .ssdStreaming: return "SSDストリーミング"
+        }
+    }
+}
+
 // Immutable snapshot of exactly what a completed generation used - kept
 // separate from the live, still-editable draft in GenerationViewModel so
 // showing "設定を見る" or reusing it never depends on (and is never
@@ -115,6 +143,7 @@ struct ResolvedResult {
     var actualDurationSeconds: Double?
     let steps: Int
     let denoiseReuse: Int
+    let computeMode: ComputeMode
     let seed: UInt64
     let seedWasRandom: Bool
     let loraPath: String?
@@ -132,6 +161,7 @@ struct ResolvedResult {
             "長さ: 指定\(requestedSeconds)秒 / 実測\(actualDurationSeconds.map { String(format: "%.1f秒", $0) } ?? "不明")",
             "生成ステップ数: \(steps)",
             "ノイズ除去の再利用（reuse）: \(denoiseReuse)",
+            "計算方式: \(computeMode.label)",
             "シード: \(seedDecimalString)" + (seedWasRandom ? "（毎回変える設定で決定）" : "（固定）"),
         ]
         if let loraPath {
