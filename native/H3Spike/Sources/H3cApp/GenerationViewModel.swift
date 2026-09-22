@@ -23,12 +23,21 @@ extension Comparable {
     }
 }
 
-// Mirrors DEFAULT_ATTENTION_CACHE / REF2VA_ATTENTION_CACHE in gui/server.py.
-// Dev-time absolute paths, same caveat as the rest of this spike: these
-// 19GB caches can't be bundled into a distributable .app.
-private let repoRoot = "/Users/kamahara/Documents/work/h3c-app"
-private let defaultAttentionCache = repoRoot + "/dit_int8_v2.cache"
-private let ref2vaAttentionCache = repoRoot + "/dit_int8_v2_ref2va.cache"
+// Mirrors DEFAULT_ATTENTION_CACHE / REF2VA_ATTENTION_CACHE in gui/server.py,
+// but under this user's Application Support instead of a dev checkout path -
+// these 19GB caches can't be bundled into a distributable .app, and a path
+// under a specific developer's home directory would never resolve on any
+// other machine. Not yet created automatically (there's no in-app cache
+// builder): validationMessage below just reports it missing until one is
+// built with build_attention_cache, or dropped in by hand.
+private let h3AppSupportDirectory: String = {
+    let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?.path
+        ?? (NSHomeDirectory() + "/Library/Application Support")
+    return base + "/h3c-app"
+}()
+private let attentionCacheDirectory = h3AppSupportDirectory + "/cache"
+private let defaultAttentionCache = attentionCacheDirectory + "/dit_int8_v2.cache"
+private let ref2vaAttentionCache = attentionCacheDirectory + "/dit_int8_v2_ref2va.cache"
 
 enum EngineState: Equatable {
     case loading
@@ -126,6 +135,10 @@ final class GenerationViewModel: ObservableObject {
     private var generationTask: Task<Void, Never>?
 
     init() {
+        // Ensure the cache directory exists ahead of a future in-app cache
+        // builder - harmless if it's already there or never gets used.
+        try? FileManager.default.createDirectory(
+            atPath: attentionCacheDirectory, withIntermediateDirectories: true)
         // Sweep anything a previous run left behind (crash, force quit) -
         // generated previews are meant to be throwaway unless the user
         // explicitly exports, which copies them out.
