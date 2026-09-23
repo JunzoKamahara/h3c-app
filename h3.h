@@ -188,6 +188,27 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
                        const h3_params *params);
 void h3_result_free(h3_result *result);
 
+/* Builds a pre-quantized int8 attention cache for one DiT transformer
+ * directory (a path ending in "FL2VA/transformer" or "Ref2VA/transformer"),
+ * the same cache format h3_generate reads via the H3_ATTENTION_CACHE
+ * environment variable. Not tied to an h3_ctx - it opens its own GPU
+ * device and weight store - so it can run before or independently of
+ * h3_load_dir. Needs a GPU with the int8 tensor-op path
+ * (h3_device(ctx)->apple_gpu_family >= 10, i.e. M5 or newer); fails with a
+ * descriptive error otherwise rather than crashing.
+ *
+ * on_progress (optional) is called after each DiT block with phase
+ * "attention cache", completed/total = blocks done/50 (mirrors h3_params'
+ * on_progress convention: return non-zero to cancel, which deletes the
+ * partial output file and fails the call). Takes roughly a minute on an
+ * M5. */
+int h3_build_attention_cache(const char *transformer_dir,
+                             const char *output_path,
+                             const char *shader_source_path,
+                             h3_progress_callback on_progress,
+                             void *callback_opaque,
+                             char *error, size_t error_size);
+
 #ifdef __cplusplus
 }
 #endif
