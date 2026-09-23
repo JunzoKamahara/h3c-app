@@ -43,8 +43,37 @@ void h3_latent_canvas(int width, int height, int *latent_w, int *latent_h) {
     if (latent_h) *latent_h = height / H3_VAE_SPATIAL_RATIO;
 }
 
-int h3_adapt_canvas(int width, int height, int *adapted_w, int *adapted_h) {
-    if (width <= 0 || height <= 0 || !adapted_w || !adapted_h) return 0;
+int h3_reference_max_pixels(uint64_t physical_memory_bytes) {
+    /* Reference conditioning tokens are attended to by every DiT layer on
+     * every evaluated denoise step (h3_dit.c's joint h3_gpu_sdpa_bf16 call),
+     * not just encoded once - so a bigger reference canvas multiplies the
+     * cost of the *entire* generation, and attention scales at least
+     * quadratically with token count. H3_MAX_PIXELS was sized for the
+     * largest *output* canvas, which turned out far too generous to also
+     * apply to reference conditioning: measured on a 24 GB M5, a reference
+     * video sized up to H3_MAX_PIXELS turned an otherwise few-minute
+     * generation into ~4 hours, while a 256x256 reference on the same
+     * machine stayed fast. Scaling the cap by physical memory - rather
+     * than one fixed constant - lets machines with more headroom (and
+     * typically more GPU compute) use a larger reference canvas while
+     * modest machines stay conservative by default. The two anchor points
+     * below are deliberately round numbers bracketing the only two data
+     * points actually measured (256x256 good, H3_MAX_PIXELS bad, both at
+     * 24 GB) rather than a precisely fitted curve - expect to retune once
+     * more machines/sizes have been tried. */
+    const double floor_gb = 8.0, floor_pixels = 256.0 * 256.0;
+    const double ceiling_gb = 32.0, ceiling_pixels = (double)H3_MAX_PIXELS;
+    double gb = (double)physical_memory_bytes / (1024.0 * 1024.0 * 1024.0);
+    double fraction = (gb - floor_gb) / (ceiling_gb - floor_gb);
+    if (fraction < 0.0) fraction = 0.0;
+    if (fraction > 1.0) fraction = 1.0;
+    return (int)(floor_pixels + fraction * (ceiling_pixels - floor_pixels));
+}
+
+int h3_adapt_canvas(int width, int height, int max_pixels,
+                    int *adapted_w, int *adapted_h) {
+    if (width <= 0 || height <= 0 || max_pixels <= 0 || !adapted_w ||
+        !adapted_h) return 0;
     double ratio = (double)width / (double)height;
     double nominal_w;
     double nominal_h;
@@ -56,8 +85,8 @@ int h3_adapt_canvas(int width, int height, int *adapted_w, int *adapted_h) {
         nominal_h = 768.0 / ratio;
     }
     double pixels = nominal_w * nominal_h;
-    if (pixels > H3_MAX_PIXELS) {
-        double scale = sqrt((double)H3_MAX_PIXELS / pixels);
+    if (pixels > max_pixels) {
+        double scale = sqrt((double)max_pixels / pixels);
         nominal_w *= scale;
         nominal_h *= scale;
     }
@@ -97,10 +126,10 @@ int h3_reference_image_canvas(int width, int height,
     return 1;
 }
 
-int h3_reference_video_canvas(int width, int height,
+int h3_reference_video_canvas(int width, int height, int max_pixels,
                               int *adapted_w, int *adapted_h) {
     if (width < 1 || height < 1 || !adapted_w || !adapted_h ||
-        !h3_adapt_canvas(width, height, adapted_w, adapted_h)) return 0;
+        !h3_adapt_canvas(width, height, max_pixels, adapted_w, adapted_h)) return 0;
     double source_area = (double)width * (double)height;
     double target_area = (double)*adapted_w * (double)*adapted_h;
     if (source_area < target_area) {

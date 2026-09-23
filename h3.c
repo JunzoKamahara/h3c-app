@@ -1150,6 +1150,7 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
             } else {
                 if (!h3_reference_video_canvas(
                         source_width, source_height,
+                        h3_reference_max_pixels(h3_device(ctx)->physical_memory),
                         &media_width, &media_height)) {
                     h3_set_error(ctx,
                         "cannot resolve reference video %zu canvas", index + 1);

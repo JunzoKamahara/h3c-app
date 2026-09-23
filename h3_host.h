@@ -97,7 +97,12 @@ int h3_video_latent_t(int frame_count);
 int h3_video_encoder_latent_t(int frame_count);
 h3_temporal_shape h3_temporal(int requested_frames);
 void h3_latent_canvas(int width, int height, int *latent_w, int *latent_h);
-int h3_adapt_canvas(int width, int height, int *adapted_w, int *adapted_h);
+/* A memory-scaled pixel budget for h3_adapt_canvas/h3_reference_video_canvas
+ * - see h3_reference_max_pixels()'s own comment for why reference
+ * conditioning needs a tighter, machine-aware cap instead of H3_MAX_PIXELS. */
+int h3_reference_max_pixels(uint64_t physical_memory_bytes);
+int h3_adapt_canvas(int width, int height, int max_pixels,
+                    int *adapted_w, int *adapted_h);
 /* Ref2VA image sizing is down-only and aspect preserving. max_short_edge=0
  * matches the output pixel area; a positive value selects a short-edge cap. */
 int h3_reference_image_canvas(int width, int height,
@@ -105,8 +110,9 @@ int h3_reference_image_canvas(int width, int height,
                               int max_short_edge,
                               int *adapted_w, int *adapted_h);
 /* Ref2VA video references use the normal target-style canvas, except that a
- * smaller source is never enlarged. */
-int h3_reference_video_canvas(int width, int height,
+ * smaller source is never enlarged. max_pixels should come from
+ * h3_reference_max_pixels(), not H3_MAX_PIXELS directly. */
+int h3_reference_video_canvas(int width, int height, int max_pixels,
                               int *adapted_w, int *adapted_h);
 
 double h3_time_shift_sigma(double sigma, double from_shift, double to_shift);
