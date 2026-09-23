@@ -4354,8 +4354,45 @@ int h3_gpu_gqa_causal_bf16(h3_gpu *opaque, h3_gpu_tensor *output,
     if (!pipeline) return 0;
     if (score_bytes + pipeline.staticThreadgroupMemoryLength >
         gpu.device.maxThreadgroupMemoryLength) {
-        h3_gpu_set_error(gpu, @"causal attention sequence exceeds threadgroup memory");
-        return 0;
+        /* The custom kernel keeps one score row per threadgroup in a fixed
+         * allocation sized off the device's maxThreadgroupMemoryLength, so
+         * it can't handle an arbitrarily long causal sequence - and
+         * reference videos (unlike the short prompts and single reference
+         * images this kernel was originally written against) can easily
+         * produce enough vision tokens to exceed it. MPSGraph's
+         * scaledDotProductAttention manages its own memory instead of a
+         * fixed threadgroup buffer, so it has no such ceiling on its own -
+         * but h3_gpu_gqa_graph() builds an explicit O(sequence^2) causal
+         * mask and caches it (keyed by sequence) for the GPU's whole
+         * lifetime, so an unbounded sequence here means an unbounded mask,
+         * and every distinct sequence length seen stays resident.
+         *
+         * That's exactly what crashed this machine: a large reference
+         * video pushed Qwen's causal sequence far beyond the custom
+         * kernel's threadgroup ceiling, the fallback below built a series
+         * of huge masks for it, and the process's resident memory hit
+         * ~63 GiB (this Mac has 24 GiB) - severe enough thrashing that the
+         * kernel's watchdog force-panicked the whole machine (confirmed
+         * from the panic log's "LOW swap space" and the process snapshot's
+         * residentMemoryBytes). Refuse cleanly past a size where the mask
+         * itself is already unreasonable, instead of trading that hard
+         * failure for a system crash. 16384 tokens = a 512 MiB mask; real
+         * prompts/reference conditioning haven't been seen anywhere near
+         * that once the fast kernel's own ~8000-token ceiling is
+         * accounted for, so this only ever bites the pathological case. */
+        size_t mask_bytes = (size_t)sequence * (size_t)sequence * sizeof(uint16_t);
+        size_t max_fallback_mask_bytes = (size_t)512 * 1024 * 1024;
+        if (mask_bytes > max_fallback_mask_bytes) {
+            h3_gpu_set_error(gpu,
+                @"reference conditioning needs a %u-token causal sequence - "
+                @"too long even for the MPSGraph fallback (would need a "
+                @"%.1f GiB attention mask). Try a shorter or lower-"
+                @"resolution reference video or image.",
+                sequence, (double)mask_bytes / (1024.0 * 1024.0 * 1024.0));
+            return 0;
+        }
+        return h3_gpu_gqa_mps(gpu, output, query, key, value, sequence,
+                              query_heads, kv_heads, head_dim, scale);
     }
     NSUInteger maximum_threads = MIN((NSUInteger)128,
                                      pipeline.maxTotalThreadsPerThreadgroup);
