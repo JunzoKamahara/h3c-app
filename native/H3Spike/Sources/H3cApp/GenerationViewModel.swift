@@ -103,9 +103,78 @@ final class GenerationViewModel: ObservableObject {
         return usesReferences ? ref2vaAttentionCache : defaultAttentionCache
     }
 
+    /// The transformer directory currentAttentionCachePath would be built
+    /// from - same reference-mode check, matching build_attention_cache's
+    /// own FL2VA/Ref2VA convention (h3_dit.c's detect_model_kind()).
+    var currentTransformerDirectory: String {
+        let usesReferences = creationMethod == .image && imageInputMode == .referenceImage
+        return modelDirectory + (usesReferences ? "/Ref2VA/transformer" : "/FL2VA/transformer")
+    }
+
+    var attentionCacheMissing: Bool {
+        !FileManager.default.fileExists(atPath: currentAttentionCachePath)
+    }
+
     var hasAdvancedChanges: Bool {
         sizeProfile != defaultSizeProfile || steps != defaultSteps || denoiseReuse != defaultReuse
             || computeMode != defaultComputeMode || !seedText.isEmpty || effectiveLoraPath != nil
+    }
+
+    /// Max-resolution + long duration + SSD streaming measured as
+    /// impractically slow on a 24GB M5 Mac: the run pushed past physical
+    /// memory into swap (SSD streaming's own disk reads then compete with
+    /// OS paging on the same disk), and a single denoise step never
+    /// finished in over two and a half hours at 1344x768/15s. Smaller
+    /// canvases (e.g. 512x512-class) complete in the expected few minutes
+    /// with no swapping, so this only warns at the largest profiles with a
+    /// double-digit duration - not a precise model, just a conservative
+    /// flag for the one combination actually observed to be this bad.
+    var isHeavySsdStreamingConfig: Bool {
+        guard computeMode == .ssdStreaming else { return false }
+        let isMaxResolution = sizeProfile == .landscapeUpscaled || sizeProfile == .portraitUpscaled
+        return isMaxResolution && seconds >= 10
+    }
+
+    // MARK: Attention cache build - separate from generation job state,
+    // same invariant as engine/job/result: none of these overwrite each
+    // other. Triggered from the "int8キャッシュが見つかりません" message
+    // above instead of just telling the user to go run a CLI tool.
+    @Published private(set) var isBuildingCache = false
+    @Published private(set) var cacheBuildProgress: Double?
+    @Published var cacheBuildError: String?
+    private var cacheBuildTask: Task<Void, Never>?
+
+    func buildMissingAttentionCache() {
+        guard let engine, !isBuildingCache else { return }
+        isBuildingCache = true
+        cacheBuildProgress = nil
+        cacheBuildError = nil
+        let transformerDirectory = currentTransformerDirectory
+        let outputPath = currentAttentionCachePath
+        cacheBuildTask = Task {
+            do {
+                for try await progress in engine.buildAttentionCache(
+                    transformerDirectory: transformerDirectory, outputPath: outputPath) {
+                    self.cacheBuildProgress = Double(progress.completedBlocks) /
+                        Double(max(progress.totalBlocks, 1))
+                }
+            } catch is CancellationError {
+                // user-initiated - no error text needed
+            } catch {
+                if case H3EngineError.cancelled = error {
+                    // user-initiated - no error text needed
+                } else {
+                    self.cacheBuildError = "キャッシュの作成に失敗しました。（詳細: \(error.localizedDescription)）"
+                }
+            }
+            self.isBuildingCache = false
+            self.cacheBuildProgress = nil
+        }
+    }
+
+    func cancelCacheBuild() {
+        engine?.cancelCurrentCacheBuild()
+        cacheBuildTask?.cancel()
     }
 
     // MARK: Job state
@@ -201,8 +270,8 @@ final class GenerationViewModel: ObservableObject {
     }
 
     func addReferenceImages() {
-        for path in chooseFiles(allowedContentTypes: imageTypes) {
-            referenceImages.append(H3ReferenceInput(kind: .image, path: path))
+        for path in chooseFiles(allowedContentTypes: referenceMediaTypes) {
+            referenceImages.append(H3ReferenceInput(kind: isVideoFile(path: path) ? .video : .image, path: path))
         }
     }
 
@@ -237,22 +306,22 @@ final class GenerationViewModel: ObservableObject {
             case .firstLastFrame:
                 if firstFramePath == nil { return "最初の画像を選んでください" }
             case .referenceImage:
-                if referenceImages.isEmpty { return "参照画像を選んでください" }
+                if referenceImages.isEmpty { return "参照画像・動画を選んでください" }
             }
         }
         if computeMode == .attentionCache {
             if !supportsInt8Cache {
                 return "このGPUではint8キャッシュを使えません。詳細設定の「計算方式」でSSDストリーミングを選んでください"
             }
-            if !FileManager.default.fileExists(atPath: currentAttentionCachePath) {
-                return "int8キャッシュが見つかりません。詳細設定の「計算方式」でSSDストリーミングに切り替えるか、キャッシュを作成してください"
+            if attentionCacheMissing {
+                return "int8キャッシュが見つかりません。詳細設定の「計算方式」から作成するか、SSDストリーミングに切り替えてください"
             }
         }
         return nil
     }
 
     var canGenerate: Bool {
-        engineState == .ready && !isGenerating && validationMessage == nil
+        engineState == .ready && !isGenerating && !isBuildingCache && validationMessage == nil
     }
 
     // MARK: Summary text shown above the primary button, and in "設定を見る"

@@ -18,6 +18,8 @@ let h3LinkerSettings: [LinkerSetting] = [
     .linkedFramework("CoreMedia"),
     .linkedFramework("CoreVideo"),
     .linkedFramework("CoreAudio"),
+    .linkedFramework("CoreGraphics"),
+    .linkedFramework("ImageIO"),
 ]
 
 let package = Package(

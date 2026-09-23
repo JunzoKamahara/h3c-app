@@ -12,6 +12,11 @@ public enum H3GenerationEvent: Sendable {
     case finished(H3GenerationResult)
 }
 
+public struct H3AttentionCacheProgress: Sendable {
+    public let completedBlocks: Int
+    public let totalBlocks: Int
+}
+
 public struct H3DeviceInfo: Sendable {
     public let name: String
     public let architecture: String
@@ -37,7 +42,7 @@ public struct H3GenerationResult: Sendable {
     public let outputPath: String
 }
 
-public enum H3ReferenceKind: Sendable {
+public enum H3ReferenceKind: Sendable, Equatable {
     case image, video, audio, videoAudio
 
     var cValue: h3_reference_kind {
@@ -151,13 +156,15 @@ private func withReferenceArray<R>(_ references: [H3ReferenceInput], built: [h3_
 public enum H3EngineError: Error, LocalizedError {
     case loadFailed(String)
     case generationFailed(String)
+    case cacheBuildFailed(String)
     case cancelled
 
     public var errorDescription: String? {
         switch self {
         case .loadFailed(let message): return "Failed to load model: \(message)"
         case .generationFailed(let message): return "Generation failed: \(message)"
-        case .cancelled: return "Generation cancelled"
+        case .cacheBuildFailed(let message): return "Attention cache build failed: \(message)"
+        case .cancelled: return "Cancelled"
         }
     }
 }
@@ -203,6 +210,24 @@ private let h3ProgressTrampoline: h3_progress_callback = { phase, completed, tot
     return bridge.cancelFlag.isCancelled ? 1 : 0
 }
 
+/* Same bridging idea as GenerationBridge, for h3_build_attention_cache's
+ * single progress callback (no frame callback, no generation result). */
+private final class AttentionCacheBridge: @unchecked Sendable {
+    let continuation: AsyncThrowingStream<H3AttentionCacheProgress, Error>.Continuation
+    let cancelFlag: CancelFlag
+    init(continuation: AsyncThrowingStream<H3AttentionCacheProgress, Error>.Continuation, cancelFlag: CancelFlag) {
+        self.continuation = continuation
+        self.cancelFlag = cancelFlag
+    }
+}
+
+private let h3AttentionCacheProgressTrampoline: h3_progress_callback = { _, completed, total, opaque in
+    guard let opaque else { return 0 }
+    let bridge = Unmanaged<AttentionCacheBridge>.fromOpaque(opaque).takeUnretainedValue()
+    bridge.continuation.yield(H3AttentionCacheProgress(completedBlocks: Int(completed), totalBlocks: Int(total)))
+    return bridge.cancelFlag.isCancelled ? 1 : 0
+}
+
 private let h3FrameTrampoline: h3_frame_callback = { framePtr, opaque in
     guard let framePtr, let opaque else { return 0 }
     let bridge = Unmanaged<GenerationBridge>.fromOpaque(opaque).takeUnretainedValue()
@@ -219,6 +244,7 @@ private let h3FrameTrampoline: h3_frame_callback = { framePtr, opaque in
 public final class H3Engine: @unchecked Sendable {
     private let ctx: OpaquePointer
     private var currentCancelFlag: CancelFlag?
+    private var currentCacheBuildCancelFlag: CancelFlag?
 
     public init(modelDirectory: String) throws {
         guard let ctx = h3_load_dir(modelDirectory) else {
@@ -353,6 +379,57 @@ public final class H3Engine: @unchecked Sendable {
                     let message = h3_last_error(ctx).map { String(cString: $0) } ?? "unknown error"
                     continuation.finish(throwing: cancelFlag.isCancelled
                         ? H3EngineError.cancelled : H3EngineError.generationFailed(message))
+                }
+            }
+        }
+    }
+
+    public func cancelCurrentCacheBuild() {
+        currentCacheBuildCancelFlag?.cancel()
+    }
+
+    /// Builds the int8 attention cache the app is missing (see
+    /// GenerationViewModel.validationMessage) directly, in-process - no
+    /// separate build_attention_cache subprocess. Not tied to this
+    /// engine's own ctx (h3_build_attention_cache opens its own GPU
+    /// device), but lives here since the app always has an H3Engine
+    /// instance already by the time it would offer this.
+    public func buildAttentionCache(transformerDirectory: String,
+                                    outputPath: String) -> AsyncThrowingStream<H3AttentionCacheProgress, Error> {
+        return AsyncThrowingStream { continuation in
+            let cancelFlag = CancelFlag()
+            self.currentCacheBuildCancelFlag = cancelFlag
+            let bridge = AttentionCacheBridge(continuation: continuation, cancelFlag: cancelFlag)
+            let bridgeHandle = Unmanaged.passRetained(bridge)
+
+            DispatchQueue.global(qos: .userInitiated).async {
+                defer { bridgeHandle.release() }
+                let activity = ProcessInfo.processInfo.beginActivity(
+                    options: [.userInitiated, .idleSystemSleepDisabled],
+                    reason: "Building attention cache")
+                defer { ProcessInfo.processInfo.endActivity(activity) }
+
+                var errorBuffer = [CChar](repeating: 0, count: 512)
+                let ok = transformerDirectory.withCString { transformerDirC in
+                    outputPath.withCString { outputPathC in
+                        "h3_shaders.metal".withCString { shaderPathC in
+                            errorBuffer.withUnsafeMutableBufferPointer { errorBuf in
+                                h3_build_attention_cache(
+                                    transformerDirC, outputPathC, shaderPathC,
+                                    h3AttentionCacheProgressTrampoline,
+                                    bridgeHandle.toOpaque(),
+                                    errorBuf.baseAddress, errorBuf.count)
+                            }
+                        }
+                    }
+                }
+
+                if ok != 0 {
+                    continuation.finish()
+                } else {
+                    let message = String(cString: errorBuffer)
+                    continuation.finish(throwing: cancelFlag.isCancelled
+                        ? H3EngineError.cancelled : H3EngineError.cacheBuildFailed(message))
                 }
             }
         }

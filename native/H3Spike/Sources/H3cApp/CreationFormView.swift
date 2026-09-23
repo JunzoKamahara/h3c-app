@@ -81,18 +81,20 @@ struct CreationFormView: View {
                 }
 
             case .referenceImage:
-                Text("画像の特徴を参考にして動画をつくります。最初のフレームが同じになるとは限りません。")
+                Text("画像・動画の特徴を参考にして動画をつくります。最初のフレームが同じになるとは限りません。")
                     .font(.caption)
                     .foregroundStyle(palette.textSecondary)
                 HStack {
-                    Text("参照画像").font(.caption).foregroundStyle(palette.textSecondary)
+                    Text("参照画像・動画").font(.caption).foregroundStyle(palette.textSecondary)
                     Spacer()
-                    Button("画像を選ぶ…") { viewModel.addReferenceImages() }
+                    Button("ファイルを選ぶ…") { viewModel.addReferenceImages() }
                 }
                 if !viewModel.referenceImages.isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
                         ForEach(Array(viewModel.referenceImages.enumerated()), id: \.element.id) { index, reference in
                             HStack {
+                                Image(systemName: reference.kind == .video ? "video" : "photo")
+                                    .foregroundStyle(palette.textSecondary)
                                 Text("\(index + 1). \(URL(fileURLWithPath: reference.path).lastPathComponent)")
                                     .font(.caption)
                                     .lineLimit(1)
@@ -300,6 +302,50 @@ struct CreationFormView: View {
                 Text("このGPUにはTensor演算ユニットがないため、int8キャッシュ方式は使えません。")
                     .font(.caption)
                     .foregroundStyle(palette.errorColor)
+            } else if viewModel.computeMode == .attentionCache {
+                attentionCacheBuildSection
+            }
+            if viewModel.isHeavySsdStreamingConfig {
+                Text("最大解像度・長い秒数・SSDストリーミングの組み合わせは、メモリ不足でスワップが発生し非常に遅くなることがあります（数時間かかる場合も）。解像度か秒数を下げることをおすすめします。")
+                    .font(.caption)
+                    .foregroundStyle(palette.errorColor)
+            }
+        }
+    }
+
+    /// Shown under the compute-mode picker when the current mode/reference
+    /// selection needs a cache that doesn't exist yet on disk - lets the
+    /// user build it in-app instead of just being told it's missing.
+    private var attentionCacheBuildSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if viewModel.isBuildingCache {
+                HStack {
+                    ProgressView(value: viewModel.cacheBuildProgress)
+                        .frame(maxWidth: 200)
+                    Text(viewModel.cacheBuildProgress.map { "\(Int($0 * 50))/50 ブロック" } ?? "準備中…")
+                        .font(.caption)
+                        .foregroundStyle(palette.textSecondary)
+                    Spacer()
+                    Button("中止") { viewModel.cancelCacheBuild() }
+                        .font(.caption)
+                }
+                Text("キャッシュを作成しています。モデルの重みを読み込んで量子化するため、数十秒〜1分程度かかります。")
+                    .font(.caption)
+                    .foregroundStyle(palette.textSecondary)
+            } else if viewModel.attentionCacheMissing {
+                HStack {
+                    Text("int8キャッシュがまだありません。")
+                        .font(.caption)
+                        .foregroundStyle(palette.errorColor)
+                    Spacer()
+                    Button("キャッシュを作成…") { viewModel.buildMissingAttentionCache() }
+                        .font(.caption)
+                }
+            }
+            if let cacheBuildError = viewModel.cacheBuildError {
+                Text(cacheBuildError)
+                    .font(.caption)
+                    .foregroundStyle(palette.errorColor)
             }
         }
     }
@@ -387,7 +433,7 @@ struct CreationFormView: View {
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 80)
                 }
-                Text("読み込むモデル（最初/最後の画像・参照画像）に対応したファイルか、事前に確認できません。")
+                Text("読み込むモデル（最初/最後の画像・参照画像・動画）に対応したファイルか、事前に確認できません。")
                     .font(.caption)
                     .foregroundStyle(palette.textSecondary)
             }

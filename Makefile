@@ -6,15 +6,16 @@ OBJCFLAGS := $(CFLAGS) -fobjc-arc
 FRAMEWORKS := -framework Foundation -framework Metal \
 	-framework MetalPerformanceShaders -framework MetalPerformanceShadersGraph \
 	-framework Accelerate -framework AVFoundation -framework CoreMedia \
-	-framework CoreVideo -framework CoreAudio
+	-framework CoreVideo -framework CoreAudio -framework CoreGraphics \
+	-framework ImageIO
 LDLIBS := $(FRAMEWORKS) -licucore -lm
 
 LIB_C := h3.c h3_host.c h3_safetensors.c h3_weights.c h3_text_encoder.c \
 	h3_dit_schedule.c h3_dit.c h3_lora.c
 
-LIB_C += h3_video_vae.c h3_video_encoder.c h3_audio_vae.c h3_ffmpeg.c \
-	h3_terminal.c h3_vision_encoder.c h3_multimodal.c
-LIB_M := h3_metal.m h3_gpu.m h3_tokenizer.m h3_av_writer.m
+LIB_C += h3_video_vae.c h3_video_encoder.c h3_audio_vae.c \
+	h3_terminal.c h3_vision_encoder.c h3_multimodal.c h3_attention_cache.c
+LIB_M := h3_metal.m h3_gpu.m h3_tokenizer.m h3_av_writer.m h3_av_reader.m
 LIB_OBJ := $(LIB_C:.c=.o) $(LIB_M:.m=.o)
 CLI_OBJ := main.o h3_cli.o linenoise.o
 
