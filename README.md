@@ -6,8 +6,8 @@ A native macOS app that runs
 [MiniMax-H3](https://huggingface.co/lightx2v/Minimax-h3-Turbo) — a
 text/image/video-to-video-with-audio diffusion transformer — entirely on
 Apple Silicon. Everything runs in-process against Metal/MPSGraph: no
-Python, no PyTorch, no cloud calls, and no FFmpeg dependency at runtime —
-media in and out goes through native AVFoundation/ImageIO. The underlying
+Python, no PyTorch, no cloud calls — media in and out goes through native
+AVFoundation/ImageIO. The underlying
 C/Objective-C inference engine (`libh3.a`) is a fork of Salvatore
 Sanfilippo's (antirez) [h3.c](https://github.com/antirez/h3.c); full
 attribution is in [License](#license).
@@ -28,8 +28,7 @@ so it can be driven from a script as well as from its own window — see
   text encoder and video/audio VAEs); adding `Ref2VA/` for reference-
   conditioned generation brings it to ~268 GiB combined. The app's model
   manager can download either or both directly.
-- Nothing else at runtime. FFmpeg/FFprobe are **not** required — they're only
-  used by one optional cross-check test (see [Testing](#testing)).
+- Nothing else at runtime.
 
 ## Quick start
 
@@ -254,10 +253,6 @@ MLX fixtures are installed under `misc/fixtures/`, also compiles the Metal
 source at runtime and checks a toy H3 block against named MLX outputs —
 intentionally at runtime, matching Iris, so it needs no Xcode offline Metal
 toolchain. `make parity` runs just those Metal/MLX checks.
-
-One test, `h3_av_mux_test`, cross-checks the native AVFoundation muxer
-against real FFmpeg output and is skipped automatically if `ffmpeg` isn't on
-`PATH` — this is the only place FFmpeg is used anywhere in this project.
 
 ## API
 

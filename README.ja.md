@@ -5,9 +5,9 @@
 [MiniMax-H3](https://huggingface.co/lightx2v/Minimax-h3-Turbo)
 （テキスト／画像／動画から、音声付き動画を生成する拡散トランスフォーマー）を
 Apple Siliconだけで動かすネイティブmacOSアプリです。すべてMetal/MPSGraph上で
-プロセス内実行され、Python・PyTorch・クラウド通信は一切不要、実行時の
-FFmpeg依存もありません — メディアの入出力はネイティブのAVFoundation/ImageIO
-経由です。基盤となるC/Objective-Cの推論エンジン（`libh3.a`）はSalvatore
+プロセス内実行され、Python・PyTorch・クラウド通信は一切不要です — メディアの
+入出力はネイティブのAVFoundation/ImageIO経由です。基盤となるC/Objective-Cの
+推論エンジン（`libh3.a`）はSalvatore
 Sanfilippo氏（antirez）の[h3.c](https://github.com/antirez/h3.c)を
 ベースにしています。詳しいライセンス表記は[ライセンス](#ライセンス)を
 参照してください。
@@ -28,8 +28,7 @@ Sanfilippo氏（antirez）の[h3.c](https://github.com/antirez/h3.c)を
   本体に加え、Qwen3-VLテキストエンコーダーと動画/音声VAEを含む）。参照
   条件付き生成用の`Ref2VA/`も加えると合計で約268GiBになります。アプリの
   モデルマネージャーから、どちらも直接ダウンロードできます。
-- 実行時に他の依存は不要。FFmpeg/FFprobeは**不要**です — 使われるのは
-  オプションのクロスチェック用テスト1つだけです（[テスト](#テスト)を参照）。
+- 実行時に他の依存は不要。
 
 ## クイックスタート
 
@@ -262,11 +261,6 @@ MLXフィクスチャが`misc/fixtures/`に配置されていれば、Metalソ�
 します — Irisにならい意図的に実行時コンパイルとしており、Xcodeの
 オプションであるオフラインMetalツールチェーンを必要としません。
 `make parity`はそのMetal/MLXチェックのみを実行します。
-
-`h3_av_mux_test`というテストは、ネイティブAVFoundationのmuxerを実際の
-FFmpeg出力と突き合わせて検証するもので、`ffmpeg`が`PATH`上になければ
-自動的にスキップされます — このプロジェクトでFFmpegが使われているのは
-ここだけです。
 
 ## API
 

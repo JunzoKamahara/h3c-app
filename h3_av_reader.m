@@ -1,11 +1,8 @@
-/* Native macOS replacement for the read-side of the old h3_ffmpeg.c: decodes
- * user-supplied reference images/video/audio through ImageIO/AVFoundation
- * instead of shelling out to `ffmpeg`/`ffprobe`. Combined with h3_av_writer.m
- * (the write side), this removes h3c's last dependency on an external
- * FFmpeg binary entirely.
+/* Decodes user-supplied reference images/video/audio through
+ * ImageIO/AVFoundation.
  *
- * By the time width/height reach h3_ffmpeg_read_image_f32 (H3_IMAGE_FIT_STRETCH)
- * or h3_ffmpeg_read_video_f32, h3_reference_image_canvas/h3_reference_video_canvas
+ * By the time width/height reach h3_av_read_image_f32 (H3_IMAGE_FIT_STRETCH)
+ * or h3_av_read_video_f32, h3_reference_image_canvas/h3_reference_video_canvas
  * (h3_host.c) have already picked a target canvas that preserves the source's
  * aspect ratio - so a plain non-uniform stretch to exactly (width, height) is
  * correct there and needs no separate aspect-fit crop. H3_IMAGE_FIT_COVER
@@ -19,7 +16,7 @@
 #import <Foundation/Foundation.h>
 #import <ImageIO/ImageIO.h>
 
-#include "h3_ffmpeg.h"
+#include "h3_av_reader.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -126,8 +123,8 @@ static int h3_probe_video_size(const char *path, int *width, int *height) {
     }
 }
 
-int h3_ffprobe_visual_size(const char *path, int *width, int *height,
-                           char *error, size_t error_size) {
+int h3_av_visual_size(const char *path, int *width, int *height,
+                      char *error, size_t error_size) {
     if (error && error_size) error[0] = '\0';
     if (width) *width = 0;
     if (height) *height = 0;
@@ -146,9 +143,9 @@ int h3_ffprobe_visual_size(const char *path, int *width, int *height,
 
 /* ---- image decode ------------------------------------------------------ */
 
-int h3_ffmpeg_read_image_f32(const char *path, int width, int height,
-                             h3_image_fit fit, float **pixels,
-                             char *error, size_t error_size) {
+int h3_av_read_image_f32(const char *path, int width, int height,
+                         h3_image_fit fit, float **pixels,
+                         char *error, size_t error_size) {
     if (error && error_size) error[0] = '\0';
     if (pixels) *pixels = NULL;
     if (!path || !*path || !pixels || width < 1 || height < 1 ||
@@ -284,9 +281,9 @@ static CGAffineTransform h3_video_render_transform(AVAssetTrack *track,
     return CGAffineTransformConcat(rotate, scale);
 }
 
-int h3_ffmpeg_read_video_f32(const char *path, int width, int height,
-                             int max_frames, float **pixels, int *frames,
-                             char *error, size_t error_size) {
+int h3_av_read_video_f32(const char *path, int width, int height,
+                         int max_frames, float **pixels, int *frames,
+                         char *error, size_t error_size) {
     if (error && error_size) error[0] = '\0';
     if (pixels) *pixels = NULL;
     if (frames) *frames = 0;
@@ -437,13 +434,13 @@ int h3_ffmpeg_read_video_f32(const char *path, int width, int height,
  *
  * AVAssetReaderTrackOutput transcodes on the fly when outputSettings ask for
  * a format other than the source's - requesting 32 kHz stereo interleaved
- * float32 directly here does the equivalent of ffmpeg's own `-ar 32000 -ac 2`
- * resample/downmix, no separate AVAudioConverter step needed. */
+ * float32 directly here does the resample/downmix in one step, no separate
+ * AVAudioConverter needed. */
 
-int h3_ffmpeg_read_audio_f32(const char *path, int max_samples,
-                             int truncate_at_limit,
-                             float **pcm, int *samples,
-                             char *error, size_t error_size) {
+int h3_av_read_audio_f32(const char *path, int max_samples,
+                         int truncate_at_limit,
+                         float **pcm, int *samples,
+                         char *error, size_t error_size) {
     enum { AUDIO_RATE = 32000, AUDIO_CHANNELS = 2, MIN_SAMPLES = 64000 };
     if (error && error_size) error[0] = '\0';
     if (pcm) *pcm = NULL;

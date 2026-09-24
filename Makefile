@@ -14,7 +14,7 @@ LIB_C := h3.c h3_host.c h3_safetensors.c h3_weights.c h3_text_encoder.c \
 	h3_dit_schedule.c h3_dit.c h3_lora.c
 
 LIB_C += h3_video_vae.c h3_video_encoder.c h3_audio_vae.c \
-	h3_terminal.c h3_vision_encoder.c h3_multimodal.c h3_attention_cache.c
+	h3_vision_encoder.c h3_multimodal.c h3_attention_cache.c
 LIB_M := h3_metal.m h3_gpu.m h3_tokenizer.m h3_av_writer.m h3_av_reader.m
 LIB_OBJ := $(LIB_C:.c=.o) $(LIB_M:.m=.o)
 
@@ -59,9 +59,6 @@ h3_real_audio_vae_test: tests/test_real_audio_vae.o $(LIB_OBJ)
 	$(CC) -o $@ $^ $(LDLIBS)
 
 h3_real_audio_encoder_test: tests/test_real_audio_encoder.o $(LIB_OBJ)
-	$(CC) -o $@ $^ $(LDLIBS)
-
-h3_av_mux_test: tests/test_av_mux.o $(LIB_OBJ)
 	$(CC) -o $@ $^ $(LDLIBS)
 
 h3_real_video_encoder_test: tests/test_real_video_encoder.o $(LIB_OBJ)
@@ -109,7 +106,6 @@ h3_semantic_vae_test: tests/test_semantic_vae.o $(LIB_OBJ)
 
 test: h3_tests h3_metal_tests h3_bf16_tests h3_tokenizer_tests h3_text_tests \
 	h3_audio_gpu_tests h3_real_audio_vae_test h3_real_audio_encoder_test \
-	h3_av_mux_test \
 	h3_real_video_encoder_test h3_real_qwen_vision_test \
 	h3_real_multimodal_text_test h3_real_ref_video_text_test
 
@@ -143,11 +139,6 @@ test: h3_tests h3_metal_tests h3_bf16_tests h3_tokenizer_tests h3_text_tests \
 		./h3_real_audio_encoder_test; \
 	else \
 		echo "skip: released audio encoder weights/fixture are not installed"; \
-	fi
-	@if command -v ffmpeg >/dev/null 2>&1; then \
-		./h3_av_mux_test; \
-	else \
-		echo "skip: FFmpeg is not installed"; \
 	fi
 	@if test -f MiniMax-H3/FL2VA/video_vae/source/model.safetensors && \
 	         test -f misc/fixtures/h3_real_video_encoder_256.safetensors; then \
@@ -212,7 +203,6 @@ clean:
 	rm -f h3_tests h3_metal_tests h3_bf16_tests h3_tokenizer_tests \
 		h3_text_tests h3_real_prompt_test h3_real_dit_block_test \
 		h3_audio_gpu_tests h3_real_audio_vae_test h3_real_audio_encoder_test \
-		h3_av_mux_test \
 		h3_real_video_encoder_test h3_real_qwen_vision_test \
 		h3_real_multimodal_text_test h3_real_ref_video_text_test \
 		h3_real_dit_schedule_test h3_real_dit_test h3_semantic_dit_test \

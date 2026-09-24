@@ -1,8 +1,9 @@
 #include "h3_internal.h"
 #include "h3_audio_vae.h"
 #include "h3_host.h"
+#include "h3_av_reader.h"
+#include "h3_av_writer.h"
 #include "h3_dit.h"
-#include "h3_ffmpeg.h"
 #include "h3_metal.h"
 #include "h3_multimodal.h"
 #include "h3_safetensors.h"
@@ -860,10 +861,10 @@ static float *h3_extract_vision_pair(const float *pixels, int frames,
 /* h3_video_vae_decoder_decode_streamed callback: converts one temporal
  * chunk to u8, upscales it to the requested output size if needed,
  * delivers it through on_frame, and (if an output path was given) writes it
- * to the FFmpeg pipe - all before the next chunk is decoded, so only one
- * chunk's worth of RGB is ever resident instead of the whole video. */
+ * to the AVFoundation writer - all before the next chunk is decoded, so only
+ * one chunk's worth of RGB is ever resident instead of the whole video. */
 typedef struct {
-    h3_ffmpeg_writer *writer;
+    h3_av_writer *writer;
     h3_frame_callback on_frame;
     void *callback_opaque;
     h3_generation_progress *progress;
@@ -917,13 +918,13 @@ static int h3_stream_encode_chunk(void *opaque, const float *rgb,
     }
     int ok = 1;
     if (stream->writer)
-        ok = h3_ffmpeg_writer_write_video(stream->writer, chunk8, frame_count,
-                                          error, error_size);
+        ok = h3_av_writer_write_video(stream->writer, chunk8, frame_count,
+                                      error, error_size);
     free(chunk8);
     if (!ok) return 0;
     stream->emitted += frame_count;
     if (stream->writer)
-        h3_progress_emit(stream->progress, "FFmpeg", stream->emitted,
+        h3_progress_emit(stream->progress, "encode", stream->emitted,
                          stream->total_frames);
     if (stream->progress->cancelled) {
         fail(error, error_size, "generation cancelled");
@@ -1120,7 +1121,7 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
                 continue;
             }
             int source_width, source_height, media_width, media_height;
-            if (!h3_ffprobe_visual_size(reference->path,
+            if (!h3_av_visual_size(reference->path,
                                         &source_width, &source_height,
                                         detail, sizeof(detail))) {
                 h3_set_error(ctx, "%s", detail);
@@ -1136,7 +1137,7 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
                         "cannot resolve reference image %zu canvas", index + 1);
                     goto cleanup;
                 }
-                if (!h3_ffmpeg_read_image_f32(
+                if (!h3_av_read_image_f32(
                         reference->path, media_width, media_height,
                         H3_IMAGE_FIT_STRETCH, &condition_pixels[visual_count],
                         detail, sizeof(detail))) {
@@ -1156,7 +1157,7 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
                         "cannot resolve reference video %zu canvas", index + 1);
                     goto cleanup;
                 }
-                if (!h3_ffmpeg_read_video_f32(
+                if (!h3_av_read_video_f32(
                         reference->path, media_width, media_height,
                         temporal.frame_count, &condition_pixels[visual_count],
                         &condition_frames[visual_count],
@@ -1238,7 +1239,7 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
             }
             float *pcm = NULL;
             int samples = 0;
-            if (!h3_ffmpeg_read_audio_f32(
+            if (!h3_av_read_audio_f32(
                     audio_path, max_samples, truncate, &pcm, &samples,
                     detail, sizeof(detail))) {
                 free(pcm);
@@ -1314,7 +1315,7 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
             /* Center-crop to the render aspect ratio instead of stretching,
              * matching last_frame below - an input whose aspect differs
              * from render_width/render_height no longer gets squashed. */
-            if (!h3_ffmpeg_read_image_f32(
+            if (!h3_av_read_image_f32(
                     params->first_frame, render_width, render_height,
                     H3_IMAGE_FIT_COVER, &condition_pixels[visual_count],
                     detail, sizeof(detail))) {
@@ -1328,7 +1329,7 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
         }
         if (params->last_frame) {
             keyframes[keyframe_count++] = temporal.frame_count - 1;
-            if (!h3_ffmpeg_read_image_f32(
+            if (!h3_av_read_image_f32(
                     params->last_frame, render_width, render_height,
                     H3_IMAGE_FIT_COVER, &condition_pixels[visual_count],
                     detail, sizeof(detail))) {
@@ -1708,18 +1709,18 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
     if (preview_decoder) {
         /* Chunked path: decode, upscale, and mux/deliver one ~17-frame
          * chunk at a time (see h3_stream_encode_chunk above) instead of
-         * retaining the whole video, so FFmpeg's own encode of chunk N
-         * overlaps with decoding chunk N+1 and peak host memory for the
-         * video drops from the full output to about one chunk. */
+         * retaining the whole video, so encoding chunk N overlaps with
+         * decoding chunk N+1 and peak host memory for the video drops from
+         * the full output to about one chunk. */
         int native_height = 0, native_width = 0;
         h3_video_vae_decoder_pixel_size(preview_decoder, &native_height,
                                         &native_width);
         int output_width = params->width, output_height = params->height;
         int chunks = (temporal.video_t - 2) / 5;
         int total_frames = chunks * 17 + 5;
-        h3_ffmpeg_writer *writer = NULL;
+        h3_av_writer *writer = NULL;
         if (params->output_path && *params->output_path) {
-            writer = h3_ffmpeg_writer_open(
+            writer = h3_av_writer_open(
                 params->output_path, output_width, output_height, H3_FPS,
                 waveform.pcm, waveform.samples, waveform.channels,
                 waveform.sample_rate, detail, sizeof(detail));
@@ -1727,7 +1728,7 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
                 h3_set_error(ctx, "%s", detail);
                 goto cleanup;
             }
-            h3_progress_emit(&progress, "FFmpeg", 0, total_frames);
+            h3_progress_emit(&progress, "encode", 0, total_frames);
         }
         h3_stream_encode_ctx stream = {
             writer, params->on_frame, params->callback_opaque, &progress,
@@ -1743,7 +1744,7 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
         if (writer) {
             char close_detail[512];
             close_detail[0] = '\0';
-            if (!h3_ffmpeg_writer_close(writer, close_detail,
+            if (!h3_av_writer_close(writer, close_detail,
                                         sizeof(close_detail)) && video_ok) {
                 video_ok = 0;
                 snprintf(detail, sizeof(detail), "%s", close_detail);
@@ -1754,7 +1755,7 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
             goto cleanup;
         }
         if (writer)
-            h3_progress_emit(&progress, "FFmpeg", total_frames, total_frames);
+            h3_progress_emit(&progress, "encode", total_frames, total_frames);
         if (progress.cancelled) goto cleanup;
         result = calloc(1, sizeof(*result));
         if (!result) {
@@ -1817,8 +1818,8 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
             }
         }
         if (params->output_path && *params->output_path) {
-            h3_progress_emit(&progress, "FFmpeg", 0, frames.frames);
-            if (!h3_ffmpeg_write_av_rgb24_f32(
+            h3_progress_emit(&progress, "encode", 0, frames.frames);
+            if (!h3_av_write_rgb24_f32(
                     params->output_path, rgb8, frames.frames, output_width,
                     output_height, H3_FPS, waveform.pcm, waveform.samples,
                     waveform.channels, waveform.sample_rate,
@@ -1826,7 +1827,7 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
                 h3_set_error(ctx, "%s", detail);
                 goto cleanup;
             }
-            h3_progress_emit(&progress, "FFmpeg", frames.frames, frames.frames);
+            h3_progress_emit(&progress, "encode", frames.frames, frames.frames);
         }
         result = calloc(1, sizeof(*result));
         if (!result) {

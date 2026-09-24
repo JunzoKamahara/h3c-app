@@ -18,7 +18,7 @@ import Foundation
 //                                            frames x pixels either way, so
 //                                            it's modelled by time.
 //   [all frames delivered at once]
-//   FFmpeg 0/N ... N/N                    -> encode
+//   encode 0/N ... N/N                    -> encode
 //
 // Only ever moves forward.
 enum JobStage: Int, Comparable {
@@ -44,7 +44,7 @@ enum JobStage: Int, Comparable {
             return .denoise
         case "audio VAE", "video VAE load":
             return .decode
-        case "FFmpeg":
+        case "encode":
             return .encode
         case "tokenizer", "text encoder", "refine text", "precompute AdaLN", "load transformer core",
              "audio VAE encoder", "video VAE encoder",
@@ -91,7 +91,7 @@ struct TimingCalibration: Codable {
         TimingSample(units: 22.0 * 256 * 256, seconds: 5.5),
         TimingSample(units: 124.0 * 512 * 512, seconds: 112),
     ]
-    var encode: [TimingSample] = [           // units = frames x output pixels, seconds = FFmpeg stage
+    var encode: [TimingSample] = [           // units = frames x output pixels, seconds = encode stage
         TimingSample(units: 22.0 * 256 * 256, seconds: 0.11),
         TimingSample(units: 124.0 * 512 * 512, seconds: 0.27),
     ]
@@ -110,7 +110,7 @@ struct TimingCalibration: Codable {
     /// modes; only the denoise step differs - SSD streaming re-reads the BF16
     /// checkpoint each step: 6.24s (22 frames @256x256) and 43.0s (124
     /// frames @512x512) vs 3.64s / 31.3s with the int8 cache. VAE decode and
-    /// FFmpeg are the same code either way, so they share the seeds.
+    /// encode are the same code either way, so they share the seeds.
     static func initial(for mode: ComputeMode) -> TimingCalibration {
         var value = TimingCalibration()
         if mode == .ssdStreaming {
@@ -170,7 +170,7 @@ private func predictAffine(_ samples: [TimingSample], units: Double) -> Double? 
     return value > 0 ? value : meanY
 }
 
-// VAE decode and FFmpeg do work proportional to frames x pixels, so there's
+// VAE decode and encode do work proportional to frames x pixels, so there's
 // no meaningful fixed cost to fit. Scale the seconds-per-unit rate of the
 // earlier job closest in size (ties: most recent) - a single job of a
 // different size stays useful, and an old outlier can't drag a repeat of a
@@ -344,7 +344,7 @@ final class ProgressEstimator {
             break
         }
 
-        // Encode (FFmpeg): predicted from frames x output size, replaced by
+        // Encode: predicted from frames x output size, replaced by
         // the live rate if the engine reports per-chunk progress.
         switch stage {
         case .setup, .denoise, .decode:

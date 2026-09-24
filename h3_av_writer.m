@@ -1,11 +1,5 @@
-/* Native macOS replacement for the write-side of h3_ffmpeg.c: encodes the
- * generated RGB24 frames (and, when present, the generated stereo PCM
- * soundtrack) straight through AVFoundation/VideoToolbox instead of
- * spawning an external `ffmpeg` process over a pipe. This removes the need
- * to bundle an ffmpeg binary (and its GPL-licensed libx264) for a
- * distributable .app - only the *read* side of h3_ffmpeg.c (decoding
- * arbitrary user-supplied reference images/video/audio) still shells out to
- * FFmpeg.
+/* Encodes the generated RGB24 frames (and, when present, the generated
+ * stereo PCM soundtrack) straight through AVFoundation/VideoToolbox.
  *
  * Settings mirror Draw Things' VideoExporter (H.264 High@4.1, an average
  * bitrate floor, AAC audio at up to 192 kbps) rather than a CRF-style
@@ -22,7 +16,7 @@
 #import <CoreVideo/CoreVideo.h>
 #import <Foundation/Foundation.h>
 
-#include "h3_ffmpeg.h"
+#include "h3_av_writer.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -56,11 +50,11 @@ static NSDictionary *h3_av_pixel_buffer_attributes(int width, int height) {
     };
 }
 
-/* Opaque handle definition (declared in h3_ffmpeg.h). Every Objective-C
+/* Opaque handle definition (declared in h3_av_writer.h). Every Objective-C
  * object is kept alive by an explicit __bridge_retained reference so this
  * struct can be malloc'd/free'd like any other C value; h3_writer_teardown
  * balances each one with CFBridgingRelease. */
-struct h3_ffmpeg_writer {
+struct h3_av_writer {
     void *writer;   /* AVAssetWriter*        */
     void *video_input;  /* AVAssetWriterInput*   */
     void *adaptor;  /* AVAssetWriterInputPixelBufferAdaptor* */
@@ -72,10 +66,8 @@ struct h3_ffmpeg_writer {
 };
 
 /* Builds one CMSampleBuffer covering the whole (already fully known) PCM
- * track and appends+finishes the audio input immediately - matching
- * h3_ffmpeg.c's previous behavior of starting to stream the whole track to
- * FFmpeg as soon as the writer opens, independent of how video chunks
- * arrive afterwards. */
+ * track and appends+finishes the audio input immediately, as soon as the
+ * writer opens, independent of how video chunks arrive afterwards. */
 static int h3_av_append_whole_audio_track(
         AVAssetWriterInput *audioInput, CMAudioFormatDescriptionRef sourceFormat,
         const float *pcm, int samples, int channels, int sample_rate,
@@ -127,11 +119,11 @@ static int h3_av_append_whole_audio_track(
 }
 
 /* Shared setup for all three public entry points below. pcm == NULL opens a
- * video-only writer (no audio track at all), matching h3_ffmpeg_write_rgb24's
- * "-an" behavior; the public h3_ffmpeg_writer_open keeps requiring pcm, same
- * as before, since every caller of the streaming writer already has the
- * whole soundtrack decoded up front. */
-static h3_ffmpeg_writer *h3_open_writer(
+ * video-only writer (no audio track at all), matching h3_av_write_rgb24's
+ * silent-video behavior; the public h3_av_writer_open keeps requiring pcm,
+ * since every caller of the streaming writer already has the whole
+ * soundtrack decoded up front. */
+static h3_av_writer *h3_open_writer(
         const char *path, int width, int height, int fps,
         const float *pcm, int samples, int channels, int sample_rate,
         char *error, size_t error_size) {
@@ -231,7 +223,7 @@ static h3_ffmpeg_writer *h3_open_writer(
             }
         }
 
-        h3_ffmpeg_writer *ctx = calloc(1, sizeof(*ctx));
+        h3_av_writer *ctx = calloc(1, sizeof(*ctx));
         if (!ctx) {
             h3_av_set_error(error, error_size, @"out of memory creating writer context");
             [writer cancelWriting];
@@ -249,7 +241,7 @@ static h3_ffmpeg_writer *h3_open_writer(
 
 /* Appends frame_count consecutive RGB24 frames starting at `frames`,
  * converting each into a BGRA CVPixelBuffer drawn from the adaptor's pool. */
-static int h3_append_frames(h3_ffmpeg_writer *ctx, const uint8_t *frames,
+static int h3_append_frames(h3_av_writer *ctx, const uint8_t *frames,
                             int frame_count, char *error, size_t error_size) {
     @autoreleasepool {
         AVAssetWriterInput *videoInput = (__bridge AVAssetWriterInput *)ctx->video_input;
@@ -306,7 +298,7 @@ static int h3_append_frames(h3_ffmpeg_writer *ctx, const uint8_t *frames,
     }
 }
 
-static int h3_close_writer(h3_ffmpeg_writer *ctx, char *error, size_t error_size) {
+static int h3_close_writer(h3_av_writer *ctx, char *error, size_t error_size) {
     int ok = !ctx->failed;
     @autoreleasepool {
         AVAssetWriter *writer = (__bridge AVAssetWriter *)ctx->writer;
@@ -335,27 +327,27 @@ static int h3_close_writer(h3_ffmpeg_writer *ctx, char *error, size_t error_size
     return ok;
 }
 
-int h3_ffmpeg_write_rgb24(const char *path, const uint8_t *frames,
-                          int frame_count, int width, int height, int fps,
-                          char *error, size_t error_size) {
+int h3_av_write_rgb24(const char *path, const uint8_t *frames,
+                      int frame_count, int width, int height, int fps,
+                      char *error, size_t error_size) {
     if (error && error_size) error[0] = '\0';
     if (!path || !*path || !frames || frame_count < 1 || width < 2 ||
         height < 2 || fps < 1 || width % 2 || height % 2) {
         h3_av_set_error(error, error_size, @"invalid AVFoundation RGB output arguments");
         return 0;
     }
-    h3_ffmpeg_writer *ctx = h3_open_writer(path, width, height, fps, NULL, 0, 0, 0,
-                                           error, error_size);
+    h3_av_writer *ctx = h3_open_writer(path, width, height, fps, NULL, 0, 0, 0,
+                                       error, error_size);
     if (!ctx) return 0;
     int ok = h3_append_frames(ctx, frames, frame_count, error, error_size);
     return h3_close_writer(ctx, ok ? error : NULL, ok ? error_size : 0) && ok;
 }
 
-int h3_ffmpeg_write_av_rgb24_f32(const char *path, const uint8_t *frames,
-                                 int frame_count, int width, int height,
-                                 int fps, const float *pcm, int samples,
-                                 int channels, int sample_rate,
-                                 char *error, size_t error_size) {
+int h3_av_write_rgb24_f32(const char *path, const uint8_t *frames,
+                          int frame_count, int width, int height,
+                          int fps, const float *pcm, int samples,
+                          int channels, int sample_rate,
+                          char *error, size_t error_size) {
     if (error && error_size) error[0] = '\0';
     if (!path || !*path || !frames || frame_count < 1 || width < 2 ||
         height < 2 || fps < 1 || width % 2 || height % 2 || !pcm ||
@@ -363,18 +355,18 @@ int h3_ffmpeg_write_av_rgb24_f32(const char *path, const uint8_t *frames,
         h3_av_set_error(error, error_size, @"invalid AVFoundation A/V output arguments");
         return 0;
     }
-    h3_ffmpeg_writer *ctx = h3_open_writer(path, width, height, fps, pcm, samples,
-                                           channels, sample_rate, error, error_size);
+    h3_av_writer *ctx = h3_open_writer(path, width, height, fps, pcm, samples,
+                                       channels, sample_rate, error, error_size);
     if (!ctx) return 0;
     int ok = h3_append_frames(ctx, frames, frame_count, error, error_size);
     return h3_close_writer(ctx, ok ? error : NULL, ok ? error_size : 0) && ok;
 }
 
-h3_ffmpeg_writer *h3_ffmpeg_writer_open(const char *path, int width,
-                                        int height, int fps,
-                                        const float *pcm, int samples,
-                                        int channels, int sample_rate,
-                                        char *error, size_t error_size) {
+h3_av_writer *h3_av_writer_open(const char *path, int width,
+                                int height, int fps,
+                                const float *pcm, int samples,
+                                int channels, int sample_rate,
+                                char *error, size_t error_size) {
     if (error && error_size) error[0] = '\0';
     if (!path || !*path || width < 2 || height < 2 || fps < 1 ||
         width % 2 || height % 2 || !pcm || samples < 1 || channels < 1 ||
@@ -386,9 +378,9 @@ h3_ffmpeg_writer *h3_ffmpeg_writer_open(const char *path, int width,
                           sample_rate, error, error_size);
 }
 
-int h3_ffmpeg_writer_write_video(h3_ffmpeg_writer *writer,
-                                 const uint8_t *frames, int frame_count,
-                                 char *error, size_t error_size) {
+int h3_av_writer_write_video(h3_av_writer *writer,
+                             const uint8_t *frames, int frame_count,
+                             char *error, size_t error_size) {
     if (error && error_size) error[0] = '\0';
     if (!writer || !frames || frame_count < 1) {
         h3_av_set_error(error, error_size, @"invalid AVFoundation writer video chunk");
@@ -402,8 +394,8 @@ int h3_ffmpeg_writer_write_video(h3_ffmpeg_writer *writer,
     return h3_append_frames(writer, frames, frame_count, error, error_size);
 }
 
-int h3_ffmpeg_writer_close(h3_ffmpeg_writer *writer,
-                           char *error, size_t error_size) {
+int h3_av_writer_close(h3_av_writer *writer,
+                       char *error, size_t error_size) {
     if (error && error_size) error[0] = '\0';
     if (!writer) return 1;
     return h3_close_writer(writer, error, error_size);

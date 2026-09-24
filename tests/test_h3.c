@@ -2,7 +2,6 @@
 #include "h3_dit.h"
 #include "h3_metal.h"
 #include "h3_safetensors.h"
-#include "h3_terminal.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -42,13 +41,13 @@ static void test_temporal_and_canvas(void) {
     CHECK(h3_video_encoder_latent_t(22) == 6);
     CHECK(h3_video_encoder_latent_t(39) == 10);
     int width, height;
-    CHECK(h3_adapt_canvas(1920, 1080, &width, &height));
+    CHECK(h3_adapt_canvas(1920, 1080, H3_MAX_PIXELS, &width, &height));
     CHECK(width == 1344 && height == 768);
-    CHECK(h3_adapt_canvas(1080, 1920, &width, &height));
+    CHECK(h3_adapt_canvas(1080, 1920, H3_MAX_PIXELS, &width, &height));
     CHECK(width == 768 && height == 1344);
-    CHECK(h3_adapt_canvas(864, 480, &width, &height));
+    CHECK(h3_adapt_canvas(864, 480, H3_MAX_PIXELS, &width, &height));
     CHECK(width == 1376 && height == 768);
-    CHECK(h3_adapt_canvas(32, 32, &width, &height));
+    CHECK(h3_adapt_canvas(32, 32, H3_MAX_PIXELS, &width, &height));
     CHECK(width == 768 && height == 768);
     CHECK(h3_reference_image_canvas(1920, 1080, 512, 512, 0,
                                     &width, &height));
@@ -61,11 +60,11 @@ static void test_temporal_and_canvas(void) {
     CHECK(width == 3872 && height == 2048);
     CHECK(!h3_reference_image_canvas(0, 480, 512, 512, 0,
                                      &width, &height));
-    CHECK(h3_reference_video_canvas(1920, 1080, &width, &height));
+    CHECK(h3_reference_video_canvas(1920, 1080, H3_MAX_PIXELS, &width, &height));
     CHECK(width == 1344 && height == 768);
-    CHECK(h3_reference_video_canvas(640, 360, &width, &height));
+    CHECK(h3_reference_video_canvas(640, 360, H3_MAX_PIXELS, &width, &height));
     CHECK(width == 640 && height == 352);
-    CHECK(!h3_reference_video_canvas(0, 360, &width, &height));
+    CHECK(!h3_reference_video_canvas(0, 360, H3_MAX_PIXELS, &width, &height));
 }
 
 static void test_schedule(void) {
@@ -383,19 +382,6 @@ static void test_metal_probe(void) {
     CHECK(info.apple_gpu_family > 0);
 }
 
-static void test_terminal_zoom(void) {
-    int width = 0, height = 0;
-    CHECK(h3_terminal_set_zoom(2));
-    CHECK(h3_terminal_display_dimensions(512, 288, &width, &height));
-    CHECK(width == 1024 && height == 576);
-    CHECK(h3_terminal_set_zoom(1));
-    CHECK(h3_terminal_display_dimensions(512, 288, &width, &height));
-    CHECK(width == 512 && height == 288);
-    CHECK(!h3_terminal_set_zoom(0));
-    CHECK(h3_terminal_set_zoom(2));
-    CHECK(!h3_terminal_display_dimensions(INT32_MAX, 1, &width, &height));
-}
-
 int main(void) {
     test_temporal_and_canvas();
     test_schedule();
@@ -408,7 +394,6 @@ int main(void) {
     test_rgb_resize();
     test_dit_row_conversions();
     test_metal_probe();
-    test_terminal_zoom();
     printf("ok: %d checks\n", tests_run);
     return 0;
 }
