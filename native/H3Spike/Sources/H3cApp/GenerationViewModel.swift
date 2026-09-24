@@ -279,13 +279,16 @@ final class GenerationViewModel: ObservableObject {
         }
     }
 
-    /// Switches ModelLibrary's active model (when `id` is non-nil - a no-op
-    /// if it's already active) and reloads the engine against it. `id` is
-    /// nil when ModelManagerView just removed the active model and needs a
-    /// reload to reflect whatever (possibly nothing) is active now.
+    /// Switches ModelLibrary's active model (when `id` is non-nil) and
+    /// reloads the engine against it - always reloads even if `id` is
+    /// already active, since a caller may have just changed that same
+    /// entry's path (e.g. ModelDownloadWizardView finishing a download into
+    /// it). `id` is nil when ModelManagerView just removed the active model
+    /// and needs a reload to reflect whatever (possibly nothing) is active
+    /// now. Callers that want to skip a redundant reload for an unchanged
+    /// selection (a plain row tap) should check that themselves first.
     func switchModel(to id: UUID?) {
         if let id {
-            guard library.activeModelID != id else { return }
             library.selectModel(id: id)
         }
         loadModel()

@@ -19,6 +19,7 @@ struct ModelManagerView: View {
     @State private var renamingModelID: UUID?
     @State private var renamingLoRAID: UUID?
     @State private var renameText: String = ""
+    @State private var showingDownloadWizard = false
 
     private var palette: H3Palette { H3Palette(colorScheme) }
 
@@ -75,9 +76,22 @@ struct ModelManagerView: View {
                     .font(.caption)
                     .foregroundStyle(palette.textSecondary)
                 Spacer()
-                Button("追加…") { addModel() }
+                Button("ダウンロードして追加…") { showingDownloadWizard = true }
+                Button("フォルダを追加…") { addModel() }
             }
             .padding(H3Spacing.md)
+        }
+        .sheet(isPresented: $showingDownloadWizard) {
+            ModelDownloadWizardView(
+                suggestedDestination: legacyDefaultH3ModelPath,
+                onCompleted: { path in
+                    let wasEmpty = library.models.isEmpty
+                    library.addModel(path: path)
+                    if wasEmpty { onActiveModelChange(library.activeModelID) }
+                    showingDownloadWizard = false
+                },
+                onCancelled: { showingDownloadWizard = false }
+            )
         }
     }
 
@@ -122,7 +136,12 @@ struct ModelManagerView: View {
             .frame(width: 24)
         }
         .contentShape(Rectangle())
-        .onTapGesture { onActiveModelChange(model.id) }
+        .onTapGesture {
+            // switchModel(to:) always reloads (needed after a download
+            // finishes into the already-active entry) - guard the redundant
+            // case here instead, so re-tapping the current row is a no-op.
+            if model.id != library.activeModelID { onActiveModelChange(model.id) }
+        }
         .padding(.vertical, 4)
     }
 

@@ -32,8 +32,12 @@ Apple Siliconだけで動かすネイティブmacOSアプリです（CLIとロ�
   TensorOps）で最速のint8経路が有効になる。それより古いApple Siliconでも
   動作するが、BF16/MPSGraphに自動的にフォールバックする。
 - Xcode Command Line Tools（`clang`、`swift`、`ar`）。
-- MiniMax-H3のチェックポイント（`FL2VA/`、参照条件付き生成を行うなら
-  `Ref2VA/`も）— Hugging FaceのBF16スナップショット、約37GiB。
+- Hugging Faceの
+  [`MiniMaxAI/MiniMax-H3`](https://huggingface.co/MiniMaxAI/MiniMax-H3)
+  チェックポイント — `FL2VA/`だけで約134GiB（約37GiBのBF16トランスフォーマー
+  本体に加え、Qwen3-VLテキストエンコーダーと動画/音声VAEを含む）。参照
+  条件付き生成用の`Ref2VA/`も加えると合計で約268GiBになります。ネイティブ
+  アプリの「モデル管理」から、どちらも直接ダウンロードできます。
 - 実行時に他の依存は不要。FFmpeg/FFprobeは**不要**です — 使われるのは
   オプションのクロスチェック用テスト1つだけです（[テスト](#テスト)を参照）。
 
@@ -113,6 +117,12 @@ python3 gui/server.py --port 8420
   オプションからも使えます。
 - **2つの計算方式**（次節参照）: 高速なint8アテンションキャッシュと、
   キャッシュファイル不要で低メモリだが低速なSSDストリーミング。
+- **モデルマネージャー**（ネイティブアプリのみ）: 固定の1パスではなく、
+  複数のH3チェックポイントディレクトリとLoRAファイルを登録・切り替え可能。
+  FL2VA/Ref2VAは外部依存なし（Python/huggingface_hub不要）でHugging Face
+  から直接ダウンロードでき、初回起動時に自動的に案内されます — 素朴だが
+  再開可能なURLSessionベースのダウンローダーです。詳細は
+  [ModelDownloader.swift](native/H3Spike/Sources/H3cApp/ModelDownloader.swift)。
 - **対話端末プレビュー**（`--show`、Kitty/Ghostty/iTerm2/WezTerm/Konsole
   対応）と、フェーズ別Metalタイミング/メモリ診断のための`--profile`。
 

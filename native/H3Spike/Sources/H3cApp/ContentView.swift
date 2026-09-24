@@ -6,6 +6,11 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var viewModel = GenerationViewModel()
     @State private var showingModelManager = false
+    @State private var showingDownloadWizard = false
+    // Auto-offer the download wizard once per launch when the engine can't
+    // load a model - not on every relaunch attempt the user might trigger
+    // via "もう一度試す", and not re-shown after they dismiss it once.
+    @State private var hasOfferedDownloadWizard = false
 
     var body: some View {
         HSplitView {
@@ -42,6 +47,28 @@ struct ContentView: View {
                 viewModel.switchModel(to: id)
             }
         }
+        .sheet(isPresented: $showingDownloadWizard) {
+            ModelDownloadWizardView(
+                suggestedDestination: viewModel.library.activeModel?.path ?? legacyDefaultH3ModelPath,
+                onCompleted: { path in
+                    if let id = viewModel.library.activeModelID {
+                        viewModel.library.setModelPath(id: id, path: path)
+                        viewModel.switchModel(to: id)
+                    } else {
+                        viewModel.library.addModel(path: path)
+                        if let newID = viewModel.library.activeModelID { viewModel.switchModel(to: newID) }
+                    }
+                    showingDownloadWizard = false
+                },
+                onCancelled: { showingDownloadWizard = false }
+            )
+        }
         .onAppear { viewModel.loadModel() }
+        .onChange(of: viewModel.engineState) { newValue in
+            if case .failed = newValue, !hasOfferedDownloadWizard {
+                hasOfferedDownloadWizard = true
+                showingDownloadWizard = true
+            }
+        }
     }
 }

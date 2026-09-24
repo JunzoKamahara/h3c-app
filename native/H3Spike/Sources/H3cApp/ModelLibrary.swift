@@ -94,6 +94,14 @@ final class ModelLibrary: ObservableObject {
         persistModels()
     }
 
+    /// Used after ModelDownloadWizardView finishes downloading into a
+    /// possibly-different folder than the entry originally pointed at.
+    func setModelPath(id: UUID, path: String) {
+        guard let index = models.firstIndex(where: { $0.id == id }) else { return }
+        models[index].path = path
+        persistModels()
+    }
+
     func removeModel(id: UUID) {
         models.removeAll { $0.id == id }
         if activeModelID == id {

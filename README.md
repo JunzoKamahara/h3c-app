@@ -31,8 +31,12 @@ signing/notarization for distributing the app.
   the fastest int8 paths; older Apple Silicon works but falls back to
   BF16/MPSGraph automatically.
 - Xcode Command Line Tools (`clang`, `swift`, `ar`).
-- The MiniMax-H3 checkpoint (`FL2VA/`, and optionally `Ref2VA/` for
-  reference-conditioned generation) — a BF16 Hugging Face snapshot, ~37 GiB.
+- The MiniMax-H3 checkpoint from Hugging Face
+  ([`MiniMaxAI/MiniMax-H3`](https://huggingface.co/MiniMaxAI/MiniMax-H3)) —
+  `FL2VA/` alone is ~134 GiB (the ~37 GiB BF16 transformer plus the Qwen3-VL
+  text encoder and video/audio VAEs); adding `Ref2VA/` for reference-
+  conditioned generation brings it to ~268 GiB combined. The native app's
+  "モデル管理" ("Model manager") can download either or both directly.
 - Nothing else at runtime. FFmpeg/FFprobe are **not** required — they're only
   used by one optional cross-check test (see [Testing](#testing)).
 
@@ -109,6 +113,12 @@ streams its progress into the page.
   is supported end to end, including the native app's "Turbo" option.
 - **Two compute modes**, see the next section: a fast int8 attention cache,
   and a slow-but-low-memory SSD-streaming mode with no cache file needed.
+- **Model manager** (native app only): register and switch between several
+  H3 checkpoint directories and LoRA files instead of one hardcoded path,
+  and download FL2VA/Ref2VA directly from Hugging Face with no external
+  dependency (no Python/huggingface_hub) — a plain resumable URLSession
+  downloader, offered automatically on first launch. See
+  [ModelDownloader.swift](native/H3Spike/Sources/H3cApp/ModelDownloader.swift).
 - **Interactive terminal preview** (`--show`) on Kitty/Ghostty/iTerm2/WezTerm/
   Konsole, and `--profile` for per-phase Metal timing/memory diagnostics.
 
