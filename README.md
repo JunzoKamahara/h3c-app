@@ -1,5 +1,7 @@
 # h3c-app
 
+[English](README.md) | [日本語](README.ja.md)
+
 A native macOS app (plus a CLI and a local web GUI) that runs
 [MiniMax-H3](https://huggingface.co/lightx2v/Minimax-h3-Turbo) — a
 text/image/video-to-video-with-audio diffusion transformer — entirely on
