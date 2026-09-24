@@ -5,6 +5,8 @@ import SwiftUI
 // details (GPU/model) that used to sit directly in the form.
 struct EngineStatusButton: View {
     @ObservedObject var viewModel: GenerationViewModel
+    @ObservedObject var library: ModelLibrary
+    @Binding var showingModelManager: Bool
     @State private var showingPopover = false
 
     private var statusText: String {
@@ -42,8 +44,14 @@ struct EngineStatusButton: View {
             Text("動作環境").font(.headline)
             Text(viewModel.deviceLine).font(.body).textSelection(.enabled)
             Divider()
-            Text("モデルの場所").font(.caption).foregroundStyle(.secondary)
-            Text(viewModel.modelDirectory).font(.caption).textSelection(.enabled)
+            Text("使用中のモデル").font(.caption).foregroundStyle(.secondary)
+            Text(library.activeModel?.name ?? "未登録").font(.body).textSelection(.enabled)
+            Text(viewModel.modelDirectory).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+            Button("モデル管理…") {
+                showingPopover = false
+                showingModelManager = true
+            }
+            .font(.caption)
             if case .failed(let message) = viewModel.engineState {
                 Divider()
                 Text("読み込みエラー").font(.caption).foregroundStyle(.secondary)

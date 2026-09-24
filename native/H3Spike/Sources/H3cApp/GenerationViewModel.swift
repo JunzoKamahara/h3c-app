@@ -27,17 +27,17 @@ extension Comparable {
 // but under this user's Application Support instead of a dev checkout path -
 // these 19GB caches can't be bundled into a distributable .app, and a path
 // under a specific developer's home directory would never resolve on any
-// other machine. Not yet created automatically (there's no in-app cache
-// builder): validationMessage below just reports it missing until one is
-// built with build_attention_cache, or dropped in by hand.
+// other machine. Each registered model gets its own cache subdirectory (see
+// GenerationViewModel.attentionCacheDirectory(for:)) now that ModelLibrary
+// allows more than one - validationMessage below just reports a cache
+// missing until one is built with build_attention_cache, in-app, or dropped
+// in by hand.
 private let h3AppSupportDirectory: String = {
     let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?.path
         ?? (NSHomeDirectory() + "/Library/Application Support")
     return base + "/h3c-app"
 }()
-private let attentionCacheDirectory = h3AppSupportDirectory + "/cache"
-private let defaultAttentionCache = attentionCacheDirectory + "/dit_int8_v2.cache"
-private let ref2vaAttentionCache = attentionCacheDirectory + "/dit_int8_v2_ref2va.cache"
+private let legacyCacheDirectory = h3AppSupportDirectory + "/cache"
 
 enum EngineState: Equatable {
     case loading
@@ -52,6 +52,7 @@ final class GenerationViewModel: ObservableObject {
     @Published private(set) var engineState: EngineState = .loading
     @Published private(set) var deviceLine: String = "モデルを準備しています…"
     @Published private(set) var modelDirectory: String = ""
+    let library = ModelLibrary()
 
     // MARK: Draft - editable settings, never overwritten by a running job or
     // a past result (design spec invariant #1).
@@ -83,24 +84,41 @@ final class GenerationViewModel: ObservableObject {
     @Published var firstFramePath: String?
     @Published var lastFramePath: String?
     @Published var referenceImages: [H3ReferenceInput] = []
-    @Published var loraPath: String?
-    @Published var loraScaleText: String = "" {
-        didSet {
-            let filtered = loraScaleText.filter { $0.isNumber || $0 == "." || $0 == "-" }
-            if filtered != loraScaleText { loraScaleText = filtered }
-        }
+
+    /// LoRA is now chosen from ModelLibrary's registered library rather than
+    /// a one-off file pick; only applies on the cache path - under SSD
+    /// streaming the engine would silently skip it, so it's excluded from
+    /// the request (the library selection itself stays untouched across
+    /// mode switches, like images do).
+    var effectiveLoraPath: String? { computeMode == .ssdStreaming ? nil : library.activeLoRA?.path }
+    var effectiveLoraScale: Float? {
+        guard computeMode != .ssdStreaming, let entry = library.activeLoRA else { return nil }
+        return Float(entry.scaleText)
     }
 
-    /// LoRA only applies on the cache path; under SSD streaming the engine
-    /// would silently skip it, so it's excluded from the request (the chosen
-    /// file stays in the draft, like images do across modes).
-    var effectiveLoraPath: String? { computeMode == .ssdStreaming ? nil : loraPath }
+    /// Where the active model's attention cache files live. Isolated per
+    /// registered model (by id) so switching models never risks streaming
+    /// one model's cache against another's weights. The one exception: the
+    /// very first model this app ever used didn't have this isolation and
+    /// already has real ~19 GiB caches built at the flat legacy path -
+    /// reuse that path for exactly that entry so upgrading doesn't demand
+    /// rebuilding them.
+    private func attentionCacheDirectory(for model: H3ModelEntry) -> String {
+        if model.path == legacyDefaultH3ModelPath,
+           FileManager.default.fileExists(atPath: legacyCacheDirectory) {
+            return legacyCacheDirectory
+        }
+        return h3AppSupportDirectory + "/cache/" + model.id.uuidString
+    }
 
     /// The int8 cache this job would use - which one depends on whether it
-    /// runs the Ref2VA (reference image) transformer.
+    /// runs the Ref2VA (reference image) transformer, and on the active
+    /// model's own cache directory.
     var currentAttentionCachePath: String {
+        guard let model = library.activeModel else { return "" }
         let usesReferences = creationMethod == .image && imageInputMode == .referenceImage
-        return usesReferences ? ref2vaAttentionCache : defaultAttentionCache
+        let directory = attentionCacheDirectory(for: model)
+        return directory + (usesReferences ? "/dit_int8_v2_ref2va.cache" : "/dit_int8_v2.cache")
     }
 
     /// The transformer directory currentAttentionCachePath would be built
@@ -145,10 +163,12 @@ final class GenerationViewModel: ObservableObject {
     private var cacheBuildTask: Task<Void, Never>?
 
     func buildMissingAttentionCache() {
-        guard let engine, !isBuildingCache else { return }
+        guard let engine, !isBuildingCache, let model = library.activeModel else { return }
         isBuildingCache = true
         cacheBuildProgress = nil
         cacheBuildError = nil
+        try? FileManager.default.createDirectory(
+            atPath: attentionCacheDirectory(for: model), withIntermediateDirectories: true)
         let transformerDirectory = currentTransformerDirectory
         let outputPath = currentAttentionCachePath
         cacheBuildTask = Task {
@@ -204,10 +224,6 @@ final class GenerationViewModel: ObservableObject {
     private var generationTask: Task<Void, Never>?
 
     init() {
-        // Ensure the cache directory exists ahead of a future in-app cache
-        // builder - harmless if it's already there or never gets used.
-        try? FileManager.default.createDirectory(
-            atPath: attentionCacheDirectory, withIntermediateDirectories: true)
         // Sweep anything a previous run left behind (crash, force quit) -
         // generated previews are meant to be throwaway unless the user
         // explicitly exports, which copies them out.
@@ -233,8 +249,16 @@ final class GenerationViewModel: ObservableObject {
         }
     }
 
+    /// Reloads the engine against the active model - called at launch and
+    /// whenever ModelManagerView changes which registered model is active.
     func loadModel() {
-        let modelDir = NSHomeDirectory() + "/Library/Application Support/h3c-analysis/MiniMax-H3"
+        guard let active = library.activeModel else {
+            modelDirectory = ""
+            deviceLine = "モデルが登録されていません"
+            engineState = .failed("「モデル管理」からMiniMax-H3のフォルダを追加してください。")
+            return
+        }
+        let modelDir = active.path
         modelDirectory = modelDir
         engineState = .loading
         deviceLine = "モデルを準備しています…"
@@ -255,11 +279,19 @@ final class GenerationViewModel: ObservableObject {
         }
     }
 
-    // MARK: Image pickers
-
-    func pickLoRA() {
-        if let path = chooseFile(allowedContentTypes: safetensorsTypes) { loraPath = path }
+    /// Switches ModelLibrary's active model (when `id` is non-nil - a no-op
+    /// if it's already active) and reloads the engine against it. `id` is
+    /// nil when ModelManagerView just removed the active model and needs a
+    /// reload to reflect whatever (possibly nothing) is active now.
+    func switchModel(to id: UUID?) {
+        if let id {
+            guard library.activeModelID != id else { return }
+            library.selectModel(id: id)
+        }
+        loadModel()
     }
+
+    // MARK: Image pickers
 
     func pickFirstFrame() {
         if let path = chooseFile(allowedContentTypes: imageTypes) { firstFramePath = path }
@@ -289,8 +321,7 @@ final class GenerationViewModel: ObservableObject {
         denoiseReuse = defaultReuse
         computeMode = defaultComputeMode
         seedText = ""
-        loraPath = nil
-        loraScaleText = ""
+        library.selectLoRA(nil)
     }
 
     // MARK: Validation (UI-07: block generation with a locatable reason
@@ -333,7 +364,7 @@ final class GenerationViewModel: ObservableObject {
             if denoiseReuse != defaultReuse { parts.append("reuse \(denoiseReuse)") }
             if computeMode != defaultComputeMode { parts.append(computeMode.summaryLabel) }
             if !seedText.isEmpty { parts.append("シード固定") }
-            if let loraPath = effectiveLoraPath { parts.append("追加モデル: \(URL(fileURLWithPath: loraPath).lastPathComponent)") }
+            if effectiveLoraPath != nil, let name = library.activeLoRA?.name { parts.append("追加モデル: \(name)") }
         }
         return parts.joined(separator: " ・ ")
     }
@@ -396,7 +427,7 @@ final class GenerationViewModel: ObservableObject {
         params.ssdStreaming = computeMode == .ssdStreaming
         params.attentionCachePath = computeMode == .attentionCache ? currentAttentionCachePath : nil
         params.loraPath = effectiveLoraPath
-        params.loraScale = effectiveLoraPath != nil ? Float(loraScaleText) : nil
+        params.loraScale = effectiveLoraScale
 
         let promptCopy = prompt
         let capturedMode = creationMethod
@@ -406,7 +437,7 @@ final class GenerationViewModel: ObservableObject {
         let capturedReuse = denoiseReuse.clamped(to: reuseRange)
         let capturedComputeMode = computeMode
         let capturedLoraPath = effectiveLoraPath
-        let capturedLoraScale = effectiveLoraPath != nil ? Float(loraScaleText) : nil
+        let capturedLoraScale = effectiveLoraScale
         let capturedDeviceLine = deviceLine
 
         generationTask = Task {
@@ -539,8 +570,14 @@ final class GenerationViewModel: ObservableObject {
         denoiseReuse = result.denoiseReuse
         computeMode = result.computeMode
         seedText = result.seedWasRandom ? "" : result.seedDecimalString
-        loraPath = result.loraPath
-        loraScaleText = result.loraScale.map { String($0) } ?? ""
+        // The result only kept the raw path/scale actually used, not a
+        // library entry id (which may since have been renamed or removed) -
+        // best-effort match it back to a still-registered LoRA by path.
+        if let path = result.loraPath, let match = library.loras.first(where: { $0.path == path }) {
+            library.selectLoRA(match.id)
+        } else {
+            library.selectLoRA(nil)
+        }
     }
 
     /// "同じシードを使う": pins the exact seed regardless of the original

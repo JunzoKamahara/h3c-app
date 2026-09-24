@@ -27,6 +27,17 @@ func chooseFiles(allowedContentTypes: [UTType]) -> [String] {
     return panel.runModal() == .OK ? panel.urls.map(\.path) : []
 }
 
+/// For registering an H3 checkpoint directory (e.g. a MiniMax-H3 snapshot
+/// containing FL2VA/Ref2VA) in ModelLibrary.
+func chooseDirectory() -> String? {
+    let panel = NSOpenPanel()
+    panel.allowsMultipleSelection = false
+    panel.canChooseDirectories = true
+    panel.canChooseFiles = false
+    panel.canCreateDirectories = false
+    return panel.runModal() == .OK ? panel.url?.path : nil
+}
+
 /// Which H3ReferenceKind a picked reference file should be tagged as -
 /// image or video, by extension (via the same UTType conformance check
 /// referenceMediaTypes filters the open panel with).

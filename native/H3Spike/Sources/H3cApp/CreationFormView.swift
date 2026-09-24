@@ -7,6 +7,8 @@ private let promptExamples: [(label: String, text: String)] = [
 
 struct CreationFormView: View {
     @ObservedObject var viewModel: GenerationViewModel
+    @ObservedObject var library: ModelLibrary
+    @Binding var showingModelManager: Bool
     @Environment(\.colorScheme) private var colorScheme
     @State private var isAdvancedExpanded = false
     @State private var pendingExampleReplacement: String?
@@ -406,32 +408,41 @@ struct CreationFormView: View {
         VStack(alignment: .leading, spacing: 4) {
             Text("追加モデル（LoRA）").font(.caption).foregroundStyle(palette.textSecondary)
             HStack {
-                Text(viewModel.loraPath.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "なし")
-                    .font(.caption)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer()
-                Button("選ぶ…") { viewModel.pickLoRA() }
-                if viewModel.loraPath != nil {
-                    Button("取り除く") { viewModel.loraPath = nil }
+                Picker("追加モデル（LoRA）", selection: Binding(
+                    get: { library.activeLoRAID },
+                    set: { library.selectLoRA($0) }
+                )) {
+                    Text("なし").tag(UUID?.none)
+                    ForEach(library.loras) { entry in
+                        Text(entry.name).tag(UUID?.some(entry.id))
+                    }
                 }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .frame(maxWidth: 200)
+                Spacer()
+                Button("管理…") { showingModelManager = true }
+                    .font(.caption)
             }
             .disabled(viewModel.computeMode == .ssdStreaming)
 
             if viewModel.computeMode == .ssdStreaming {
                 // Not just disabled: the engine wouldn't error, it would
-                // silently not apply it, so say so where the file is shown.
-                Text(viewModel.loraPath == nil
+                // silently not apply it, so say so where the selection is shown.
+                Text(library.activeLoRA == nil
                      ? "SSDストリーミングでは追加モデル（LoRA）を使えません。"
                      : "SSDストリーミングでは適用されないため、この追加モデルは今回の生成に使われません。")
                     .font(.caption)
                     .foregroundStyle(palette.textSecondary)
-            } else if viewModel.loraPath != nil {
+            } else if let active = library.activeLoRA {
                 HStack {
                     Text("強さ（空欄=自動）").font(.caption).foregroundStyle(palette.textSecondary)
-                    TextField("自動", text: $viewModel.loraScaleText)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 80)
+                    TextField("自動", text: Binding(
+                        get: { active.scaleText },
+                        set: { library.setLoRAScale(id: active.id, scaleText: $0) }
+                    ))
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 80)
                 }
                 Text("読み込むモデル（最初/最後の画像・参照画像・動画）に対応したファイルか、事前に確認できません。")
                     .font(.caption)
