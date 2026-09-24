@@ -38,3 +38,27 @@ cp "$repo_root/h3_shaders.metal" "$app_bundle/Contents/Resources/h3_shaders.meta
 cp "$script_dir/Packaging/Info.plist" "$app_bundle/Contents/Info.plist"
 
 echo "Packaged $app_bundle"
+
+# Signing/notarization are opt-in via env vars so the plain dev build above
+# stays untouched when they're unset.
+#   H3C_SIGN_IDENTITY   "Developer ID Application: NAME (TEAMID)" - required to sign
+#   H3C_NOTARY_PROFILE  keychain profile from `notarytool store-credentials` - required to notarize
+if [ -n "${H3C_SIGN_IDENTITY:-}" ]; then
+    echo "Signing with identity: $H3C_SIGN_IDENTITY"
+    codesign --force --deep --options runtime \
+        --sign "$H3C_SIGN_IDENTITY" \
+        "$app_bundle"
+    codesign --verify --deep --strict --verbose=2 "$app_bundle"
+    echo "Signed $app_bundle"
+
+    if [ -n "${H3C_NOTARY_PROFILE:-}" ]; then
+        zip_path="$build_dir/h3c-app.zip"
+        rm -f "$zip_path"
+        ditto -c -k --keepParent "$app_bundle" "$zip_path"
+        echo "Submitting for notarization (profile: $H3C_NOTARY_PROFILE)..."
+        xcrun notarytool submit "$zip_path" --keychain-profile "$H3C_NOTARY_PROFILE" --wait
+        xcrun stapler staple "$app_bundle"
+        rm -f "$zip_path"
+        echo "Notarized and stapled $app_bundle"
+    fi
+fi
