@@ -1,974 +1,325 @@
-# h3-metal
+# h3c-app
 
-Native MiniMax-H3 inference for Apple Silicon. The project is being built as a
-sequence of working vertical slices: deterministic host/model metadata first,
-then portable Metal block parity, prompt encoding, prompt-to-video/audio, and
-first/last-frame conditioning and then ordered references.
+A native macOS app (plus a CLI and a local web GUI) that runs
+[MiniMax-H3](https://huggingface.co/lightx2v/Minimax-h3-Turbo) — a
+text/image/video-to-video-with-audio diffusion transformer — entirely on
+Apple Silicon. Everything runs in-process against Metal/MPSGraph: no Python,
+no PyTorch, no cloud calls, and (since this fork) no FFmpeg dependency either
+— media in and out goes through native AVFoundation/ImageIO.
 
-Prompt-to-video/audio, first/last-frame conditioning, and ordered Ref2VA
-image/video/audio references work end to end. The current work is incremental
-H3-specific Metal performance and memory optimization on M3 Max and M5 Max.
+This is a fork of Salvatore Sanfilippo's (antirez)
+[h3.c](https://github.com/antirez/h3.c). The C/Objective-C engine
+(`libh3.a`) is shared unchanged across all three front ends; this fork adds
+the native SwiftUI app, native (ffmpeg-free) reference-media decoding, a
+memory-aware reference-video resolution cap, an int8-attention-cache builder
+usable as a library call (not just a CLI tool), and Developer ID
+signing/notarization for distributing the app.
 
-## Tutorial
+## Three ways to run it
 
-### 1. Build and inspect the model
+| Front end | Where | Best for |
+|---|---|---|
+| **Native app** (`h3c-app.app`) | `native/H3Spike/` | End users. Guided form (subject/shape/length/references), progress + ETA, preview, no flags to remember. |
+| **CLI** (`./h3`) | repo root | Scripting, benchmarking, and the full flag/env-var surface — every capability below is reachable here first. |
+| **Local web GUI** | `gui/server.py` | Browser access to the same engine without building the native app; wraps `./h3` as a subprocess. Standard-library-only Python, no `pip install`. |
 
-The examples assume that the Hugging Face snapshot is in `./MiniMax-H3` and
-that FFmpeg and FFprobe are available on `PATH`.
+## Requirements
+
+- Apple Silicon Mac, macOS 13+. An M5-class GPU (Metal 4 TensorOps) unlocks
+  the fastest int8 paths; older Apple Silicon works but falls back to
+  BF16/MPSGraph automatically.
+- Xcode Command Line Tools (`clang`, `swift`, `ar`).
+- The MiniMax-H3 checkpoint (`FL2VA/`, and optionally `Ref2VA/` for
+  reference-conditioned generation) — a BF16 Hugging Face snapshot, ~37 GiB.
+- Nothing else at runtime. FFmpeg/FFprobe are **not** required — they're only
+  used by one optional cross-check test (see [Testing](#testing)).
+
+## Quick start
+
+### Native app
+
+```sh
+make -j8 libh3.a
+cd native/H3Spike
+./package_app.sh
+open .build/h3c-app.app
+```
+
+The app looks for the model at a fixed path:
+`~/Library/Application Support/h3c-analysis/MiniMax-H3`. Put (or symlink)
+your checkpoint there, with `FL2VA/` and optionally `Ref2VA/` inside it,
+before first launch.
+
+On first run with a supported GPU, use the app's compute-mode picker to build
+the int8 attention cache (fast path) — or pick "省メモリ（SSDストリーミング）"
+to skip that step entirely and stream the original BF16 weights instead.
+
+### CLI
 
 ```sh
 make -j8
 mkdir -p outputs
-./h3 --info -d ./MiniMax-H3
+./h3 --info -d ./MiniMax-H3          # inspect the model/device, no generation
+./h3 -d ./MiniMax-H3 -p "A red fox walks through fresh snow in a pine forest." \
+  --width 512 --height 512 --frames 22 --steps 20 -o outputs/fox.mp4
 ```
 
-`--info` checks the model layout and prints the selected Metal device without
-mapping all weights or generating media. Run `./h3 --help` for the complete CLI
-reference.
+Without `-p`, `./h3 -d ./MiniMax-H3` starts an interactive session (`!help`
+for commands, `!ref-image`/`!first`/`!last` for conditioning, `!save` to
+write the current result). Run `./h3 --help` for the complete flag list —
+the [CLI flag reference](#cli-flag-reference) below covers the ones worth
+knowing about first.
 
-Without `-p`, the same binary starts an Iris-style interactive session:
+### Web GUI
 
 ```sh
-./h3 -d ./MiniMax-H3 --width 512 --height 512 --steps 6
+make -j8
+python3 gui/server.py --port 8420
 ```
 
-Type a prompt to generate a numbered video. The session keeps the exact BF16
-prompt conditioning, prepared DiT, and video decoder in memory, so repeating a
-prompt with another seed avoids loading and encoding them again. Useful commands
-are `!status`, `!seed random`, `!seconds 2`, `!show`, `!save output.mp4`, and
-`!cache`. Use `!help` for the full, short list.
+Then open `http://localhost:8420`. It shells out to `./h3` per job and
+streams its progress into the page.
 
-First/last-frame conditioning is persistent in the session:
+## Features
 
-```text
-h3> !first opening.png
-h3> !last ending.png
-h3> The camera moves slowly around the subject.
+- **Text-to-video+audio** (T2VA): a prompt alone produces a synchronized
+  H.264 + AAC clip.
+- **First/last-frame conditioning** (FL2VA): anchor a generation's opening
+  and/or closing frame with `--first-frame`/`--last-frame` (or the app's
+  "最初・最後の画像" mode).
+- **Reference conditioning** (Ref2VA), ordered and mixable: images
+  (`--ref-image`), video with or without its audio (`--ref-video` /
+  `--ref-silent-video`), a video with replacement audio
+  (`--ref-video-audio`), and standalone audio (`--ref-audio`). References
+  appear to the model in argument order as `<Picture N>`/`<Video N>`.
+  Reference video/image reads and all video/audio writes go through native
+  AVFoundation/ImageIO — no FFmpeg subprocess involved.
+- **Memory-aware reference-video sizing**: a large reference video is
+  automatically downscaled based on the machine's physical RAM
+  (`h3_reference_max_pixels()` in [h3_host.c](h3_host.c)) before it reaches
+  the model, rather than always targeting the same fixed cap regardless of
+  what the machine can hold. See [Reference-conditioning cost](#reference-conditioning-cost-why-a-bigger-reference-is-not-free) below for why this matters.
+- **LoRA**: `H3_LORA_PATH` fuses a diffusers/peft-format adapter at load
+  time under any residency mode (see [h3_lora.c](h3_lora.c)); `build_lora_cache`
+  pre-fuses one into an int8 cache file offline. A 4-step Turbo distillation
+  LoRA (from
+  [lightx2v/Minimax-h3-Turbo](https://huggingface.co/lightx2v/Minimax-h3-Turbo))
+  is supported end to end, including the native app's "Turbo" option.
+- **Two compute modes**, see the next section: a fast int8 attention cache,
+  and a slow-but-low-memory SSD-streaming mode with no cache file needed.
+- **Interactive terminal preview** (`--show`) on Kitty/Ghostty/iTerm2/WezTerm/
+  Konsole, and `--profile` for per-phase Metal timing/memory diagnostics.
+
+## Compute modes
+
+The DiT's ~37 GiB of BF16 weights have to be served to the GPU somehow every
+generation. Two mutually exclusive modes exist:
+
+| | Int8 attention cache | SSD streaming |
+|---|---|---|
+| Flag / setting | `H3_ATTENTION_CACHE=path` (app: "高速（int8キャッシュ）") | `--ssd-streaming` (app: "省メモリ（SSDストリーミング）") |
+| Setup | One-time `build_attention_cache` run (~28s CLI, writes an ~18 GiB int8 cache file per checkpoint) | None — reads the checkpoint as-is |
+| Speed | Fastest measured path | Slower; a 22-frame/512-square clip measured 141s vs. ~78s for the cache path (both 20 steps) |
+| Memory | int8-quantized weights streamed in double-buffered slots | Only 2 DiT blocks resident (~2 GiB tracked storage) at a time |
+| Requires | M5-class GPU (Metal 4 TensorOps / int8 path) | Any Apple Silicon GPU |
+| LoRA | Yes (`H3_LORA_PATH`, or a pre-fused cache) | No — the engine only fuses LoRA when loading resident/cache blocks |
+
+Build a cache with `build_attention_cache <FL2VA/transformer dir> <output
+file>`, or point it at a model root to build both FL2VA and Ref2VA caches in
+one pass. Full detail — cache versioning, `model_kind`/`model_id` mismatch
+guards, `H3_INT8_STREAM_MLP`, LoRA fusion into a cache — is in
+[h3_attention_cache.c](h3_attention_cache.c) and
+[h3_lora.c](h3_lora.c); the CLI wrapper is
+[h3_build_attention_cache.c](h3_build_attention_cache.c).
+
+Both an unbounded generation duration *and* an oversized reference video push
+against the same ceiling here — see the next section.
+
+## Reference-conditioning cost: why a bigger reference is not free
+
+This is the single most important thing to understand before feeding a large
+reference video into Ref2VA. The DiT's own joint self-attention
+(`h3_gpu_sdpa_bf16`) is **non-causal and attends over every token every
+layer, every evaluated denoising step** — main video/audio latents *and*
+reference-conditioning tokens together. A reference isn't encoded once and
+cached; it's re-attended to by all 50 DiT blocks on every step. Since
+attention cost scales at least quadratically with total token count, a
+larger or longer reference video multiplies the cost of the *entire*
+generation, not just a one-time encoding pass.
+
+Measured on this basis: a 672×384/10s generation against a large reference
+video took ~4 hours (but completed correctly); the same reference enlarged
+further to 15s, and separately a 1344×768/15s case, both also completed in
+over 4 hours. None of these are bugs — isolated benchmarking of
+`h3_gpu_gqa_causal_bf16` and `h3_gpu_sdpa_bf16` in isolation (see git history
+around `dff0763` for the methodology) ruled out the attention kernels
+themselves as anomalously slow; the cost is architectural. The memory-aware
+cap described above (`h3_reference_max_pixels`) reduces the *risk* of an
+extreme case, but does not change this scaling — expect large/long reference
+videos to be slow, and prefer a smaller/shorter reference or a lower
+`--reuse`/`--layers` preset when iterating.
+
+A related, harder failure this scaling caused once: the causal-attention
+fallback that runs when a sequence exceeds the custom Metal kernel's
+threadgroup-memory limit (`h3_gpu_gqa_mps`, an MPSGraph path that builds an
+explicit `O(sequence²)` mask) used to cache that mask per sequence length for
+the GPU's lifetime with no size limit. A sufficiently long reference-driven
+sequence made that cache allocate tens of gigabytes and crashed the whole
+machine (a watchdog-timeout kernel panic, not just an app crash — see
+`/Library/Logs/DiagnosticReports/*.panic` if you ever need to diagnose one).
+[h3_gpu.m](h3_gpu.m) now refuses generation with a clear error instead, once
+that fallback's mask would exceed 512 MiB, rather than allocating it. The
+general lesson, applicable anywhere else a cache is keyed by a
+caller-controlled size: **a cache keyed by unbounded input size needs an
+explicit ceiling, checked before the allocation, not just a comment saying
+the input is expected to be small.**
+
+## Repository layout
+
+```
+h3.c, h3_dit.c, h3_gpu.m, ...   Core inference engine (C + Objective-C/Metal), builds into libh3.a and the CLI
+h3.h                            Public C API surface (h3_load_dir, h3_generate, h3_build_attention_cache, ...)
+h3_shaders.metal                All Metal compute kernels
+main.c, h3_cli.c, linenoise.c   CLI argument parsing + interactive session front end -> ./h3
+h3_build_attention_cache.c      CLI wrapper around h3_build_attention_cache() -> build_attention_cache
+h3_build_lora_cache.c           CLI tool that fuses a LoRA into an int8 cache offline -> build_lora_cache
+tests/                          C test suite (make test / make parity)
+gui/                            Local web GUI (stdlib-only Python server + static frontend)
+native/H3Spike/                 Native macOS app (SwiftPM)
+  Sources/CH3                   C shim exposing libh3.a's C API to Swift
+  Sources/H3Engine              Swift async wrapper over the C API (AsyncThrowingStream-based progress/cancellation)
+  Sources/H3cApp                The SwiftUI app itself (h3c-app.app)
+  Sources/H3Spike                Minimal in-process spike/reference client for H3Engine, not the shipped app
+  package_app.sh                Builds + bundles h3c-app.app; also signs/notarizes it, see below
 ```
 
-Use `!first clear` or `!last clear` to remove an anchor. Generated videos are
-written to the session directory printed at startup.
+## Building from source
 
-For a general Ref2VA conditioning image, use `!ref-image PATH` instead. Images
-are appended in order and exposed to the model as `<Picture 1>`, `<Picture 2>`,
-and so on; filenames have no meaning to the model.
-
-```text
-h3> !ref-image person.png
-h3> Make the person shown in Picture 1 wave to the camera.
-```
-
-`!refs` lists the current order, `!ref-remove N` removes one entry, and
-`!refs clear` removes them all. Ref2VA references cannot be mixed with
-`!first`/`!last` anchors.
-
-### 2. Make a first fast video
-
-Start with the validated balanced preset. It generates 22 frames at 24 fps
-(about 0.92 seconds), displays the evolving middle-video frame after every
-denoising transition in a supported graphical terminal, and prints phase
-timings:
+### Library and CLI
 
 ```sh
-./h3 --profile \
-  -d ./MiniMax-H3 \
-  -p "A red fox walks through fresh snow in a pine forest. Medium tracking shot, natural winter light, realistic fur, soft footsteps and wind." \
-  --width 512 --height 512 \
-  --frames 22 --steps 20 \
-  --layers 45 --reuse 2 \
-  --show \
-  -o outputs/fox-fast.mp4
+make -j8            # builds ./h3 and libh3.a
+make test            # deterministic host suite (+ Metal/MLX parity if fixtures are installed)
+make parity           # just the Metal/MLX numerical checks
 ```
 
-This is deliberately not the most aggressive configuration:
-
-- `--steps 20` performs the default 20 denoising passes.
-- `--reuse 2` computes 11 fresh denoiser velocities instead of all 20 and
-  extrapolates the skipped transitions.
-- `--layers 45` runs 45 of the 50 transformer blocks, reducing both time and
-  unified-memory use.
-- `--show` is optional. It supports Kitty/Ghostty and
-  iTerm2/WezTerm/Konsole graphical protocols. It loads a resident preview VAE,
-  displays one representative middle-video frame after every Euler transition,
-  and then displays all final frames. Display dimensions default to 2x so the
-  image has its intended logical size on macOS Retina screens; use `--zoom 1`
-  on a non-HiDPI display. This adds preview decode time and roughly 10 GiB of
-  temporary model residency; runs without `--show` are unchanged.
-- `--profile` is optional and does not select a different generation path.
-
-The first process invocation also pays model loading and filesystem-cache
-costs. Compare performance using repeated runs, and alternate variants when
-the machines are warming up because this workload is sensitive to thermal
-throttling.
-
-For a very short iteration, request four denoising passes directly:
+### Native app
 
 ```sh
-./h3 --profile \
-  -d ./MiniMax-H3 \
-  -p "A red fox walks through fresh snow in a pine forest. Medium tracking shot, natural winter light, realistic fur." \
-  --width 512 --height 512 --frames 22 \
-  --steps 4 --layers 50 --reuse 1 \
-  --show \
-  -o outputs/fox-four-step.mp4
+cd native/H3Spike
+./package_app.sh
 ```
 
-`--steps N` always means exactly N denoising passes. Four through seven passes
-use the same schedule that won the low-budget comparison; increasing from 4
-to 7 progressively improves detail and motion. Keep `--reuse 1` at such small
-budgets so every requested pass runs the model. `--show` displays one preview
-after each pass.
+`libh3.a` isn't rebuilt by this script — run `make libh3.a` at the repo root
+first, and again after changing engine code. `package_app.sh` then runs
+`swift build -c release` and assembles `h3c-app.app`. It builds to a
+scratch directory outside the repo (`${TMPDIR}h3c-app-build-scratch`)
+rather than SwiftPM's default in-tree `.build`, because a repo that lives
+under a synced folder (Google Drive, iCloud Drive, Dropbox, ...) can cause
+that daemon to hold locks on SwiftPM's `build.db`, intermittently failing
+the build with a spurious "disk I/O error" — if you see that, check whether
+your checkout is inside a synced directory before assuming it's flaky.
 
-Several tail-heavy schedules were evaluated because most visible cleanup
-happens late in a long run. They preserved too few early composition updates
-and produced woven texture, weak motion, or clipped colors. The retained mode
-uses the released linear base grid with one terminal point. On the 512-square,
-22-frame fox test, the selected four-pass result had 0.556 full-video SSIM
-against a 29-pass reference; an independent surfer test measured 0.547. The
-four-pass denoise took about 3.5 seconds on M5 Max, versus 26.4 seconds for the
-reference.
+#### Code signing and notarization
 
-For a low-memory run, add `--ssd-streaming`:
+Signing and notarization are opt-in via two environment variables, so a
+plain `./package_app.sh` with neither set still produces the same unsigned
+development build as before:
 
 ```sh
-./h3 --profile \
-  -d ./MiniMax-H3 \
-  -p "A red fox walks through fresh snow in a pine forest." \
-  --width 512 --height 512 --frames 22 --steps 20 \
-  --layers 50 --reuse 1 --ssd-streaming \
-  -o outputs/fox-ssd.mp4
+H3C_SIGN_IDENTITY="Developer ID Application: NAME (TEAMID)" \
+H3C_NOTARY_PROFILE="some-keychain-profile" \
+./package_app.sh
 ```
 
-This uses the original BF16 checkpoint without conversion or quantization. It
-keeps two DiT blocks in memory and reads the next block from SSD while the GPU
-runs the current one. On M5 Max, tracked DiT storage fell from about 36.5 GiB to
-2.0 GiB at 512 square and 2.1 GiB at 864x480. A warm 50-block forward measured
-1.35 versus 2.49 seconds at 512 square (84% slower), and 2.14 versus 2.68
-seconds at 864x480 (26% slower). These are comparisons against the same
-full-residency BF16 path, and the results were byte-identical in both checks.
+- `H3C_SIGN_IDENTITY` — a `Developer ID Application` identity from
+  `security find-identity -v -p codesigning`. Requires enrolling in the
+  Apple Developer Program and creating that certificate (Xcode → Settings →
+  Accounts → Manage Certificates → `+` → Developer ID Application — no
+  Xcode project is needed for this, just the account manager). Signing
+  alone (no `H3C_NOTARY_PROFILE`) is enough to run the app locally with
+  Hardened Runtime enabled.
+- `H3C_NOTARY_PROFILE` — a profile name saved once via
+  `xcrun notarytool store-credentials <profile> --apple-id ... --team-id ...`
+  (needs an [app-specific password](https://appleid.apple.com), not your
+  regular Apple ID password). With both variables set, the script also
+  zips, submits for notarization, waits, and staples the ticket, so the
+  resulting `.app` passes Gatekeeper (`spctl -a -vvv -t exec`) on any Mac.
 
-The 2.0--2.1 GiB figure is the DiT's tracked tensor storage, not total system
-RAM. Prompt encoding and the two VAEs run in separate phases rather than adding
-their full peaks to it; the OS, media buffers, and output resolution still need
-headroom. `--show` keeps a preview VAE resident and adds roughly 10 GiB, so omit
-it for the lowest-memory run.
+There are no nested frameworks or embedded dylibs to worry about here —
+`h3c-app`'s only linked libraries are Apple system frameworks and the
+statically-linked `libh3.a`, so a single `codesign --deep` on the bundle is
+sufficient.
 
-SSD streaming is an explicit memory/speed tradeoff and is not the default. It
-cannot be combined with `--use-int8-row-fc2`. In an interactive session, use
-`!ssd-streaming on`.
-
-### 3. Move toward reference quality
-
-Change one control at a time when evaluating quality. First restore all layers,
-then all denoiser evaluations, and finally raise the default 20-pass schedule
-to the slower 50-pass reference:
+### Web GUI
 
 ```sh
-./h3 --profile \
-  -d ./MiniMax-H3 \
-  -p "A red fox walks through fresh snow in a pine forest. Medium tracking shot, natural winter light, realistic fur, soft footsteps and wind." \
-  --width 512 --height 512 \
-  --frames 22 --steps 50 \
-  --layers 50 --reuse 1 \
-  -o outputs/fox-close.mp4
+make -j8
+python3 gui/server.py --port 8420
 ```
 
-The defaults are `--steps 20 --layers 50 --reuse 1`; keep `--steps 50`
-explicit for this close path. It performs 50 complete 50-block denoiser
-forwards and is much more expensive than the default, but is the right oracle
-when a fast mode changes the subject, anatomy, motion, or composition.
-Numerical pixel identity with MLX is not expected because the random-number and
-execution engines differ; the depicted content and motion should agree.
+No install step: it's plain standard-library Python, subprocessing `./h3`
+per job and parsing its `\r%-25s %4d/%-4d` progress lines
+(`cli_progress` in `h3_cli.c`) into JSON the page polls.
 
-### 4. Choose a speed/quality preset
-
-These controls are independent unless noted otherwise:
-
-| Control | Slow reference | Default | Aggressive | Main impact |
-|---|---:|---:|---:|---|
-| Denoising passes | `--steps 50` | `--steps 20` | `--steps 4..7` | The number always names actual denoising passes. |
-| Whole denoiser reuse | `--reuse 1` | `--reuse 2` | `--reuse 3` | At 20 steps: 20, 11, or 8 fresh DiT evaluations. |
-| Active DiT blocks | `--layers 50` | `--layers 45` | `--layers 40` | Fewer blocks reduce compute and resident transformer weights. |
-| Core residual reuse | `--core-reuse 1` | `--core-reuse 4` | `--core-reuse 6` | Refreshes patch/head work every step but runs the expensive core less often. |
-| Token reduction | off | optional | `--token-reduction` | Pairs horizontal video tokens inside middle blocks; faster but may change composition. |
-| Internal canvas | output size | `384x384` for 512 square output | `320x320` | Runs DiT/VAE smaller, then upscales with vImage. |
-
-On M5, `--use-int8-row-fc2` uses one activation scale per FC2 row and a single
-full-width TensorOps product. It is optional because it is less numerically
-conservative than grouped int8. It reduced complete denoiser forwards by about
-2.6% in reciprocal tests. Matched four-step fox and surfer videos kept the same
-subjects, setting, and motion (full-video SSIM 0.919 and 0.828). In the
-interactive session, use `!int8-row-fc2 on`.
-
-`--reuse` and `--core-reuse` are mutually exclusive. Layer thinning can be
-combined with either one.
-
-To make the first command faster while keeping its output resolution, add
-token reduction:
-
-```sh
-./h3 --profile \
-  -d ./MiniMax-H3 \
-  -p "A surfer riding inside a sharp blue ocean wave, one rider and one white board, realistic spray." \
-  --width 512 --height 512 --frames 22 --steps 20 \
-  --layers 45 --reuse 2 --token-reduction \
-  -o outputs/surfer-fast.mp4
-```
-
-At the validated 512 square shape, token reduction cut the `45 layers + reuse
-2` denoise profile from 16.69 to 12.60 seconds on the IT M5 Max. Independent
-fox and surfer renders stayed coherent, but composition can diverge more from
-the close path.
-
-For an aggressive preview, render internally at 320 square and upscale to the
-requested 512 square output:
-
-```sh
-./h3 --profile \
-  -d ./MiniMax-H3 \
-  -p "A red fox walking through snow, realistic, tracking shot." \
-  --width 512 --height 512 \
-  --render-width 320 --render-height 320 \
-  --frames 22 --steps 20 --layers 40 --reuse 3 \
-  -o outputs/fox-aggressive.mp4
-```
-
-This combination produced a clean, recognizable 22-frame fox in validation,
-but loses fine detail and can change framing. Do **not** add `--token-reduction`
-to both `--layers 40` and `--reuse 3`: that tested combination produced color
-ringing, outlines, and ghosted limbs.
-
-As an alternative to whole-velocity reuse, this keeps the timestep-dependent
-patch and output heads fresh at every transition:
-
-```sh
-./h3 --profile \
-  -d ./MiniMax-H3 \
-  -p "A surfer riding a blue ocean wave." \
-  --width 512 --height 512 --frames 22 --steps 20 \
-  --layers 45 --core-reuse 4 \
-  -o outputs/surfer-core-reuse.mp4
-```
-
-Use `--core-reuse 6` only as an aggressive preview. Values above 6 are not
-exposed because validation lost subject fidelity.
-
-### 5. Pick resolution and duration
-
-Width and height must each be multiples of 32, at least 32, and their product
-must not exceed `768 * 1344` pixels. Those are mechanical limits, not a promise
-that every tiny canvas has good model quality. H3-Base is a 768p model.
-
-| Canvas | Current guidance |
-|---|---|
-| `512x512` | Safest development size; repeatedly validated with multiple prompts. |
-| `768x768` | Validated close-quality square output; substantially more expensive. |
-| `1344x768`, `768x1344` | Released 768p-class landscape/portrait limit. |
-| `1024x768`, `768x1024` | Valid 4:3 and 3:4 768p-class canvases. |
-| `384x384` internal to `512x512` | Validated fast-quality scaling point. |
-| `320x320` internal to `512x512` | Validated aggressive scaling point. |
-| `256x256` | Native fast-preview canvas with automatic low-resolution RoPE adaptation. |
-
-For a fast native 256-square preview:
-
-```sh
-./h3 -d ./MiniMax-H3 \
-  -p "A red fox walks through fresh snow in a pine forest." \
-  --width 256 --height 256 \
-  --frames 22 --steps 20 \
-  --layers 50 --reuse 1 \
-  -o outputs/fox-256.mp4
-```
-
-At 256 square, H3 has only an `8x8` effective spatial-token grid, so it has less
-room for fine detail and complex composition. H3 automatically halves spatial
-RoPE coordinates at exactly 256 square. This removed repeating lattice
-artifacts in long fox renders and stayed coherent on an independent portrait,
-without adding tokens or runtime. Use `--use-reference-rope` to restore the
-released/MLX coordinates for parity checks. Keep token reduction off at this
-size. Native 128 square remains unsupported: its `4x4` token grid did not
-recover a recognizable subject even with adjusted RoPE.
-
-`--render-width` and `--render-height` must be set together, must have the same
-aspect ratio as the output, and cannot exceed the output dimensions. The model
-and VAE use the internal size; terminal frames and the encoded video retain the
-requested output size.
-
-H3 emits 24 fps and aligns frame requests upward to `5 + 17*n`:
-
-Use `--seconds N` for a duration-oriented request, or `--frames N` for direct
-frame control; the two options are mutually exclusive. Fractional seconds are
-accepted. Seconds are converted at 24 fps and then rounded upward to the next
-legal H3 temporal shape, so `--seconds 10` produces 243 frames (10.125 seconds).
-
-| Frames | Approximate video duration |
-|---:|---:|
-| 22 | 0.917 seconds |
-| 39 | 1.625 seconds |
-| 56 | 2.333 seconds |
-| 107 | 4.458 seconds |
-| 243 | 10.125 seconds |
-| 362 | 15.083 seconds |
-
-Short clips are useful for development. The released workflow is intended for
-roughly 4–15 second videos. A request such as `--frames 23` is rounded up to 39
-frames rather than producing an arbitrary temporal shape.
-
-### 6. Improve the prompt
-
-A short prompt works, but the released system expects a Context-IR-like
-description. State the subject, action, setting, camera, lighting/style, and
-desired sound. For example:
-
-```text
-Scene: a single red fox in a snow-covered pine forest at dawn.
-Action: the fox walks steadily left to right and looks toward the camera once.
-Camera: medium-height lateral tracking shot, 50 mm lens, stable framing.
-Look: photorealistic fur, cold blue ambient light, warm sunrise rim light.
-Audio: soft footsteps in snow, light wind through pine branches, no music.
-```
-
-Keep identity and object counts explicit when they matter. `--seed N` controls
-the native random stream; the default is 42. Compare options with the same
-prompt, seed, resolution, frame count, and step count.
-
-### 7. Preview frames and diagnose performance
-
-- `--show` displays a representative frame after every denoising transition,
-  followed by all frames from the completed video. Like Iris, it advertises 2x
-  display dimensions by default for Retina terminals; `--zoom N` changes that
-  factor without resizing the generated video or the encoded terminal image.
-- `--frames-dir DIR` writes final callback frames as PPM files. Intermediate
-  `--show` previews are not written there.
-- `-o ''` disables MP4 encoding; combine it with `--frames-dir` when FFmpeg is
-  unavailable.
-- `--profile` reports phase wall time, Metal encoding/wait time, peak live
-  tensor storage, cumulative allocation, and dispatch counts.
-
-For example:
-
-```sh
-./h3 --profile -d ./MiniMax-H3 -p "A hummingbird hovering over red flowers." \
-  --width 512 --height 512 --frames 22 --steps 20 \
-  --layers 45 --reuse 2 --frames-dir outputs/hummingbird-frames \
-  -o ''
-```
-
-### 8. Add image, video, and audio references
-
-First/last-frame anchors select the FL2VA path:
-
-```sh
-./h3 -d ./MiniMax-H3 -p "The fox keeps walking through the snow." \
-  --width 512 --height 512 --frames 22 --steps 20 \
-  --layers 45 --reuse 2 \
-  --first-frame fox.png --last-frame fox-later.png \
-  -o outputs/fox-anchored.mp4
-```
-
-Ordered references select the distinct Ref2VA checkpoint. Use the flag matching
-the media semantics:
-
-```sh
-# One image reference.
-./h3 -d ./MiniMax-H3 -p "Use the animal and setting in the reference." \
-  --width 512 --height 512 --frames 22 --steps 20 \
-  --ref-image fox.png -o outputs/fox-reference.mp4
-
-# Continue a clip but ignore its soundtrack.
-./h3 -d ./MiniMax-H3 -p "Continue the motion in this clip." \
-  --width 512 --height 512 --frames 22 --steps 20 \
-  --ref-silent-video fox.mp4 -o outputs/fox-video-reference.mp4
-
-# Preserve the clip's embedded audio.
-./h3 -d ./MiniMax-H3 -p "Continue this audiovisual scene." \
-  --width 512 --height 512 --frames 56 --steps 20 \
-  --ref-video fox-with-audio.mp4 -o outputs/fox-video-audio.mp4
-
-# Replace a video's soundtrack explicitly.
-./h3 -d ./MiniMax-H3 -p "Continue the scene with the supplied music." \
-  --width 512 --height 512 --frames 56 --steps 20 \
-  --ref-video-audio silent-fox.mp4 replacement.wav \
-  -o outputs/fox-replaced-audio.mp4
-
-# An ordered image plus standalone audio reference.
-./h3 -d ./MiniMax-H3 -p "Use the animal and music from the references." \
-  --width 512 --height 512 --frames 56 --steps 20 \
-  --ref-image fox.png --ref-audio music.wav \
-  -o outputs/fox-image-audio.mp4
-```
-
-Reference flags may be repeated and their command-line order is preserved.
-Standalone audio must accompany an image or video reference. Audio references
-must be 2–15 seconds; at most three audio inputs are accepted and their total
-decoded duration is capped at 15 seconds.
-
-## Tests and runtime requirements
+## Testing
 
 ```sh
 make test
 make parity
 ```
 
-`make test` runs the deterministic host suite and, when the ignored MLX fixture
-is installed under `misc/fixtures/`, compiles the Metal source at runtime and
-checks a complete toy H3 block against named MLX outputs. Runtime compilation is
-intentional: it follows Iris and does not require Xcode's optional offline Metal
-toolchain. The test covers both an F32 diagnosis path and the production BF16
-storage path; wide BF16 matrix products and SDPA use cached MPSGraph graphs, with
-direct Metal correctness fallbacks. `make parity` runs only those Metal/MLX
-checks.
+`make test` runs the deterministic host suite and, when the (git-ignored)
+MLX fixtures are installed under `misc/fixtures/`, also compiles the Metal
+source at runtime and checks a toy H3 block against named MLX outputs —
+intentionally at runtime, matching Iris, so it needs no Xcode offline Metal
+toolchain. `make parity` runs just those Metal/MLX checks.
 
-FFmpeg and FFprobe must be available on `PATH` for media inputs and MP4 output
-(`H3_FFMPEG` and `H3_FFPROBE` may select explicit executables). Generated RGB24 and
-32 kHz stereo F32 PCM are fed through concurrent pipes; no intermediate
-uncompressed media file is created.
+One test, `h3_av_mux_test`, cross-checks the native AVFoundation muxer
+against real FFmpeg output and is skipped automatically if `ffmpeg` isn't on
+`PATH` — this is the only place FFmpeg is used anywhere in this project now.
 
-## Implementation and performance notes
+## CLI flag reference
 
-The remainder documents the implementation behind the tutorial presets and the
-environment variables retained for exact A/B diagnosis.
+The full list is in `./h3 --help`; these are the ones to reach for first.
+Defaults: `--width 864 --height 480 --frames 56 --steps 20 --layers 50
+--reuse 1`.
 
-### Sampler and DiT controls
+| Flag | Effect |
+|---|---|
+| `-d, --model-dir PATH` | MiniMax-H3 checkpoint root |
+| `-p, --prompt TEXT` | Run once and exit; omit for an interactive session |
+| `--width/--height N` | Output canvas (multiples of 32, product ≤ 768×1344) |
+| `--frames N` / `--seconds N` | Duration — mutually exclusive; rounds up to a legal H3 temporal shape |
+| `--steps N` | Denoising passes. 20 default; 4–7 for fast iteration; 50 as a close-reference oracle |
+| `--reuse N` | Whole-denoiser reuse (extrapolates skipped steps): 1 exact, 2 fast, 3 aggressive |
+| `--layers N` | Active DiT blocks: 50 exact, 45 fast, 40 aggressive (min 35) |
+| `--core-reuse N` | Alternative to `--reuse`: keep the transformer residual, refresh only the patch/head each step |
+| `--token-reduction` | Pairs horizontal video tokens in middle blocks; faster, can shift composition |
+| `--render-width/--render-height N` | Run the model internally smaller, then upscale with vImage |
+| `--ssd-streaming` | See [Compute modes](#compute-modes) |
+| `--use-int8-row-fc2` | M5-only faster (less conservative) int8 FC2 path |
+| `--first-frame` / `--last-frame PATH` | FL2VA anchor conditioning |
+| `--ref-image` / `--ref-video` / `--ref-silent-video` / `--ref-video-audio` / `--ref-audio` | Ref2VA ordered references — see [Features](#features) |
+| `--show` | Live terminal preview (Kitty/Ghostty/iTerm2/WezTerm/Konsole) |
+| `--profile` | Per-phase Metal timing, memory, and dispatch-count report |
+| `--info` | Inspect model/device without generating |
 
-The default sampler uses the released shifted video/audio schedule. `--steps`
-always names the number of denoising passes, with terminal zero added after the
-last pass. Whole-denoiser reuse evaluates the first and last pass plus every
-requested interval, then extrapolates skipped video and audio velocities on
-their independent schedules. With very small step counts, keep `--reuse 1`.
+Environment variables (`H3_ATTENTION_CACHE`, `H3_ATTENTION_CACHE_DIR`,
+`H3_LORA_PATH`, `H3_LORA_SCALE`, `H3_TOKEN_REFINER_LORA`,
+`H3_INT8_STREAM_MLP`, `H3_QWEN_PREFETCH*`, `H3_ZERO_COPY_WEIGHTS`,
+`H3_VAE_TILE_PIXELS`, `H3_DIT_COMMAND_BLOCKS`, `H3_PROFILE`, and a long tail
+of `H3_DISABLE_*`/`H3_USE_SLOWER_*`-style A/B diagnostic switches) select
+alternate code paths for benchmarking or numerical comparison rather than
+end-user tuning. They're documented at their point of use in the source
+(start from [h3_dit.c](h3_dit.c), [h3_gpu.m](h3_gpu.m), and
+[h3_attention_cache.c](h3_attention_cache.c)) and in the commit history —
+each one exists because a specific optimization needed a same-process
+oracle to A/B against, not as a supported end-user surface.
 
-For the low-budget path, the released linear base grid won against
-actual-video-sigma linear spacing,
-quadratic and cubic warps, exact 30-point tail subsets, mild power warps,
-zero-order held full-grid velocities, linear velocity extrapolation, and RES.
-The more tail-heavy candidates often sharpened the subject but damaged motion
-or left a repetitive woven background; sparse RES and long extrapolation
-intervals failed much more visibly.
+## License
 
-Layer thinning ranks the checkpoint's actual AdaLN gates while protecting
-structurally important first and final blocks. Unused weights and schedule
-tensors are not retained, so `--layers 45` and `--layers 40` reduce both
-transformer time and unified-memory use. Core reuse holds the previous full
-transformer residual while refreshing the patch projection and timestep-aware
-head; it remains mutually exclusive with whole-velocity reuse.
-
-### Exact DiT fusions
-
-Every active DiT block fuses its attention residual gate with the following MLP
-AdaLN. The rounded BF16 residual is still written exactly, but the same row is
-kept in threadgroup memory for normalization, eliminating one dispatch and one
-global reread. Away from token-reduction boundaries, the MLP residual gate also
-produces the next block's attention AdaLN and carries that normalized state
-across the loop. `H3_DISABLE_FUSED_GATE_ADALN=1` and
-`H3_DISABLE_FUSED_CROSS_BLOCK_ADALN=1` restore the two-kernel oracles.
-The final audio/video AdaLN kernels bind directly to offsets in the residual
-stream, avoiding two slice blits and 18.8 MiB of scratch at 512x512 (29.4 MiB
-at the 864-class benchmark shape).
-`H3_DISABLE_FUSED_FINAL_SLICE=1` restores the copy-plus-AdaLN oracle at load.
-The BF16 final heads then apply AdaLN while loading their 16x16 projection
-tiles, preserving the standalone rounding and accumulation order while
-removing another equally sized normalized activation. The two optimizations
-together save 37.5/58.9 MiB. `H3_DISABLE_FUSED_FINAL_HEAD=1` restores the
-offset-AdaLN-plus-linear oracle at load.
-
-### Token-reduction internals
-
-`--token-reduction` is an independent aggressive DiT mode. After block 3 it
-pairs adjacent horizontal target-video tokens while leaving text, audio,
-conditions, and reference tokens exact. The complete full-resolution state is
-kept as a bypass. During the first ten noisy evaluations it restores before
-block 40; subsequent detail-forming evaluations restore before block 30. Each
-token returns as its original value plus the update learned by its pair, so
-within-pair detail is not discarded.
-The pooling kernel writes only true-pair baselines into a dense tail of the
-already allocated attention scratch buffer; odd-width singleton tokens need no
-baseline. The full bypass uses the oversized QKV tail when it fits, with a
-guarded dedicated fallback only for reference-heavy layouts. Common text-only
-canvases therefore add no activation arena at any token-grid width. Pooling
-also snapshots both source tokens while their BF16 values are already in
-registers, avoiding a separate full-hidden blit and redundant source read. The
-same entry kernel keeps each pooled row in threadgroup memory and emits the
-first reduced block's attention AdaLN, eliminating another global residual read.
-At the restore boundary, the first full-resolution attention AdaLN is fused
-into expansion: a 10.5 KiB threadgroup row avoids a global residual reread while
-still writing the exact bypass needed by the following residual branch.
-On a thermal-balanced 512x512x22, 19-forward IT M5 Max A/B this reduced denoise
-time from 39.13 to 28.06 seconds (28.3%). Final video/audio latent relative L2
-was 5.56%/15.14%. First/middle/last fox frames retained one clean muzzle,
-coherent legs, and sharp fur; an independent surfer remained consistent with
-one rider and board through the wave spray. It changes composition and is
-therefore opt-in rather than the close-reference default.
-`H3_TOKEN_REDUCTION_BLOCKS` can override the later `4:30` interval;
-`H3_TOKEN_REDUCTION_EARLY=STEPS:END` overrides the early schedule and `0`
-disables it. `H3_DISABLE_TOKEN_REDUCTION=1` provides an in-context exact oracle.
-`H3_DISABLE_FUSED_TOKEN_POOL_ADALN=1` and
-`H3_DISABLE_FUSED_TOKEN_ADALN=1` independently restore the two-kernel entry and
-exit boundaries for diagnosis.
-Token reduction composes cleanly with the validated `--layers 45 --reuse 2`
-settings: on the same 512 benchmark it reduced that profile from 16.69 to
-12.60 seconds (24.5% marginal), and independent fox and surfer renders stayed
-coherent. Do not combine it with both `--layers 40` and `--reuse 3`; that
-6.47-second experiment produced chromatic ringing and ghosted limbs despite
-acceptable latent norms.
-
-### Internal canvas and video VAE
-
-`--render-width` and `--render-height` run the model and VAE on a lower
-same-aspect internal canvas, then high-quality vImage-scale RGB frames to the
-requested output size before callbacks, terminal display, and encoding. This is an
-explicit quality/speed tradeoff: a measured 384-to-512 prompt render reduced
-M5 DiT time by 33% and video-VAE time by 18% while retaining a clean,
-recognizable photorealistic result. Both values must be multiples of 32; the
-exact output canvas remains the default.
-For square 512 output, 384 is the fast-quality point and 320 is the validated
-aggressive point. The latter produced a coherent walking fox and repeated at
-8.02 seconds of DiT versus about 15.82 seconds natively. Native 256 uses the
-same-cost spatial-RoPE adaptation described above; it remains a fast composition
-preview rather than a substitute for a 512- or 768-class final render.
-The video VAE automatically chooses a 256-320 pixel spatial tile from the
-requested canvas geometry, minimizing repeated overlap work while keeping peak
-storage bounded. `H3_VAE_TILE_PIXELS=256` restores the original conservative
-tile plan for close-reference diagnosis.
-
-### Weight residency and streamed prompt encoding
-
-On M5-class GPUs, persistent transformer weights are mapped directly from their
-safetensor shards instead of copied into anonymous shared buffers. This keeps
-the 37 GiB model file-backed/reclaimable and slightly improves total transformer
-time; M3 uses the faster copied-buffer path. `H3_ZERO_COPY_WEIGHTS=0` disables
-the M5 selection for diagnostics.
-The streamed Qwen text encoder preallocates a small ring of future layer
-buffers and fills them on eight I/O workers while Metal executes the current
-layer. The default ring depth is two layers on M3/older hardware and three on
-M5, where the target machine has 128 GiB. `H3_QWEN_PREFETCH=0` restores the
-single-layer synchronous reference path; values 1-8 select the worker count,
-and `H3_QWEN_PREFETCH_DEPTH=1` through `6` overrides the ring depth.
-
-`--ssd-streaming` is a separate, more aggressive residency mode for the DiT.
-Only its small per-block normalization weights remain resident. Two complete
-BF16 matrix slots alternate while a background reader fills the next slot in
-checkpoint-offset order; the current Metal command buffer runs concurrently.
-Darwin uncached reads avoid retaining a second copy in the filesystem cache.
-The first active block is prefetched again during the final block, so a cached
-interactive DiT is ready for its next denoiser evaluation. Measurements reached
-about 13--14.6 GiB/s from the internal SSD. `H3_PROFILE=1` reports total bytes,
-read throughput, and the part of the read wait that was not hidden by GPU work.
-
-### Streamed int8 attention cache and LoRA fusion
-
-`H3_ATTENTION_CACHE=path/to/cache` is a lighter-weight alternative to
-`--ssd-streaming`: QKV/attention-output stream per block from a cache
-pre-quantized to int8 (~147 MiB/layer, versus ~735 MiB for BF16 all four
-matrices) through two double-buffered slots, instead of being resident.
-The MLP (FC1/FC2) still stays int8-resident by default, same as the plain
-resident-int8 path. `H3_INT8_STREAM_MLP=1` streams FC1/FC2 from the same
-cache too, dropping DiT weight residency to just the two slots - the
-tradeoff a long (~15s/362-frame) run needs, and, on measurement, is
-consistently faster than `--ssd-streaming` even on short clips once set
-(a short 22-frame/512-square clip: 141s on `--ssd-streaming` versus ~78s
-on `H3_ATTENTION_CACHE`+`H3_INT8_STREAM_MLP=1`, both 20 denoising steps).
-Without `H3_INT8_STREAM_MLP`, the cache only avoids the resident path's
-one-time MLP quantization cost, which mostly shows up on longer runs -
-short clips can come out slower than `--ssd-streaming` in that
-configuration. Passing `--ssd-streaming` itself always wins over
-`H3_ATTENTION_CACHE` if both are set, rather than erroring. The cache
-needs the int8 QKV/attention-output path available (so not
-`--ssd-streaming`, `--use-slower-bf16-qkv`,
-`--use-slower-bf16-attention-output`, a sequence under 128 rows, or a GPU
-without the int8 path). Both paths measured bit-for-bit identical output
-against plain resident-int8 at matched seed. Build one with
-`build_attention_cache <FL2VA/transformer dir> <output cache file>`.
-
-The cache format's header (v3) tags which transformer directory it was
-quantized from - `model_kind` (FL2VA or Ref2VA) and `model_id` (a cheap,
-non-cryptographic fingerprint of the checkpoint's own shard paths/sizes/
-mtimes, not a hash of the ~18GB of weight bytes). `H3_ATTENTION_CACHE`
-refuses a cache whose `model_kind` does not match the generation actually
-running (e.g. an FL2VA cache used once `--ref-image`/`--ref-video`
-switches to Ref2VA) with a clear error, rather than silently streaming
-structurally-compatible-but-wrong weights - both models share the same
-DiT dimensions, so nothing else would have caught this:
-
-```
-h3: Ref2VA generation cannot use a FL2VA attention cache (dit_int8_v2.cache) - rebuild it against the matching transformer directory
-```
-
-A `model_id` mismatch (rewritten weights, a LoRA baked in after the cache
-was built, or a moved/copied checkpoint) is a warning, not a hard error,
-since the fingerprint can occasionally shift for benign reasons (e.g. a
-copy that resets mtimes) that `model_kind` never would. This is a
-breaking format change: v2 caches (from before this) fail the version
-check and must be rebuilt with the new `build_attention_cache`. The same
-check applies to a LoRA-fused cache materialized via `H3_LORA_PATH`
-below - it inherits `model_kind`/`model_id` from the base cache it was
-fused from, checked before fusing, not re-derived after.
-
-For a model directory with both FL2VA and Ref2VA (most releases),
-`build_attention_cache <model root dir> <output cache directory>` builds
-both in one pass - detected by the presence of `<model root
-dir>/FL2VA/transformer/config.json` - writing `<dir>/fl2va.cache` and,
-if a Ref2VA transformer is present, `<dir>/ref2va.cache` too. Point
-`H3_ATTENTION_CACHE_DIR` at that directory instead of `H3_ATTENTION_CACHE`
-at a single file, and h3.c auto-selects the matching cache the same way
-it already selects between the two transformer directories (by whether
-`--ref-image`/`--ref-video`/etc. are present):
-
-```
-build_attention_cache MiniMax-H3 ./h3-cache
-H3_ATTENTION_CACHE_DIR=./h3-cache ./h3 -d MiniMax-H3 -p "..."
-```
-
-`H3_ATTENTION_CACHE_DIR` needs the standard `FL2VA/transformer`/
-`Ref2VA/transformer` layout to know which file to pick; use
-`H3_ATTENTION_CACHE` (a single file) for a non-standard directory
-instead - setting both at once is an error.
-
-`build_lora_cache <FL2VA/transformer dir> <lora .safetensors> <output cache
-file> [lora_scale]` fuses a diffusers/peft-format LoRA adapter (separate
-to_q/to_k/to_v/to_out/ff.net lora_A/lora_B pairs) into the base BF16 weights
-offline on the CPU, then quantizes the result into the exact same cache
-format `build_attention_cache` produces - `H3_ATTENTION_CACHE` streams it
-unmodified, with no way to tell it apart from a non-LoRA cache. QKV's three
-separate low-rank deltas are concatenated in Q,K,V order to match h3.c's
-pre-fused `attn.qkv_proj.weight`. `lora_scale` defaults to `1.0`
-(`delta = scale * B @ A`), matching adapters that ship `alpha == rank`, such
-as lightx2v's [Minimax-h3-Turbo](https://huggingface.co/lightx2v/Minimax-h3-Turbo)
-4-step distillation LoRAs - verified working for both its FL2VA
-(`minimax_h3_fl2v_turbo_4step_v1.1_768p_bf16.safetensors`) and Ref2VA
-(`minimax_h3_ref2v_turbo_4step_v0.1_bf16.safetensors`) releases, each fused
-against its matching transformer directory.
-
-The same run also writes a second, much smaller `_refiner`-suffixed file for
-the two BF16-resident text token_refiner blocks, which the main int8 cache
-never covers. Point `H3_TOKEN_REFINER_LORA=path/to/cache_refiner.bin` at it
-to swap in the LoRA-fused refiner weights; unlike `H3_ATTENTION_CACHE` this
-is a plain BF16 override, not a streaming path, so the refiner stays
-resident either way. Leaving it unset falls back to the checkpoint's own
-refiner weights even when `H3_ATTENTION_CACHE` is active, silently mixing an
-un-fused refiner into an otherwise LoRA-fused DiT - set both together for a
-fully LoRA-fused run:
-
-```
-build_attention_cache MiniMax-H3/FL2VA dit_int8_v2.cache
-build_lora_cache MiniMax-H3/FL2VA lora/turbo4.safetensors dit_int8_v2_lora_turbo4.cache
-
-H3_ATTENTION_CACHE=dit_int8_v2_lora_turbo4.cache \
-H3_TOKEN_REFINER_LORA=dit_int8_v2_lora_turbo4_refiner.cache \
-./h3 -d MiniMax-H3 -p "..." --steps 4
-```
-
-`H3_LORA_PATH=lora/turbo4.safetensors` (plus optional `H3_LORA_SCALE`) is a
-newer, simpler alternative that needs no `build_lora_cache`/
-`H3_TOKEN_REFINER_LORA` step at all and works with *every* residency mode,
-not just `H3_ATTENTION_CACHE`: it reads the adapter directly and fuses it
-at model-load time, using the same math (`h3_lora.c`, shared with
-`build_lora_cache`) either way.
-
-- **Resident BF16** (`--use-slower-bf16-qkv`/`-attention-output`/`-mlp`):
-  `load_block()` fuses each of qkv/out/fc1/fc2 right after reading it from
-  the checkpoint, in place of the plain BF16 load - no extra step, no cache
-  file.
-- **Resident int8** (the default): the same fused-BF16 tensor then goes
-  through the existing `quantize_block_qkv`/`_attention_out`/`_mlp` calls
-  unchanged, so LoRA composes with resident int8 for free.
-- **`H3_ATTENTION_CACHE`**: rather than teach the streaming path anything
-  about LoRA, `h3_dit.c` fuses the whole 50-block base cache into an
-  ordinary H3AC file once (the in-process equivalent of running
-  `build_lora_cache` against `H3_ATTENTION_CACHE`'s target), and streams
-  that unmodified. Fusing all 50 blocks costs real CPU time (~30s, matching
-  `build_lora_cache`'s own measurement), so the result is cached next to
-  the base cache as `<cache>.lora_<hash>.h3ac`, named from the LoRA file's
-  path/size/mtime, the base cache's path/size/mtime, and the scale - a
-  changed input simply produces a different (cache-missing) name rather
-  than invalidating anything, and nothing deletes stale ones. If
-  `H3_INT8_STREAM_MLP` is unset, FC1/FC2 stay resident and are fused the
-  same way `load_block()` does, so a run never silently mixes a LoRA-fused
-  streamed QKV/OUT with an un-fused resident MLP.
-- **token_refiner**: `refine_text()`'s own `load_block()` call fuses it
-  too (with the LoRA's `token_refiner.refiner_blocks.0/1` tensors), so a
-  separate `H3_TOKEN_REFINER_LORA` file is never needed with
-  `H3_LORA_PATH` - though it is still honored if both are set, taking
-  priority as the pre-built override.
-
-Verified bit-for-bit identical output between a from-scratch
-`H3_ATTENTION_CACHE`+`H3_LORA_PATH` run (paying the ~30s fusion) and a
-second run reusing the cached `.lora_<hash>.h3ac` file, at matched seed.
-
-`H3_LORA_SCALE` defaults to the adapter's own `alpha` metadata divided by
-its rank (`h3_lora_detect_scale()`, reading the safetensors `__metadata__`
-object's `alpha` key and the block-0 `to_q` LoRA's rank) rather than a flat
-`1.0` - the diffusers/peft convention when `alpha != rank`. This matters in
-practice: lightx2v's own Minimax-h3-Turbo releases are inconsistent about
-it - the FL2VA 4-step `v1.1` adapter ships `alpha == rank` (scale `1.0`,
-no metadata-driven adjustment needed), but the 4-step `v1.2`, the 8-step
-`v1.0`, and the Ref2VA 4-step adapter all ship `alpha = 8` against rank
-128 (scale `0.0625`). Forcing `1.0` on those applies the delta 16x too
-strong and silently produces badly corrupted output with no error -
-exactly what a scale mismatch looks like before this detection existed.
-`h3.c` prints `h3: detected LoRA alpha metadata -> scale=...` when this
-kicks in; set `H3_LORA_SCALE` explicitly to override it (e.g. for an
-adapter that omits `alpha` metadata entirely, where the default silently
-stays `1.0`).
-
-```
-H3_LORA_PATH=lora/turbo4.safetensors ./h3 -d MiniMax-H3 -p "..." --steps 4
-
-H3_ATTENTION_CACHE=dit_int8_v2.cache H3_LORA_PATH=lora/turbo4.safetensors \
-./h3 -d MiniMax-H3 -p "..." --steps 4
-```
-
-### Metal 4 and TensorOps paths
-
-M5 GPUs automatically use native BF16 Metal 4/TensorOps for the DiT QKV and
-attention-output projections at sequence lengths up to 2,048. The compact
-Morton schedule routes Q/K/V directly into head-major attention inputs, avoids
-three MPSGraph input transposes, and is byte-identical to the portable path. It
-improves a complete 512x512 50-block forward by about 2% across repeated IT/US
-M5 Max runs. For 2,049-3,072 rows, including 864x480, two row-offset Morton
-dispatches preserve the efficient tile geometry and improve the complete
-forward by about 2% in balanced runs. Still larger sequences stay on MPSGraph.
-`H3_NAX=0` disables TensorOps for exact A/B diagnosis. The selection is guarded
-at runtime and falls back to the unchanged portable library if compilation is
-unavailable.
-
-`H3_NAX=1` forces the broader native BF16 linear path. It passes the complete
-50-block MLX fixture, but remains opt-in: exact-shape microbenchmarks favor its
-128-row tile while full DiT runs currently favor MPSGraph scheduling. This
-keeps a working NAX integration available for later quantized/fused kernels
-without making a benchmark regression the default.
-`H3_NAX=mlp` selects a more specialized Metal 4 path: paired FC1 gate/up
-TensorOps tiles apply SwiGLU in threadgroup memory and write only the
-14,336-wide activated intermediate, then FC2 also stays on TensorOps.
-`H3_DISABLE_NAX_MLP=1` keeps the MPSGraph MLP in a context created this way for
-same-process A/B testing. The path is deliberately opt-in because scheduling
-depends on the OS GPU stack: the primary macOS 26.5.2 M5 Max gained 1.3-2.0%
-in isolated real-weight MLP runs but lost about 1-3% in a complete 50-block forward,
-while an otherwise identical macOS 26.5 M5 Max gained 1.4% in a same-context
-forward A/B. The resulting 50-block velocities were close (1.9% video and 2.4%
-audio relative L2), but not byte-identical.
-
-### Specialized projection kernels
-
-The narrow DiT audio/video output heads convert their small released F32
-weights to BF16 once and use the Iris-derived 16x16 tiled linear directly on
-BF16 activations. At the production 320-render geometry, isolated paired-head
-measurements are 2.30x faster on M3 Max and 1.83x faster on M5 Max, with
-relative L2 `8.64e-4`; the absolute M5 saving is about 0.6 ms per evaluated
-step. Full fox and surfer sequences remained clean and measured 29.9/38.4 dB
-against the F32-head renders. `H3_DIT_F32_FINAL=1` restores the close-reference
-head and its extra activation buffers.
-The F32 `96->5376` video and `32->5376` audio patch projections use a dedicated
-16x16 cooperative tile, retaining F32 weights, inputs and accumulation while
-rounding the tile result directly to BF16.
-Paired production-shape measurements are 1.77x faster on M3 and 1.62-1.78x
-on M5; the complete generated RGB stream is byte-identical to the scalar path.
-Fusing the final cast improves the 2835-row tile itself from 2.499 to 1.734 ms
-on M3 and 1.555 to 1.186 ms on M5, and removes 38.27/59.66 MiB of F32 scratch
-at 512/864-class geometry. `H3_DISABLE_FUSED_PATCH_CAST=1` restores the tiled
-F32 output plus standalone cast; `H3_SCALAR_PATCH=1` selects the scalar
-diagnostic path.
-The same tile binds its output directly into the packed hidden stream, removing
-the BF16 media staging buffers and their blits. This saves another 19.13/29.83
-MiB and improves the 2835-row boundary from 1.847 to 1.730 ms on M3 and 1.282
-to 1.184 ms on M5. Contiguous T2VA uses byte offsets; FL2VA/Ref2VA use compact
-destination-row maps so each modality remains one large dispatch. A complete
-six-segment Ref2VA M5 ABBA remained byte-identical and improved 5.067 to 5.033
-seconds per measured forward pair. `H3_DISABLE_FUSED_PATCH_PACK=1` restores the
-staging buffers and packing blits.
-
-### Scheduling and activation memory
-
-The DiT core is split into two ordered Metal command buffers so GPU execution
-of the first part overlaps CPU encoding of the second. Thermal-balanced ABBA
-measurements select a 60%-depth split on M5 (30/50, 27/45, and 24/40), with
-roughly 0.5-1.8% wins; M3 automatically splits only the validated 30/50 case,
-which measured 1.2% faster, because 24/40 regressed there. The operation order
-and generated bytes are unchanged. `H3_DIT_COMMAND_BLOCKS=0` restores one
-command buffer; values 1-50 override the split for further tuning.
-DiT activation buffers also follow their actual intra-block lifetimes: the QKV
-projection arena is reused first for attention heads and then for the normalized
-MLP input, while the current attention-output arena becomes the MLP output after
-its branch has been consumed. This removes 61.25 MiB at 512-class geometry and
-99.63 MiB at 864-class geometry without changing dispatches or arithmetic.
-`H3_DISABLE_DIT_ACTIVATION_ALIAS=1` restores separate diagnostic buffers.
-MPSGraph tensor-data wrappers for immutable DiT weights and biases are retained
-with their resident buffers. This avoids rebuilding the same binding metadata
-for every block and denoiser evaluation without copying tensor storage; measured
-ABBA gains were 1.6% on M3 Max and 0.4-1.1% on M5 Max. Activation wrappers stay
-transient because retaining them regressed the M5. The outputs remain
-byte-identical, and `H3_DISABLE_GRAPH_DATA_CACHE=1` restores transient wrappers
-for all tensors.
-On M3/older hardware, the four MPSGraph segments in each DiT block also reuse
-one `MPSCommandBuffer` wrapper for their shared underlying Metal command buffer.
-Repeated thermal-balanced runs measured 1.0-1.6% faster on M3 Max; M5 measured
-neutral, so it retains fresh wrappers. `H3_REUSE_MPS_COMMAND=0` or `1` overrides
-the automatic selection. Results are byte-identical.
-On M5, the serving Euler sampler keeps its patch-packed F32 latents and cached
-BF16 velocities in Metal buffers. Each selected denoiser refresh is completed
-before the next is encoded, avoiding MPSGraph back-pressure while removing all
-intermediate latent/velocity readbacks and repacking. Two warm eight-run A/B
-sequences measured small 0.1% and 0.3% gains with byte-identical final latents;
-the path also saves roughly 16 bytes of transient host state per video-latent
-element (about 136 MB at the 768p shape). M3 and older GPUs retain the CPU
-sampler by default. `H3_CPU_SAMPLER=1` restores it on M5;
-`H3_GPU_SAMPLER=1` selects the GPU-state path explicitly, and
-`H3_GPU_SAMPLER_WINDOW=0` enables the slower unbounded encode-ahead diagnostic.
-
-### Checkpoint layout and media pipeline
-
-The released checkpoint stores DiT QKV rows interleaved per attention head.
-Native Metal consumes that layout directly in the fused QK-normalization/RoPE
-kernel, avoiding a checkpoint transpose and extra RAM. The earlier identity
-interpretation was the cause of the noisy diagnostic outputs.
-
-The public generation path decodes the joint audio latent with a streamed native
-BigVGAN/AudioVAE and writes synchronized H.264 plus 32 kHz stereo AAC. The native
-waveform agrees with the corrected MLX oracle to relative L2 `6.94e-5`.
-`--first-frame`, `--last-frame`, and their combination use the released visual
-VAE encoder, Qwen3-VL vision tower and three-deepstack multimodal presentation,
-0.999 condition augmentation, and fixed condition rows in the native DiT. The
-first image is stretched to the target canvas; the last image is aspect-cover
-scaled and center cropped, matching the reference implementation. `--ref-image`
-selects the distinct Ref2VA transformer, preserves ordered `<Picture N>`
-presentation, and uses the released down-only aspect-preserving reference canvas.
-`--ref-silent-video` additionally performs bounded 24 fps decoding, the visual
-VAE's causal `ceil(T/4)` compression, two-frame Qwen sampling, and timestamped
-`<Video N>` presentation. `--ref-video` preserves an embedded soundtrack,
-`--ref-video-audio VIDEO AUDIO` supplies an explicit replacement, and
-`--ref-audio` appends an ordered standalone clip. Reference audio is decoded as
-32 kHz stereo F32, encoded by the native AudioVAE posterior-mean path, mixed as
-0.999 clean latent plus 0.001 seeded noise, pinned to the audio condition
-timestep 1.0, and packed as width-32 rows on the same rotary timeline as visual
-references. Audio inputs are 2-15 seconds, at most three are
-accepted, their total decoded duration is capped at 15 seconds, and a standalone
-audio reference must be combined with an image or video reference.
-
-The native audio encoder matches the corrected MLX oracle at relative L2
-`3.59e-6` on a real two-second stereo fixture. The correction is important: the
-original MLX reshape interleaved left/right samples, whereas the official
-PyTorch/SGLang path folds intact stereo channels into the batch dimension. On
-the 128 GB M5 Max, clean end-to-end image+audio and embedded-video+audio renders
-completed in 74.58 and 76.99 seconds respectively, each with about a 40.1 GB
-peak physical footprint and zero swaps.
-
-### Profiling and diagnostic paths
-
-`--profile` reports each Metal-backed phase separately: wall time, CPU-side
-command encoding, complete commit-to-fence wait, root-command GPU timestamps,
-peak live tensor storage, cumulative allocation, and dispatch counts. The wait
-measurement is the complete command turnaround; the root GPU timestamp alone
-can omit child buffers scheduled internally by MPSGraph and is labeled
-accordingly.
-
-The DiT fast path evaluates each BF16 `fc1 -> SwiGLU -> fc2` block as one cached
-graph, avoiding separate graph boundaries and persistent intermediate tensors.
-Set `H3_DISABLE_FUSED_MLP=1` to retain the close-reference operation boundaries
-for numerical diagnosis.
-
-On supported M5 Metal 4 TensorOps hardware, the native int8 MLP engine is the
-default. It dynamically quantizes activations, uses per-output-channel weight
-scales, and gives the sensitive FC2 input one scale per 1,024 channels.
-The selected FC2 kernel keeps scaled partial products in private cooperative
-fragments instead of repeatedly spilling a 32 KiB threadgroup tile. A fixed
-50-layer, 19-transition 512x512 render measured 36.30 seconds with BF16 MPS and
-25.80 seconds with int8 on M5 Max. Beginning, middle, and final decoded frames
-retained the same subject, composition, and motion; small edge and fur details
-can differ. The current diagnostic implementation retains both BF16 and int8
-MLP weights only when an A/B diagnostic requests them. Normal int8 loading
-releases each block's BF16 FC1/FC2 buffers after their submitted quantization
-finishes, reducing measured peak tensor storage to 25.9 GiB from the BF16
-path's 36.4 GiB. Runtime weight quantization still adds startup time.
-
-The fastest M5 path also quantizes each DiT QKV projection and writes its
-Q/K/V tiles directly in head-major attention layout before the existing Q/K
-normalization and RoPE kernel. In a fixed 50-layer, 19-transition 512x512
-render this reduced denoising again, from 25.80 to 19.32 seconds. Sampled
-beginning, middle, and final frames remained a coherent detailed fox walking
-through snow; quantized attention can change framing and fine detail. Use
-`--use-slower-bf16-qkv` for the close-reference BF16 projection. Normal int8
-loading releases the redundant BF16 QKV weights after quantization.
-
-The following attention-output projection is int8 as well on the default M5
-path. Crossed same-model tests improve a complete forward by another 4.5-5.5%
-at 512 and 864. A decoded fox render remained clean and closely matched the
-int8-QKV-only composition; its thermally hot denoise measured 19.18 seconds.
-Use `--use-slower-bf16-attention-output` to retain that projection in BF16.
-
-On that int8 path, SDPA now leaves its result in native
-`[head,row,dimension]` order. A specialized 256-thread kernel gathers and
-quantizes each H3 row directly into the projection's row-major int8 buffer,
-eliminating the intervening full-width BF16 transpose without changing any
-output byte. Thermally controlled crossed runs improve complete 512 and 864
-forwards by roughly 0.2-1.2%. Use
-`--use-slower-row-major-attention-output` to restore the explicit BF16
-row-major SDPA output and ordinary quantizer.
-
-The M5 path also folds QKV and MLP activation quantization into the preceding
-gated AdaLN kernel. This removes 99 standalone quantizer dispatches per
-50-layer forward while preserving the previous output bytes, improving crossed
-512/864 measurements by about 0.3-0.6%. Use
-`--use-slower-unfused-int8-inputs` to restore the standalone quantizers.
-
-The fused gated-AdaLN path loads its full 5,376-wide H3 rows as BF16x4 vectors
-and writes int8x4. It stages the rounded values locally before computing the
-original per-thread RMS sequence, so the reduction tree and every output byte
-remain unchanged. Crossed measurements save roughly another 0.1-0.5%. The
-existing `--use-slower-unfused-int8-inputs` option retains the portable scalar
-and standalone-quantizer fallback.
-
-Q/K RMS normalization and RoPE are performed inside the int8 QKV projection
-tile as well. The fused epilogue is byte-identical and improves complete
-forwards by 2.1-3.2% at 512 and 1.0-1.8% at 864 in crossed M5 measurements.
-Use `--use-slower-unfused-qkv-rope` to restore the separate Q/K kernel.
-
-That epilogue processes four adjacent Q/K dimensions per work item with
-BF16x4 loads and stores. The per-element arithmetic and BF16 rounding order are
-unchanged, while crossed cool-state measurements improve complete forwards by
-about 0.4-1.0% at both 512 and 864. The same
-`--use-slower-unfused-qkv-rope` option restores the scalar standalone path.
-
-At up to 2,048 rows, the exact RMS loop uses BF16x4 loads followed by four
-explicit ordered FMAs. This preserves every output bit and improves 512-class
-forwards by another 0.5-0.6%; larger shapes retain scalar loads because the two
-forms tie there. Use `--use-slower-scalar-qkv-rms` to force scalar loads.
-
-The int8 attention-output projection caches its 128 row and column scales in
-1 KiB of threadgroup memory instead of rereading them for every cooperative
-fragment element. Above 2,048 rows the fused QKV kernel uses the same idea and
-then recycles that storage for inverse RMS values; smaller QKV shapes retain
-direct loads because the two forms tie there. Both are byte-identical and
-improve complete forwards by about 0.2-0.7% where selected. Use
-`--use-slower-uncached-int8-scales` to restore direct device-scale loads.
-
-For sequences of at most 2,048 rows, the H3 attention-output projection also
-compiles its 7,168-by-5,376 shape into the TensorOps kernel. The result remains
-byte-identical while saving about 0.2-0.8% in crossed complete 512-forward
-measurements. Larger sequences retain the dynamic-shape kernel because the
-specialization regresses there. `--use-slower-uncached-int8-scales` restores
-the general dynamic, direct-scale-load implementation.
-
-FC1 also uses an H3-specialized, compile-time 5,376-wide TensorOps loop. It is
-byte-identical to the generic loop and saves about 0.1-0.4% in crossed complete
-forwards. Use `--use-slower-dynamic-fc1-k` to restore the runtime-bound loop.
-
-```sh
-./h3 --profile -d ./MiniMax-H3 \
-  -p "A red fox walks through fresh snow." \
-  --width 512 --height 512 --frames 22 --steps 20 \
-  --layers 50 --reuse 1 -o outputs/fox-int8.mp4
-```
-
-Use `--use-slower-bf16-mlp` to force the portable close-reference MPS/BF16 MLP
-path for numerical comparison. Older Metal hardware selects that path
-automatically when the required native TensorOps kernels are unavailable.
-For FC2 activation quantization, sequences of at most 2,048 rows use an exact
-128-thread reduction. Each thread retains its eight BF16 input values while
-computing the group maximum, avoiding a second device-memory read when it emits
-the int8 values; crossed M5 measurements improved complete 512 forwards by
-about 0.2-0.8% without changing any output byte. Larger sequences retain the
-measured 256-thread kernel. `--use-slower-grouped-quantizer` forces the latter
-at every size for A/B comparison.
-
-The native baseline targets the original `FL2VA/` and `Ref2VA/` checkpoint
-trees. Model phases are loaded and released separately so the 33B transformer,
-Qwen encoder, and decoders never have to coexist in unified memory.
+MIT — see [LICENSE](LICENSE). Third-party notices (a Metal kernel design
+adapted from ccv's FlashAttention implementation) are in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Upstream project:
+[antirez/h3.c](https://github.com/antirez/h3.c).
