@@ -4,27 +4,31 @@
 
 [MiniMax-H3](https://huggingface.co/lightx2v/Minimax-h3-Turbo)
 （テキスト／画像／動画から、音声付き動画を生成する拡散トランスフォーマー）を
-Apple Siliconだけで動かすネイティブmacOSアプリです（CLIとローカルWeb GUIも
-同梱）。すべてMetal/MPSGraph上でプロセス内実行され、Python・PyTorch・
-クラウド通信は一切不要です。さらにこのforkでは、FFmpegへの依存も
-取り除いています — メディアの入出力はネイティブのAVFoundation/ImageIO経由です。
+Apple Siliconだけで動かすネイティブmacOSアプリです（CLIと、アプリ自身が
+実行中に提供するローカルHTTP APIも同梱）。すべてMetal/MPSGraph上で
+プロセス内実行され、Python・PyTorch・クラウド通信は一切不要です。さらに
+このforkでは、FFmpegへの依存も取り除いています — メディアの入出力は
+ネイティブのAVFoundation/ImageIO経由です。
 
 これはSalvatore Sanfilippo氏（antirez）の
 [h3.c](https://github.com/antirez/h3.c)のforkです。C/Objective-Cのエンジン
-本体（`libh3.a`）は3つのフロントエンドすべてで共通・無変更のまま使われて
-おり、このforkではネイティブSwiftUIアプリ、ネイティブ（ffmpeg不要）な
-参照メディアのデコード、搭載メモリに応じた参照動画の解像度上限自動調整、
-ライブラリ関数として呼び出せるint8アテンションキャッシュビルダー（CLIツール
-としてだけでなく）、そしてアプリ配布用のDeveloper ID署名・公証対応を追加
-しています。
+本体（`libh3.a`）は2つのフロントエンドで共通・無変更のまま使われており、
+このforkではネイティブSwiftUIアプリ（独自のモデルマネージャー、外部依存
+なしのHugging Faceダウンローダー、組み込みの自動化API付き）、ネイティブ
+（ffmpeg不要）な参照メディアのデコード、搭載メモリに応じた参照動画の
+解像度上限自動調整、ライブラリ関数として呼び出せるint8アテンション
+キャッシュビルダー（CLIツールとしてだけでなく）、そしてアプリ配布用の
+Developer ID署名・公証対応を追加しています。以前あったPythonベースの
+ローカルWeb GUIは、ネイティブアプリ自身の組み込みAPI（下記
+[API](#api)参照）に置き換える形で廃止しました — このリポジトリには
+もうPythonへの依存はどこにもありません。
 
-## 3つの使い方
+## 2つの使い方
 
 | フロントエンド | 場所 | 向いている用途 |
 |---|---|---|
-| **ネイティブアプリ**（`h3c-app.app`） | `native/H3Spike/` | エンドユーザー向け。フォーム入力（内容・画面の形・長さ・参照）、進捗＋残り時間表示、プレビュー付きで、フラグを覚える必要がない。 |
+| **ネイティブアプリ**（`h3c-app.app`） | `native/H3Spike/` | エンドユーザー向け。フォーム入力（内容・画面の形・長さ・参照）、進捗＋残り時間表示、プレビュー付きで、フラグを覚える必要がない。実行中は`127.0.0.1`上の[HTTP API](#api)からも同じエンジン・ジョブ状態にアクセスできる。 |
 | **CLI**（`./h3`） | リポジトリ直下 | スクリプト実行・ベンチマーク・全フラグ／環境変数を使った制御 — 以下の全機能はまずここで使えるようになる。 |
-| **ローカルWeb GUI** | `gui/server.py` | ネイティブアプリをビルドせずブラウザから同じエンジンを使う。`./h3`をサブプロセスとして呼び出すだけの標準ライブラリのみのPython（`pip install`不要）。 |
 
 ## 動作要件
 
@@ -78,15 +82,21 @@ mkdir -p outputs
 まず押さえておくべきものは下の[CLIフラグ早見表](#cliフラグ早見表)に
 まとめています。
 
-### Web GUI
+### API
+
+ネイティブアプリを起動したまま、ウィンドウの代わりに（あるいは併用して）
+スクリプトから操作できます。
 
 ```sh
-make -j8
-python3 gui/server.py --port 8420
+curl -X POST http://127.0.0.1:8420/api/generate \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "A red fox walks through fresh snow.", "size_profile": "square", "seconds": 5}'
+
+curl http://127.0.0.1:8420/api/status
+curl http://127.0.0.1:8420/api/result/video -o fox.mp4
 ```
 
-`http://localhost:8420` を開いてください。ジョブごとに`./h3`をシェル
-実行し、その進捗をページにストリーミングします。
+エンドポイントの全一覧は下記の[API](#api)を参照してください。
 
 ## 機能
 
@@ -123,6 +133,10 @@ python3 gui/server.py --port 8420
   から直接ダウンロードでき、初回起動時に自動的に案内されます — 素朴だが
   再開可能なURLSessionベースのダウンローダーです。詳細は
   [ModelDownloader.swift](native/H3Spike/Sources/H3cApp/ModelDownloader.swift)。
+- **組み込みローカルAPI**（ネイティブアプリのみ）: `127.0.0.1`上で動く
+  プレーンなHTTP/JSON API。生のPOSIXソケット上でアプリ自身が提供して
+  おり（Network.framework・サードパーティサーバー不要）、ウィンドウと
+  全く同じジョブ/エンジン状態を操作します。詳細は下記[API](#api)。
 - **対話端末プレビュー**（`--show`、Kitty/Ghostty/iTerm2/WezTerm/Konsole
   対応）と、フェーズ別Metalタイミング/メモリ診断のための`--profile`。
 
@@ -203,11 +217,12 @@ main.c, h3_cli.c, linenoise.c   CLI引数解析＋対話セッションのフロ
 h3_build_attention_cache.c      h3_build_attention_cache()のCLIラッパー -> build_attention_cache
 h3_build_lora_cache.c           LoRAをint8キャッシュへオフラインで融合するCLIツール -> build_lora_cache
 tests/                          Cテストスイート（make test / make parity）
-gui/                            ローカルWeb GUI（標準ライブラリのみのPythonサーバー＋静的フロントエンド）
 native/H3Spike/                 ネイティブmacOSアプリ（SwiftPM）
   Sources/CH3                   libh3.aのC APIをSwiftへ橋渡しするCシム
   Sources/H3Engine              C APIのSwift非同期ラッパー（AsyncThrowingStreamベースの進捗/キャンセル）
-  Sources/H3cApp                SwiftUIアプリ本体（h3c-app.app）
+  Sources/H3cApp                SwiftUIアプリ本体（h3c-app.app）。ModelLibrary/ModelManagerView（登録済み
+                                 モデル/LoRA）、ModelDownloader（Hugging Faceダウンロード）、
+                                 HTTPServer/GenerationViewModel+API（組み込み自動化API）を含む
   Sources/H3Spike                H3Engine用の最小限のプロセス内スパイク/参照クライアント。配布アプリ本体ではない
   package_app.sh                h3c-app.appをビルド・パッケージング。署名・公証も行う（下記参照）
 ```
@@ -271,18 +286,6 @@ H3C_NOTARY_PROFILE="some-keychain-profile" \
 静的リンクされた`libh3.a`だけなので、バンドルに対する単純な
 `codesign --deep`一回で十分です。
 
-### Web GUI
-
-```sh
-make -j8
-python3 gui/server.py --port 8420
-```
-
-インストール手順は不要です。ジョブごとに`./h3`をサブプロセスとして
-呼び出し、その`\r%-25s %4d/%-4d`形式の進捗行（`h3_cli.c`の
-`cli_progress`）をページがポーリングするJSONへ変換するだけの、純粋な
-標準ライブラリだけのPythonです。
-
 ## テスト
 
 ```sh
@@ -340,6 +343,60 @@ FFmpeg出力と突き合わせて検証するもので、`ffmpeg`が`PATH`上に
 コミット履歴にドキュメント化されています — いずれも、ある最適化を
 同一プロセス内でA/B比較するオラクルが必要だったために存在するもので、
 サポートされたエンドユーザー向けの機能ではありません。
+
+## API
+
+`h3c-app.app`が起動している間、`http://127.0.0.1:8420`でプレーンな
+JSON APIを提供します — 生のPOSIXソケットで実装されており
+（[HTTPServer.swift](native/H3Spike/Sources/H3cApp/HTTPServer.swift)参照）、
+Network.frameworkやサードパーティ製サーバーは使っていません。別プロセスの
+起動・停止も不要です。これは旧`gui/server.py`の置き換えです — ブラウザ
+クライアント向けに`./h3`をサブプロセスとして包む別実装を用意するのでは
+なく、このAPIはウィンドウと全く同じ`GenerationViewModel`/エンジンの
+インスタンスを操作します
+（[GenerationViewModel+API.swift](native/H3Spike/Sources/H3cApp/GenerationViewModel+API.swift)参照）。
+ジョブは常に1つだけで、UIと共有されます — 「動画をつくる」を押すのと
+`POST /api/generate`は同じ枠を奪い合い、負けた方には明確な`409`が
+返ります。
+
+クライアントとサーバーは常に同じMac上にあるため、メディア入力はブラウザ
+向けのアップロードではなく、単なるファイルシステムパスです — 旧GUIと
+異なり、アップロード用のエンドポイントはありません。
+
+| メソッド | パス | 内容 |
+|---|---|---|
+| `POST` | `/api/generate` | ジョブを開始。JSONボディで現在のドラフトを完全に置き換えます（下記参照）。開始できれば`202`、リクエスト不正なら`400`、ジョブ実行中なら`409`。 |
+| `GET` | `/api/status` | エンジン/ジョブの状態、進捗割合、フェーズ/ステージ文言、エラーメッセージ、結果が用意できているか。 |
+| `POST` | `/api/cancel` | 実行中のジョブがあれば中止。 |
+| `GET` | `/api/result/video` | 現在の結果を`video/mp4`としてストリーミング。結果が無いか、次のジョブの`generate()`呼び出しで削除された後は`404`。 |
+| `GET` | `/api/models` | 登録済みH3モデルディレクトリ一覧（id・名前・パス・アクティブかどうか）。 |
+| `GET` | `/api/loras` | 登録済みLoRAファイル一覧（id・名前・パス・強さ・アクティブかどうか）。 |
+
+`POST /api/generate`のボディフィールド（`prompt`以外はすべて省略可）:
+
+| フィールド | 既定値 | 備考 |
+|---|---|---|
+| `prompt` | — | 必須。 |
+| `size_profile` | `"square"` | `smallSquare`、`square`、`landscapeUpscaled`、`landscapeNative`、`portraitUpscaled`、`portraitNative`のいずれか（[GenerationModels.swift](native/H3Spike/Sources/H3cApp/GenerationModels.swift)の`SizeProfile`参照）。 |
+| `seconds` | `5` | 1〜15。 |
+| `steps` | `20` | |
+| `reuse` | `1` | 1〜3。 |
+| `compute_mode` | このGPUでのアプリの既定値 | `attentionCache`または`ssdStreaming`。 |
+| `seed` | ランダム | |
+| `first_frame_path` / `last_frame_path` | なし | FL2VAのアンカー。`reference_paths`とは併用不可。 |
+| `reference_paths` | `[]` | 順序付きのRef2VA参照。画像か動画かはパスごとに自動判定。 |
+| `lora_name` | なし | `GET /api/loras`の名前と一致させる必要あり。省略（または`""`）すると、ウィンドウ側で選択済みでもこのジョブではLoRAなし扱いになる。 |
+| `lora_scale` | そのLoRAの保存済みの強さ | `lora_name`指定時のみ意味を持つ。 |
+
+```sh
+curl -X POST http://127.0.0.1:8420/api/generate -H "Content-Type: application/json" -d '{
+  "prompt": "A red fox walks through fresh snow in a pine forest.",
+  "size_profile": "square", "seconds": 5, "steps": 20
+}'
+
+curl http://127.0.0.1:8420/api/status
+curl http://127.0.0.1:8420/api/result/video -o fox.mp4
+```
 
 ## ライセンス
 

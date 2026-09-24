@@ -223,6 +223,13 @@ final class GenerationViewModel: ObservableObject {
     private var engine: H3Engine?
     private var generationTask: Task<Void, Never>?
 
+    // MARK: Local automation API (see GenerationViewModel+API.swift) -
+    // replaces the old Python gui/server.py entirely: while this app runs,
+    // the same job/state a person drives through the form is also reachable
+    // over HTTP, with no separate process or dependency to install.
+    var apiServer: HTTPServer?
+    @Published var apiServerStatus: String = "起動しています…"
+
     init() {
         // Sweep anything a previous run left behind (crash, force quit) -
         // generated previews are meant to be throwaway unless the user
@@ -231,8 +238,12 @@ final class GenerationViewModel: ObservableObject {
         NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.deleteCurrentPreview() }
+            MainActor.assumeIsolated {
+                self?.deleteCurrentPreview()
+                self?.apiServer?.stop()
+            }
         }
+        startAPIServer()
     }
 
     private static func sweepStaleTempFiles() {

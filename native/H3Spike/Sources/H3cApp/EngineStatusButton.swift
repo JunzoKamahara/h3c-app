@@ -52,6 +52,9 @@ struct EngineStatusButton: View {
                 showingModelManager = true
             }
             .font(.caption)
+            Divider()
+            Text("APIサーバー").font(.caption).foregroundStyle(.secondary)
+            Text(viewModel.apiServerStatus).font(.caption).textSelection(.enabled)
             if case .failed(let message) = viewModel.engineState {
                 Divider()
                 Text("読み込みエラー").font(.caption).foregroundStyle(.secondary)

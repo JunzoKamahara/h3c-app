@@ -34,9 +34,6 @@ build_lora_cache
 *.cache
 *.h3ac
 .DS_Store
-gui/outputs/
-gui/uploads/
-gui/testinputs/
 
 # Swift Package Manager build output.
 native/H3Spike/.build/

@@ -2,7 +2,8 @@
 
 [English](README.md) | [日本語](README.ja.md)
 
-A native macOS app (plus a CLI and a local web GUI) that runs
+A native macOS app (plus a CLI, and a local HTTP API the app itself serves
+while running) that runs
 [MiniMax-H3](https://huggingface.co/lightx2v/Minimax-h3-Turbo) — a
 text/image/video-to-video-with-audio diffusion transformer — entirely on
 Apple Silicon. Everything runs in-process against Metal/MPSGraph: no Python,
@@ -11,19 +12,22 @@ no PyTorch, no cloud calls, and (since this fork) no FFmpeg dependency either
 
 This is a fork of Salvatore Sanfilippo's (antirez)
 [h3.c](https://github.com/antirez/h3.c). The C/Objective-C engine
-(`libh3.a`) is shared unchanged across all three front ends; this fork adds
-the native SwiftUI app, native (ffmpeg-free) reference-media decoding, a
-memory-aware reference-video resolution cap, an int8-attention-cache builder
-usable as a library call (not just a CLI tool), and Developer ID
-signing/notarization for distributing the app.
+(`libh3.a`) is shared unchanged across both front ends; this fork adds the
+native SwiftUI app (with its own model manager, no-dependency Hugging Face
+downloader, and embedded automation API), native (ffmpeg-free) reference-
+media decoding, a memory-aware reference-video resolution cap, an
+int8-attention-cache builder usable as a library call (not just a CLI
+tool), and Developer ID signing/notarization for distributing the app. An
+earlier Python-based local web GUI has been retired in favor of the native
+app's own embedded API (see [API](#api) below) — this repository has no
+Python dependency anywhere now.
 
-## Three ways to run it
+## Two ways to run it
 
 | Front end | Where | Best for |
 |---|---|---|
-| **Native app** (`h3c-app.app`) | `native/H3Spike/` | End users. Guided form (subject/shape/length/references), progress + ETA, preview, no flags to remember. |
+| **Native app** (`h3c-app.app`) | `native/H3Spike/` | End users. Guided form (subject/shape/length/references), progress + ETA, preview, no flags to remember — and, while it's running, an [HTTP API](#api) on `127.0.0.1` for scripting against the exact same engine/job state. |
 | **CLI** (`./h3`) | repo root | Scripting, benchmarking, and the full flag/env-var surface — every capability below is reachable here first. |
-| **Local web GUI** | `gui/server.py` | Browser access to the same engine without building the native app; wraps `./h3` as a subprocess. Standard-library-only Python, no `pip install`. |
 
 ## Requirements
 
@@ -76,15 +80,21 @@ write the current result). Run `./h3 --help` for the complete flag list —
 the [CLI flag reference](#cli-flag-reference) below covers the ones worth
 knowing about first.
 
-### Web GUI
+### API
+
+With the native app running, drive it from a script instead of (or in
+addition to) the window:
 
 ```sh
-make -j8
-python3 gui/server.py --port 8420
+curl -X POST http://127.0.0.1:8420/api/generate \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "A red fox walks through fresh snow.", "size_profile": "square", "seconds": 5}'
+
+curl http://127.0.0.1:8420/api/status
+curl http://127.0.0.1:8420/api/result/video -o fox.mp4
 ```
 
-Then open `http://localhost:8420`. It shells out to `./h3` per job and
-streams its progress into the page.
+See [API](#api) below for the full endpoint list.
 
 ## Features
 
@@ -119,6 +129,10 @@ streams its progress into the page.
   dependency (no Python/huggingface_hub) — a plain resumable URLSession
   downloader, offered automatically on first launch. See
   [ModelDownloader.swift](native/H3Spike/Sources/H3cApp/ModelDownloader.swift).
+- **Embedded local API** (native app only): a plain HTTP/JSON API on
+  `127.0.0.1`, served by the app itself over raw POSIX sockets (no
+  Network.framework, no third-party server), driving the exact same
+  job/engine state as the window. See [API](#api).
 - **Interactive terminal preview** (`--show`) on Kitty/Ghostty/iTerm2/WezTerm/
   Konsole, and `--profile` for per-phase Metal timing/memory diagnostics.
 
@@ -196,11 +210,12 @@ main.c, h3_cli.c, linenoise.c   CLI argument parsing + interactive session front
 h3_build_attention_cache.c      CLI wrapper around h3_build_attention_cache() -> build_attention_cache
 h3_build_lora_cache.c           CLI tool that fuses a LoRA into an int8 cache offline -> build_lora_cache
 tests/                          C test suite (make test / make parity)
-gui/                            Local web GUI (stdlib-only Python server + static frontend)
 native/H3Spike/                 Native macOS app (SwiftPM)
   Sources/CH3                   C shim exposing libh3.a's C API to Swift
   Sources/H3Engine              Swift async wrapper over the C API (AsyncThrowingStream-based progress/cancellation)
-  Sources/H3cApp                The SwiftUI app itself (h3c-app.app)
+  Sources/H3cApp                The SwiftUI app itself (h3c-app.app), including ModelLibrary/ModelManagerView
+                                 (registered models/LoRAs), ModelDownloader (Hugging Face downloads), and
+                                 HTTPServer/GenerationViewModel+API (the embedded automation API)
   Sources/H3Spike                Minimal in-process spike/reference client for H3Engine, not the shipped app
   package_app.sh                Builds + bundles h3c-app.app; also signs/notarizes it, see below
 ```
@@ -263,17 +278,6 @@ There are no nested frameworks or embedded dylibs to worry about here —
 statically-linked `libh3.a`, so a single `codesign --deep` on the bundle is
 sufficient.
 
-### Web GUI
-
-```sh
-make -j8
-python3 gui/server.py --port 8420
-```
-
-No install step: it's plain standard-library Python, subprocessing `./h3`
-per job and parsing its `\r%-25s %4d/%-4d` progress lines
-(`cli_progress` in `h3_cli.c`) into JSON the page polls.
-
 ## Testing
 
 ```sh
@@ -328,6 +332,60 @@ end-user tuning. They're documented at their point of use in the source
 [h3_attention_cache.c](h3_attention_cache.c)) and in the commit history —
 each one exists because a specific optimization needed a same-process
 oracle to A/B against, not as a supported end-user surface.
+
+## API
+
+While `h3c-app.app` is running it serves a plain JSON API on
+`http://127.0.0.1:8420` — implemented over raw POSIX sockets (see
+[HTTPServer.swift](native/H3Spike/Sources/H3cApp/HTTPServer.swift)), not
+Network.framework or any third-party server, and with no separate process
+to start or stop. This replaces the old `gui/server.py`: rather than a
+second implementation wrapping `./h3` as a subprocess for a browser client,
+the API drives the exact same `GenerationViewModel`/engine instance the
+window does (see
+[GenerationViewModel+API.swift](native/H3Spike/Sources/H3cApp/GenerationViewModel+API.swift)).
+There is only ever one job at a time, shared with the UI — pressing
+"動画をつくる" and a `POST /api/generate` compete for the same slot, and
+whichever loses gets a clear `409`.
+
+Because the client and server are always on the same Mac, media inputs are
+plain filesystem paths rather than uploads — the API has no upload
+endpoint, unlike the old browser-facing GUI.
+
+| Method | Path | Does |
+|---|---|---|
+| `POST` | `/api/generate` | Starts a job. JSON body fully replaces the current draft (see below); `202` once started, `400` on a bad request, `409` if a job is already running. |
+| `GET` | `/api/status` | Engine/job state, progress fraction, phase/stage text, error message, and whether a result is ready. |
+| `POST` | `/api/cancel` | Cancels the running job, if any. |
+| `GET` | `/api/result/video` | Streams the current result as `video/mp4`; `404` if none, or once the next job's `generate()` call deletes it. |
+| `GET` | `/api/models` | Registered H3 model directories (id, name, path, whether active). |
+| `GET` | `/api/loras` | Registered LoRA files (id, name, path, scale, whether active). |
+
+`POST /api/generate` body fields, all optional except `prompt`:
+
+| Field | Default | Notes |
+|---|---|---|
+| `prompt` | — | Required. |
+| `size_profile` | `"square"` | One of `smallSquare`, `square`, `landscapeUpscaled`, `landscapeNative`, `portraitUpscaled`, `portraitNative` (see `SizeProfile` in [GenerationModels.swift](native/H3Spike/Sources/H3cApp/GenerationModels.swift)). |
+| `seconds` | `5` | 1–15. |
+| `steps` | `20` | |
+| `reuse` | `1` | 1–3. |
+| `compute_mode` | the app's own default for this GPU | `attentionCache` or `ssdStreaming`. |
+| `seed` | random | |
+| `first_frame_path` / `last_frame_path` | none | FL2VA anchors; cannot combine with `reference_paths`. |
+| `reference_paths` | `[]` | Ordered Ref2VA references; image vs. video is auto-detected per path. |
+| `lora_name` | none | Must match a name from `GET /api/loras`; omitting it (or `""`) means no LoRA for this job, even if one was selected in the window. |
+| `lora_scale` | the LoRA's own saved scale | Only meaningful with `lora_name`. |
+
+```sh
+curl -X POST http://127.0.0.1:8420/api/generate -H "Content-Type: application/json" -d '{
+  "prompt": "A red fox walks through fresh snow in a pine forest.",
+  "size_profile": "square", "seconds": 5, "steps": 20
+}'
+
+curl http://127.0.0.1:8420/api/status
+curl http://127.0.0.1:8420/api/result/video -o fox.mp4
+```
 
 ## License
 
