@@ -41,22 +41,22 @@ open .build/h3c-app.app
 
 On first launch, if no model is registered yet, the app offers to download
 MiniMax-H3 directly from Hugging Face (see [Features](#features)) — or use
-"モデル管理" ("Model manager") to point it at a checkpoint you already have.
+the model manager to point it at a checkpoint you already have.
 
 With a supported GPU, use the compute-mode picker to build the int8
-attention cache (fast path) — or pick "省メモリ（SSDストリーミング）" to
-skip that step and stream the original BF16 weights instead.
+attention cache (fast path) — or pick the memory-saving SSD-streaming mode
+to skip that step and stream the original BF16 weights instead.
 
 ## Features
 
 - **Text-to-video+audio** (T2VA): a prompt alone produces a synchronized
   H.264 + AAC clip.
 - **First/last-frame conditioning** (FL2VA): anchor a generation's opening
-  and/or closing frame (the app's "最初・最後の画像" mode, or the API's
+  and/or closing frame (the app's first/last-image mode, or the API's
   `first_frame_path`/`last_frame_path`).
 - **Reference conditioning** (Ref2VA), ordered and mixable: images and
   videos (with or without embedded audio) as style/content references (the
-  app's "参照画像・動画" mode, or the API's `reference_paths`). References
+  app's reference-image/video mode, or the API's `reference_paths`). References
   appear to the model in order as `<Picture N>`/`<Video N>`. All reference
   reads and generated-video writes go through native AVFoundation/ImageIO.
 - **Memory-aware reference-video sizing**: a large reference video is
@@ -94,7 +94,7 @@ app's compute-mode picker (or the API's `compute_mode` field):
 
 | | Int8 attention cache | SSD streaming |
 |---|---|---|
-| App / API value | "高速（int8キャッシュ）" / `attentionCache` | "省メモリ（SSDストリーミング）" / `ssdStreaming` |
+| App / API value | Fast, int8 cache / `attentionCache` | Memory-saving, SSD streaming / `ssdStreaming` |
 | Setup | A one-time cache build (the app offers this in-window when needed; ~28s per checkpoint, writes an ~18 GiB int8 cache file) | None — reads the checkpoint as-is |
 | Speed | Fastest measured path | Slower; a 22-frame/512-square clip measured 141s vs. ~78s for the cache path (both 20 steps) |
 | Memory | int8-quantized weights streamed in double-buffered slots | Only 2 DiT blocks resident (~2 GiB tracked storage) at a time |
@@ -263,9 +263,9 @@ Network.framework or any third-party server, and with no separate process
 to start or stop. It drives the exact same `GenerationViewModel`/engine
 instance the window does (see
 [GenerationViewModel+API.swift](native/H3Spike/Sources/H3cApp/GenerationViewModel+API.swift)).
-There is only ever one job at a time, shared with the UI — pressing
-"動画をつくる" and a `POST /api/generate` compete for the same slot, and
-whichever loses gets a clear `409`.
+There is only ever one job at a time, shared with the UI — pressing the
+generate button in the window and a `POST /api/generate` compete for the
+same slot, and whichever loses gets a clear `409`.
 
 Because the client and server are always on the same Mac, media inputs are
 plain filesystem paths, not uploads.
