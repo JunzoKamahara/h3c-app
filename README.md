@@ -177,6 +177,7 @@ native/H3Spike/                 Native macOS app (SwiftPM)
                                  HTTPServer/GenerationViewModel+API (the embedded automation API)
   Sources/H3Spike                Minimal in-process spike/reference client for H3Engine, not the shipped app
   package_app.sh                Builds + bundles h3c-app.app; also signs/notarizes it, see below
+  make_dmg.sh                   Packages the built h3c-app.app into a distributable .dmg
 ```
 
 ## Building from source
@@ -240,6 +241,20 @@ There are no nested frameworks or embedded dylibs to worry about here —
 `h3c-app`'s only linked libraries are Apple system frameworks and the
 statically-linked `libh3.a`, so a single `codesign --deep` on the bundle is
 sufficient.
+
+#### Distributing as a .dmg
+
+```sh
+./make_dmg.sh
+```
+
+Packages the already-built `h3c-app.app` into a compressed `.dmg` with a
+drag-to-Applications shortcut, using only `hdiutil` (no third-party
+dmg-building tool). Run `package_app.sh` first. If `H3C_SIGN_IDENTITY` and
+`H3C_NOTARY_PROFILE` are set, `make_dmg.sh` also signs, notarizes, and
+staples the `.dmg` file itself — optional, since Gatekeeper's real check on
+launch is against the `.app`'s own signature/staple, but it makes the `.dmg`
+itself pass a Gatekeeper check too for a fully clean download experience.
 
 ## Testing
 

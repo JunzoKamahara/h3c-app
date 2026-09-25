@@ -183,6 +183,7 @@ native/H3Spike/                 ネイティブmacOSアプリ（SwiftPM）
                                  HTTPServer/GenerationViewModel+API（組み込み自動化API）を含む
   Sources/H3Spike                H3Engine用の最小限のプロセス内スパイク/参照クライアント。配布アプリ本体ではない
   package_app.sh                h3c-app.appをビルド・パッケージング。署名・公証も行う（下記参照）
+  make_dmg.sh                   ビルド済みh3c-app.appを配布用.dmgにまとめる
 ```
 
 ## ソースからのビルド
@@ -247,6 +248,21 @@ H3C_NOTARY_PROFILE="some-keychain-profile" \
 ありません — `h3c-app`がリンクしているのはAppleのシステムフレームワークと
 静的リンクされた`libh3.a`だけなので、バンドルに対する単純な
 `codesign --deep`一回で十分です。
+
+#### .dmgとして配布する
+
+```sh
+./make_dmg.sh
+```
+
+すでにビルド済みの`h3c-app.app`を、Applicationsへのドラッグ用ショート
+カット付きの圧縮`.dmg`にまとめます。`hdiutil`のみを使用（サードパーティ製
+のdmg作成ツールは不使用）。先に`package_app.sh`を実行しておいてください。
+`H3C_SIGN_IDENTITY`と`H3C_NOTARY_PROFILE`が設定されていれば、
+`make_dmg.sh`は`.dmg`ファイル自体にも署名・公証・ステープルを行います
+— Gatekeeperの実際のチェックは起動時に`.app`自身の署名・ステープルに
+対して行われるため必須ではありませんが、ダウンロード時の体験を完全に
+クリーンにするため`.dmg`自体もGatekeeperを通過するようにできます。
 
 ## テスト
 
