@@ -116,7 +116,7 @@ extension GenerationViewModel {
 
         if let modeRaw = json["compute_mode"] as? String {
             guard let mode = ComputeMode(rawValue: modeRaw) else {
-                return .error(400, "unknown compute_mode \(modeRaw) - expected attentionCache or ssdStreaming")
+                return .error(400, "unknown compute_mode \(modeRaw) - expected attentionCache, resident, or ssdStreaming")
             }
             computeMode = mode
         } else {

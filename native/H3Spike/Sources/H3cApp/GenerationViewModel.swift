@@ -160,6 +160,20 @@ final class GenerationViewModel: ObservableObject {
         return isMaxResolution && seconds >= 10
     }
 
+    /// Resident mode holds every DiT block in memory at once (h3_dit.c's
+    /// load_block() path, no streaming) - on a tensor-capable GPU that's
+    /// int8-quantized (comparable to the ~18 GiB attention-cache file, just
+    /// not written to disk); on any other GPU it stays the full ~37 GiB
+    /// BF16 checkpoint. Both are on top of the text encoder and VAEs this
+    /// process already holds - a rough, unmeasured threshold (unlike
+    /// isHeavySsdStreamingConfig's benchmarked one) just to steer a
+    /// memory-constrained Mac back to attentionCache/ssdStreaming instead.
+    var isLowMemoryForResident: Bool {
+        guard computeMode == .resident else { return false }
+        let physicalGiB = Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824
+        return physicalGiB < (supportsInt8Cache ? 32.0 : 64.0)
+    }
+
     // MARK: Attention cache build - separate from generation job state,
     // same invariant as engine/job/result: none of these overwrite each
     // other. Triggered from the "int8キャッシュが見つかりません" message

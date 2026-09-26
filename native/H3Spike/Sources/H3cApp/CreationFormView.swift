@@ -305,6 +305,10 @@ struct CreationFormView: View {
                 Text("事前に作ったint8キャッシュを読みながら計算します。速く、追加モデル（LoRA）も使えます。キャッシュと、Tensor演算ユニットを搭載したGPU（M5以降）が必要です。")
                     .font(.caption)
                     .foregroundStyle(palette.textSecondary)
+            case .resident:
+                Text("キャッシュファイルを作らず、起動のたびにモデル全体をメモリ上に展開して計算します。追加モデル（LoRA）も使えます。Tensor演算ユニット搭載GPU（M5以降）ではint8に量子化して常駐、それ以外ではBF16のまま常駐するため、大容量メモリのMac向けです。")
+                    .font(.caption)
+                    .foregroundStyle(palette.textSecondary)
             case .ssdStreaming:
                 Text("元のBF16モデルを、必要なブロックだけSSDから読みながら計算します。メモリは少なくて済みますが遅くなります。キャッシュは使わず、追加モデル（LoRA）は使えません。")
                     .font(.caption)
@@ -315,6 +319,11 @@ struct CreationFormView: View {
             }
             if viewModel.isHeavySsdStreamingConfig {
                 Text("最大解像度・長い秒数・SSDストリーミングの組み合わせは、メモリ不足でスワップが発生し非常に遅くなることがあります（数時間かかる場合も）。解像度か秒数を下げることをおすすめします。")
+                    .font(.caption)
+                    .foregroundStyle(palette.errorColor)
+            }
+            if viewModel.isLowMemoryForResident {
+                Text("このMacの物理メモリでは常駐モードがスワップを起こす可能性があります。int8キャッシュ方式かSSDストリーミングをおすすめします。")
                     .font(.caption)
                     .foregroundStyle(palette.errorColor)
             }

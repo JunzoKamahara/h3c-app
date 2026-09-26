@@ -86,9 +86,9 @@ to skip that step and stream the original BF16 weights instead.
   works end to end. `build_lora_cache` (built via `make build_lora_cache`)
   additionally pre-fuses a LoRA into an int8 cache file offline, for
   anyone driving the engine directly rather than through the app.
-- **Two compute modes**, see [Compute modes](#compute-modes): a fast int8
-  attention cache, and a slow-but-low-memory SSD-streaming mode with no
-  cache file needed.
+- **Three compute modes**, see [Compute modes](#compute-modes): a fast int8
+  attention cache, a resident mode for a Mac with memory to spare that
+  needs no cache file, and a slow-but-low-memory SSD-streaming mode.
 - **Model manager**: register and switch between several H3 checkpoint
   directories and LoRA files instead of one fixed path, and download
   FL2VA/Ref2VA directly from Hugging Face with no external dependency (no
@@ -103,17 +103,17 @@ to skip that step and stream the original BF16 weights instead.
 ## Compute modes
 
 The DiT's ~37 GiB of BF16 weights have to be served to the GPU somehow every
-generation. Two mutually exclusive modes exist, both selectable from the
+generation. Three mutually exclusive modes exist, all selectable from the
 app's compute-mode picker (or the API's `compute_mode` field):
 
-| | Int8 attention cache | SSD streaming |
-|---|---|---|
-| App / API value | Fast, int8 cache / `attentionCache` | Memory-saving, SSD streaming / `ssdStreaming` |
-| Setup | A one-time cache build (the app offers this in-window when needed; ~28s per checkpoint, writes an ~18 GiB int8 cache file) | None — reads the checkpoint as-is |
-| Speed | Fastest measured path | Slower; a 22-frame/512-square clip measured 141s vs. ~78s for the cache path (both 20 steps) |
-| Memory | int8-quantized weights streamed in double-buffered slots | Only 2 DiT blocks resident (~2 GiB tracked storage) at a time |
-| Requires | M5-class GPU (Metal 4 TensorOps / int8 path) | Any Apple Silicon GPU |
-| LoRA | Yes | No — the engine only fuses LoRA when loading resident/cache blocks |
+| | Int8 attention cache | Resident | SSD streaming |
+|---|---|---|---|
+| App / API value | Fast, int8 cache / `attentionCache` | Resident, no cache needed / `resident` | Memory-saving, SSD streaming / `ssdStreaming` |
+| Setup | A one-time cache build (the app offers this in-window when needed; ~28s per checkpoint, writes an ~18 GiB int8 cache file) | None to disk — quantizes in place at load time instead (same ~28s cost, paid again on every launch/model switch) | None — reads the checkpoint as-is |
+| Speed | Fastest measured path | Comparable to the cache path (no per-step disk I/O either) | Slower; a 22-frame/512-square clip measured 141s vs. ~78s for the cache path (both 20 steps) |
+| Memory | int8-quantized weights streamed in double-buffered slots | Every DiT block resident at once — ~18 GiB int8-quantized on a tensor-capable GPU, or the full ~37 GiB BF16 otherwise | Only 2 DiT blocks resident (~2 GiB tracked storage) at a time |
+| Requires | M5-class GPU (Metal 4 TensorOps / int8 path) | Any Apple Silicon GPU (falls back to BF16 residency without tensor hardware) — meant for a Mac with memory to spare | Any Apple Silicon GPU |
+| LoRA | Yes | Yes | No — the engine only fuses LoRA when loading resident/cache blocks |
 
 Full detail on the cache format — versioning, `model_kind`/`model_id`
 mismatch guards, LoRA fusion into a cache — is in
@@ -300,7 +300,7 @@ plain filesystem paths, not uploads.
 | `seconds` | `5` | 1–15. |
 | `steps` | `20` | |
 | `reuse` | `1` | 1–3. |
-| `compute_mode` | the app's own default for this GPU | `attentionCache` or `ssdStreaming`. |
+| `compute_mode` | the app's own default for this GPU | `attentionCache`, `resident`, or `ssdStreaming`. |
 | `seed` | random | |
 | `first_frame_path` / `last_frame_path` | none | FL2VA anchors; cannot combine with `reference_paths`. |
 | `reference_paths` | `[]` | Ordered Ref2VA references; image/video/audio is auto-detected per path. At least one image or video is required if any audio path is included. |

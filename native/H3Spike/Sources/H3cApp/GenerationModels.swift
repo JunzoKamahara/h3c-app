@@ -101,22 +101,31 @@ enum ImageInputMode: String, CaseIterable, Identifiable {
     }
 }
 
-// How the DiT weights are served. The two are mutually exclusive in the
+// How the DiT weights are served. The three are mutually exclusive in the
 // engine, not just in the UI:
 // - attentionCache: pre-quantized int8 cache streamed from disk (+ streamed
 //   MLP). Fast, needs the cache file, an M5-class GPU (tensor ops gate the
 //   int8 path, h3_gpu.m) and supports LoRA.
+// - resident: every DiT block loaded fully into memory at once instead of
+//   streamed - h3_dit.c's plain load_block() path, the same one
+//   attentionCache falls back on when H3_ATTENTION_CACHE isn't set. Needs
+//   no cache file (quantizes to int8 in place at load time on a tensor-
+//   capable GPU, same ~28s cost as building a cache, just not saved to
+//   disk; falls back to full BF16 residency on older GPUs), supports LoRA,
+//   but needs enough RAM to hold that residency - meant for a Mac with
+//   memory to spare, not the default choice.
 // - ssdStreaming: the original BF16 checkpoint, two blocks resident at a
 //   time. No cache or quantization needed and far less memory, but slower,
 //   and the engine has no LoRA path for it (h3_dit.c only fuses LoRA when
 //   loading resident/cache blocks).
 enum ComputeMode: String, CaseIterable, Identifiable, Codable {
-    case attentionCache, ssdStreaming
+    case attentionCache, resident, ssdStreaming
     var id: String { rawValue }
 
     var label: String {
         switch self {
         case .attentionCache: return "高速（int8キャッシュ）"
+        case .resident: return "常駐（大容量メモリ向け、キャッシュ不要）"
         case .ssdStreaming: return "省メモリ（SSDストリーミング）"
         }
     }
@@ -124,6 +133,7 @@ enum ComputeMode: String, CaseIterable, Identifiable, Codable {
     var summaryLabel: String {
         switch self {
         case .attentionCache: return "int8キャッシュ"
+        case .resident: return "常駐モード"
         case .ssdStreaming: return "SSDストリーミング"
         }
     }
