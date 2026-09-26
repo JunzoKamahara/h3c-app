@@ -28,6 +28,10 @@ struct ModelDownloadWizardView: View {
             Text("MiniMax-H3 モデルのダウンロード")
                 .font(.system(size: 18, weight: .semibold))
 
+            existingFolderRow
+
+            Divider()
+
             destinationRow
 
             Toggle("Ref2VA も含める（参照画像・動画機能。おおよそ倍のサイズになります）", isOn: $includeRef2VA)
@@ -42,9 +46,30 @@ struct ModelDownloadWizardView: View {
             footer
         }
         .padding(H3Spacing.xl)
-        .frame(width: 520, height: 380)
+        .frame(width: 520, height: 420)
         .background(palette.canvas)
         .onDisappear { downloader.cancel() }
+    }
+
+    /// Lets a user who already has FL2VA/Ref2VA on disk (e.g. copied from
+    /// another Mac, or downloaded outside this app) register that folder
+    /// directly instead of downloading again - the same "フォルダを追加…"
+    /// escape hatch ModelManagerView offers, surfaced here too since this
+    /// view is also what greets a first launch with no model configured.
+    private var existingFolderRow: some View {
+        HStack {
+            Text("FL2VA（と、あればRef2VA）を含むフォルダが既にある場合は、ダウンロードせずに登録できます。")
+                .font(.caption)
+                .foregroundStyle(palette.textSecondary)
+            Spacer()
+            Button("フォルダを追加…") { addExistingFolder() }
+                .disabled(!canEditOptions)
+        }
+    }
+
+    private func addExistingFolder() {
+        guard let path = chooseDirectory() else { return }
+        onCompleted(path)
     }
 
     private var canEditOptions: Bool {

@@ -285,6 +285,7 @@ struct CreationFormView: View {
             Picker("計算方式", selection: $viewModel.computeMode) {
                 ForEach(ComputeMode.allCases) { mode in
                     Text(mode.label).tag(mode)
+                        .disabled(mode == .attentionCache && !viewModel.supportsInt8Cache)
                 }
             }
             .pickerStyle(.menu)
@@ -300,11 +301,7 @@ struct CreationFormView: View {
                     .font(.caption)
                     .foregroundStyle(palette.textSecondary)
             }
-            if !viewModel.supportsInt8Cache {
-                Text("このGPUにはTensor演算ユニットがないため、int8キャッシュ方式は使えません。")
-                    .font(.caption)
-                    .foregroundStyle(palette.errorColor)
-            } else if viewModel.computeMode == .attentionCache {
+            if viewModel.supportsInt8Cache && viewModel.computeMode == .attentionCache {
                 attentionCacheBuildSection
             }
             if viewModel.isHeavySsdStreamingConfig {
