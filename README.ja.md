@@ -16,12 +16,24 @@ Sanfilippo氏（antirez）の[h3.c](https://github.com/antirez/h3.c)を
 `127.0.0.1`上で提供されるので、スクリプトから操作することもできます。
 詳しくは[API](#api)を参照してください。
 
+## ダウンロード
+
+もっとも簡単なインストール方法は、[リリースページ](https://github.com/JunzoKamahara/h3c-app/releases/latest)
+にある署名・公証済みのビルド済み`.dmg`を使うことです — Xcode Command Line
+Toolsもソースからのビルドも不要です。`.dmg`をダウンロードして開き、
+`h3c-app`を`Applications`にドラッグしてください。初回起動時もGatekeeperに
+よる「開発元が未確認」といった警告は出ません。
+
+ソースからビルドする場合は、下記の
+[ソースからのビルド](#ソースからのビルド)を参照してください。
+
 ## 動作要件
 
 - Apple Siliconを搭載したMac、macOS 13以降。M5クラスのGPU（Metal 4
   TensorOps）で最速のint8経路が有効になる。それより古いApple Siliconでも
   動作するが、BF16/MPSGraphに自動的にフォールバックする。
-- Xcode Command Line Tools（`clang`、`swift`、`ar`）。
+- Xcode Command Line Tools（`clang`、`swift`、`ar`） —
+  ソースからビルドする場合のみ必要。ビルド済み`.dmg`では不要。
 - Hugging Faceの
   [`MiniMaxAI/MiniMax-H3`](https://huggingface.co/MiniMaxAI/MiniMax-H3)
   チェックポイント — `FL2VA/`だけで約134GiB（約37GiBのBF16トランスフォーマー

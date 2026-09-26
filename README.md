@@ -16,12 +16,24 @@ While the app is running it also serves a local JSON API on `127.0.0.1`,
 so it can be driven from a script as well as from its own window — see
 [API](#api).
 
+## Download
+
+The easiest way to install h3c-app is the prebuilt, signed and notarized
+`.dmg` on the [Releases page](https://github.com/JunzoKamahara/h3c-app/releases/latest) —
+no Xcode Command Line Tools or building from source needed. Download the
+`.dmg`, open it, and drag `h3c-app` into `Applications`; Gatekeeper accepts
+it on first launch with no "unidentified developer" warning.
+
+To build from source instead, see [Building from source](#building-from-source)
+below.
+
 ## Requirements
 
 - Apple Silicon Mac, macOS 13+. An M5-class GPU (Metal 4 TensorOps) unlocks
   the fastest int8 paths; older Apple Silicon works but falls back to
   BF16/MPSGraph automatically.
-- Xcode Command Line Tools (`clang`, `swift`, `ar`).
+- Xcode Command Line Tools (`clang`, `swift`, `ar`) — only needed when
+  building from source; not required for the prebuilt `.dmg`.
 - The MiniMax-H3 checkpoint from Hugging Face
   ([`MiniMaxAI/MiniMax-H3`](https://huggingface.co/MiniMaxAI/MiniMax-H3)) —
   `FL2VA/` alone is ~134 GiB (a ~37 GiB BF16 transformer plus the Qwen3-VL
