@@ -40,7 +40,11 @@ let h3AppSupportDirectory: String = {
         ?? (NSHomeDirectory() + "/Library/Application Support")
     return base + "/h3c-app"
 }()
-private let legacyCacheDirectory = h3AppSupportDirectory + "/cache"
+// Paired with legacyDefaultH3ModelPath (ModelLibrary.swift) - moved
+// alongside it, from h3AppSupportDirectory + "/cache" to ~/models/cache, so
+// this dev's ~36GB of caches live next to the model instead of in
+// ~/Library.
+private let legacyCacheDirectory = NSHomeDirectory() + "/models/cache"
 
 enum EngineState: Equatable {
     case loading

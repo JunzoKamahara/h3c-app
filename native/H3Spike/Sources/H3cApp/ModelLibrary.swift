@@ -1,15 +1,16 @@
 import Foundation
 
-/// The historical single hardcoded model path (see GenerationViewModel's
-/// previous `loadModel()`), from when the app itself was still named
-/// "h3c-analysis" - kept here, unchanged, so ModelLibrary can recognize an
-/// install that predates this feature (by that exact folder existing on
-/// disk) and GenerationViewModel can reuse its already-built, multi-GB
-/// attention caches instead of demanding a rebuild under a new per-model
-/// cache directory. Never used to suggest a destination for a new
-/// download - see defaultH3ModelDownloadPath for that.
-let legacyDefaultH3ModelPath =
-    NSHomeDirectory() + "/Library/Application Support/h3c-analysis/MiniMax-H3"
+/// This developer's own hand-placed model checkout - not inside Application
+/// Support like a fresh download would be, so it needs its own literal path
+/// here to be recognized. Originally at .../h3c-analysis/MiniMax-H3 (the
+/// app's old name), then moved to ~/models/MiniMax-H3 to get the ~270GB
+/// model and its caches out of ~/Library. Kept as an exact-path match so
+/// ModelLibrary can seed an entry for it (if it exists) and
+/// GenerationViewModel can reuse its already-built, multi-GB attention
+/// caches instead of demanding a rebuild under a new per-model cache
+/// directory. Never used to suggest a destination for a new download - see
+/// defaultH3ModelDownloadPath for that.
+let legacyDefaultH3ModelPath = NSHomeDirectory() + "/models/MiniMax-H3"
 
 /// Suggested destination for a model a brand-new install downloads, under
 /// this app's own current name - unlike legacyDefaultH3ModelPath above,
