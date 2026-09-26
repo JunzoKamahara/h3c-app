@@ -32,7 +32,10 @@ extension Comparable {
 // allows more than one - validationMessage below just reports a cache
 // missing until one is built with build_attention_cache, in-app, or dropped
 // in by hand.
-private let h3AppSupportDirectory: String = {
+// Not private: ModelLibrary.swift (same module, different file) also needs
+// this base path to build the default download destination it suggests to
+// brand-new installs - see defaultH3ModelDownloadPath there.
+let h3AppSupportDirectory: String = {
     let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?.path
         ?? (NSHomeDirectory() + "/Library/Application Support")
     return base + "/h3c-app"

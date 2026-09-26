@@ -43,6 +43,11 @@ let frameCallback: h3_frame_callback = { framePtr, opaque in
 }
 
 let arguments = CommandLine.arguments
+// This spike target isn't part of the distributed .app (see Package.swift -
+// it's a separate executable target from H3cApp), so its fallback just
+// points at this dev machine's actual, pre-existing model checkout under
+// the app's old name, rather than the H3cApp target's current
+// h3c-app-branded default (ModelLibrary.defaultH3ModelDownloadPath).
 let modelDir = arguments.count > 1 ? arguments[1]
     : (NSHomeDirectory() + "/Library/Application Support/h3c-analysis/MiniMax-H3")
 let outputPath = arguments.count > 2 ? arguments[2] : "/tmp/h3spike_output.mp4"

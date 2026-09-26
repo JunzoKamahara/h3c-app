@@ -83,7 +83,7 @@ struct ModelManagerView: View {
         }
         .sheet(isPresented: $showingDownloadWizard) {
             ModelDownloadWizardView(
-                suggestedDestination: legacyDefaultH3ModelPath,
+                suggestedDestination: defaultH3ModelDownloadPath,
                 onCompleted: { path in
                     let wasEmpty = library.models.isEmpty
                     library.addModel(path: path)

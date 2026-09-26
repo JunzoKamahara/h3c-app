@@ -49,7 +49,7 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showingDownloadWizard) {
             ModelDownloadWizardView(
-                suggestedDestination: viewModel.library.activeModel?.path ?? legacyDefaultH3ModelPath,
+                suggestedDestination: viewModel.library.activeModel?.path ?? defaultH3ModelDownloadPath,
                 onCompleted: { path in
                     if let id = viewModel.library.activeModelID {
                         viewModel.library.setModelPath(id: id, path: path)

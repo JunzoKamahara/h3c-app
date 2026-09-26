@@ -1,12 +1,21 @@
 import Foundation
 
 /// The historical single hardcoded model path (see GenerationViewModel's
-/// previous `loadModel()`), kept here so ModelLibrary can seed its first
-/// entry with it and GenerationViewModel can recognize it later to reuse
-/// its already-built, multi-GB attention caches instead of demanding a
-/// rebuild under a new per-model cache directory.
+/// previous `loadModel()`), from when the app itself was still named
+/// "h3c-analysis" - kept here, unchanged, so ModelLibrary can recognize an
+/// install that predates this feature (by that exact folder existing on
+/// disk) and GenerationViewModel can reuse its already-built, multi-GB
+/// attention caches instead of demanding a rebuild under a new per-model
+/// cache directory. Never used to suggest a destination for a new
+/// download - see defaultH3ModelDownloadPath for that.
 let legacyDefaultH3ModelPath =
     NSHomeDirectory() + "/Library/Application Support/h3c-analysis/MiniMax-H3"
+
+/// Suggested destination for a model a brand-new install downloads, under
+/// this app's own current name - unlike legacyDefaultH3ModelPath above,
+/// which only ever refers to a specific pre-existing folder from before the
+/// app was renamed.
+let defaultH3ModelDownloadPath = h3AppSupportDirectory + "/MiniMax-H3"
 
 struct H3ModelEntry: Identifiable, Codable, Equatable {
     let id: UUID
@@ -62,12 +71,16 @@ final class ModelLibrary: ObservableObject {
         activeModelID = UUID(uuidString: defaults.string(forKey: Self.activeModelKey) ?? "")
         activeLoRAID = UUID(uuidString: defaults.string(forKey: Self.activeLoRAKey) ?? "")
 
-        if models.isEmpty {
-            // Upgrading from before this feature existed: seed the one
-            // path the app used to hardcode, so an existing setup (and any
-            // already-built attention caches - see
-            // GenerationViewModel.attentionCacheDirectory(for:)) keeps
-            // working without the user having to re-add it by hand.
+        // Upgrading from before this feature existed: seed the one path the
+        // app used to hardcode, so an existing setup (and any already-built
+        // attention caches - see GenerationViewModel.attentionCacheDirectory(for:))
+        // keeps working without the user having to re-add it by hand. Only
+        // done when that exact folder is actually there - a brand-new
+        // install (e.g. from the distributed .dmg, on another Mac) has
+        // nothing at that path and should see an empty library instead,
+        // so the download wizard offers defaultH3ModelDownloadPath rather
+        // than this app's old name.
+        if models.isEmpty, FileManager.default.fileExists(atPath: legacyDefaultH3ModelPath) {
             let seeded = H3ModelEntry(name: "MiniMax-H3", path: legacyDefaultH3ModelPath)
             models = [seeded]
             activeModelID = seeded.id
