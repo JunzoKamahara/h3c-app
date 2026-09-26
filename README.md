@@ -66,9 +66,11 @@ to skip that step and stream the original BF16 weights instead.
 - **First/last-frame conditioning** (FL2VA): anchor a generation's opening
   and/or closing frame (the app's first/last-image mode, or the API's
   `first_frame_path`/`last_frame_path`).
-- **Reference conditioning** (Ref2VA), ordered and mixable: images and
-  videos (with or without embedded audio) as style/content references (the
-  app's reference-image/video mode, or the API's `reference_paths`). References
+- **Reference conditioning** (Ref2VA), ordered and mixable: images, videos
+  (with or without embedded audio), and standalone audio files as
+  style/content references (the app's reference-image/video/audio mode, or
+  the API's `reference_paths`). An audio file can't be the only reference —
+  it needs at least one image or video reference alongside it. References
   appear to the model in order as `<Picture N>`/`<Video N>`. All reference
   reads and generated-video writes go through native AVFoundation/ImageIO.
 - **Memory-aware reference-video sizing**: a large reference video is
@@ -301,7 +303,7 @@ plain filesystem paths, not uploads.
 | `compute_mode` | the app's own default for this GPU | `attentionCache` or `ssdStreaming`. |
 | `seed` | random | |
 | `first_frame_path` / `last_frame_path` | none | FL2VA anchors; cannot combine with `reference_paths`. |
-| `reference_paths` | `[]` | Ordered Ref2VA references; image vs. video is auto-detected per path. |
+| `reference_paths` | `[]` | Ordered Ref2VA references; image/video/audio is auto-detected per path. At least one image or video is required if any audio path is included. |
 | `lora_name` | none | Must match a name from `GET /api/loras`; omitting it (or `""`) means no LoRA for this job, even if one was selected in the window. |
 | `lora_scale` | the LoRA's own saved scale | Only meaningful with `lora_name`. |
 

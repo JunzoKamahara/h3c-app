@@ -1,3 +1,4 @@
+import H3Engine
 import SwiftUI
 
 private let promptExamples: [(label: String, text: String)] = [
@@ -83,11 +84,11 @@ struct CreationFormView: View {
                 }
 
             case .referenceImage:
-                Text("画像・動画の特徴を参考にして動画をつくります。最初のフレームが同じになるとは限りません。")
+                Text("画像・動画・音声の特徴を参考にして動画をつくります。最初のフレームが同じになるとは限りません。音声だけを参照にすることはできないので、画像か動画と組み合わせて追加してください。")
                     .font(.caption)
                     .foregroundStyle(palette.textSecondary)
                 HStack {
-                    Text("参照画像・動画").font(.caption).foregroundStyle(palette.textSecondary)
+                    Text("参照画像・動画・音声").font(.caption).foregroundStyle(palette.textSecondary)
                     Spacer()
                     Button("ファイルを選ぶ…") { viewModel.addReferenceImages() }
                 }
@@ -95,7 +96,7 @@ struct CreationFormView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         ForEach(Array(viewModel.referenceImages.enumerated()), id: \.element.id) { index, reference in
                             HStack {
-                                Image(systemName: reference.kind == .video ? "video" : "photo")
+                                Image(systemName: referenceIcon(for: reference.kind))
                                     .foregroundStyle(palette.textSecondary)
                                 Text("\(index + 1). \(URL(fileURLWithPath: reference.path).lastPathComponent)")
                                     .font(.caption)
@@ -115,6 +116,14 @@ struct CreationFormView: View {
         .padding(H3Spacing.md)
         .background(palette.surfaceMuted)
         .clipShape(RoundedRectangle(cornerRadius: H3Radius.control))
+    }
+
+    private func referenceIcon(for kind: H3ReferenceKind) -> String {
+        switch kind {
+        case .video, .videoAudio: return "video"
+        case .audio: return "waveform"
+        case .image: return "photo"
+        }
     }
 
     // MARK: 動画の内容 (プロンプト)

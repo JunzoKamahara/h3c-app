@@ -2,9 +2,12 @@ import AppKit
 import UniformTypeIdentifiers
 
 let imageTypes: [UTType] = [.image]
-// Ref2VA reference slots accept either a still image or a video
-// (H3ReferenceKind.image/.video) - h3_av_reader.m decodes both natively now.
-let referenceMediaTypes: [UTType] = [.image, .movie]
+// Ref2VA reference slots accept a still image, a video, or an audio-only
+// file (H3ReferenceKind.image/.video/.audio) - h3_av_reader.m decodes all
+// three natively. An audio reference can't stand on its own though - h3.c
+// rejects any reference set with audio but no image/video among them
+// ("reference audio requires an image or video reference").
+let referenceMediaTypes: [UTType] = [.image, .movie, .audio]
 // "safetensors" has no registered system UTI, so this synthesizes a dynamic
 // one from the extension - still filters the open panel correctly.
 let safetensorsTypes: [UTType] = [UTType(filenameExtension: "safetensors") ?? .data]
@@ -39,10 +42,16 @@ func chooseDirectory() -> String? {
 }
 
 /// Which H3ReferenceKind a picked reference file should be tagged as -
-/// image or video, by extension (via the same UTType conformance check
-/// referenceMediaTypes filters the open panel with).
+/// image, video, or audio, by extension (via the same UTType conformance
+/// checks referenceMediaTypes filters the open panel with).
 func isVideoFile(path: String) -> Bool {
     let ext = (path as NSString).pathExtension
     guard let type = UTType(filenameExtension: ext) else { return false }
     return type.conforms(to: .movie)
+}
+
+func isAudioFile(path: String) -> Bool {
+    let ext = (path as NSString).pathExtension
+    guard let type = UTType(filenameExtension: ext) else { return false }
+    return type.conforms(to: .audio) && !type.conforms(to: .movie)
 }

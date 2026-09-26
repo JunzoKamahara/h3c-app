@@ -144,8 +144,9 @@ extension GenerationViewModel {
         } else if !referencePaths.isEmpty {
             creationMethod = .image
             imageInputMode = .referenceImage
-            referenceImages = referencePaths.map {
-                H3ReferenceInput(kind: isVideoFile(path: $0) ? .video : .image, path: $0)
+            referenceImages = referencePaths.map { path in
+                let kind: H3ReferenceKind = isVideoFile(path: path) ? .video : (isAudioFile(path: path) ? .audio : .image)
+                return H3ReferenceInput(kind: kind, path: path)
             }
         } else {
             creationMethod = .text

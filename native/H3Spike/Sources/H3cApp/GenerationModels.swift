@@ -83,11 +83,12 @@ enum CreationMethod: String, CaseIterable, Identifiable {
     }
 }
 
-// FL2VA (first/last frame) and Ref2VA (reference images/videos) use
+// FL2VA (first/last frame) and Ref2VA (reference images/videos/audio) use
 // different transformer checkpoints/caches and can't be mixed (see
-// build_job() in gui/server.py). Ref2VA itself accepts both still images
-// and videos as references (H3ReferenceKind.image/.video in H3Engine.swift) -
-// the case name predates video support here and stays for compatibility.
+// build_job() in gui/server.py). Ref2VA itself accepts still images,
+// videos, and audio-only files as references (H3ReferenceKind in
+// H3Engine.swift) - the case name predates video/audio support here and
+// stays for compatibility.
 enum ImageInputMode: String, CaseIterable, Identifiable {
     case firstLastFrame, referenceImage
     var id: String { rawValue }
@@ -95,7 +96,7 @@ enum ImageInputMode: String, CaseIterable, Identifiable {
     var label: String {
         switch self {
         case .firstLastFrame: return "最初・最後の画像"
-        case .referenceImage: return "参照画像・動画"
+        case .referenceImage: return "参照画像・動画・音声"
         }
     }
 }

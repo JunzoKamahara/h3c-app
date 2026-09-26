@@ -68,11 +68,12 @@ MiniMax-H3を直接ダウンロードするか尋ねます（[機能](#機能)�
   （アプリの「最初・最後の画像」モード、またはAPIの
   `first_frame_path`/`last_frame_path`）。
 - **参照条件付け**（Ref2VA）、順序付きで組み合わせ可能: 画像・動画
-  （音声あり／なし）をスタイル・内容の参照として使用（アプリの
-  「参照画像・動画」モード、またはAPIの`reference_paths`）。参照は
-  順番に`<Picture N>`/`<Video N>`としてモデルに提示されます。参照の
-  読み込みと生成動画の書き出しはすべてネイティブのAVFoundation/ImageIO
-  経由です。
+  （音声あり／なし）に加えて音声単体のファイルもスタイル・内容の参照
+  として使用できます（アプリの「参照画像・動画・音声」モード、または
+  APIの`reference_paths`）。ただし音声だけを参照にすることはできず、
+  画像か動画の参照が少なくとも1つ必要です。参照は順番に`<Picture N>`/
+  `<Video N>`としてモデルに提示されます。参照の読み込みと生成動画の
+  書き出しはすべてネイティブのAVFoundation/ImageIO経由です。
 - **メモリ連動の参照動画サイズ調整**: 大きな参照動画は、マシンの物理
   メモリ搭載量に応じて（[h3_host.c](h3_host.c)内の
   `h3_reference_max_pixels()`）モデルに渡す前に自動的に縮小されます。
@@ -309,7 +310,7 @@ Network.frameworkやサードパーティ製サーバーは使っていません
 | `compute_mode` | このGPUでのアプリの既定値 | `attentionCache`または`ssdStreaming`。 |
 | `seed` | ランダム | |
 | `first_frame_path` / `last_frame_path` | なし | FL2VAのアンカー。`reference_paths`とは併用不可。 |
-| `reference_paths` | `[]` | 順序付きのRef2VA参照。画像か動画かはパスごとに自動判定。 |
+| `reference_paths` | `[]` | 順序付きのRef2VA参照。画像/動画/音声はパスごとに自動判定。音声パスを含める場合、画像か動画を最低1つ含める必要あり。 |
 | `lora_name` | なし | `GET /api/loras`の名前と一致させる必要あり。省略（または`""`）すると、ウィンドウ側で選択済みでもこのジョブではLoRAなし扱いになる。 |
 | `lora_scale` | そのLoRAの保存済みの強さ | `lora_name`指定時のみ意味を持つ。 |
 

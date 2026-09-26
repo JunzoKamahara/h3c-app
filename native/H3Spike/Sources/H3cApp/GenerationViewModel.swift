@@ -324,7 +324,8 @@ final class GenerationViewModel: ObservableObject {
 
     func addReferenceImages() {
         for path in chooseFiles(allowedContentTypes: referenceMediaTypes) {
-            referenceImages.append(H3ReferenceInput(kind: isVideoFile(path: path) ? .video : .image, path: path))
+            let kind: H3ReferenceKind = isVideoFile(path: path) ? .video : (isAudioFile(path: path) ? .audio : .image)
+            referenceImages.append(H3ReferenceInput(kind: kind, path: path))
         }
     }
 
@@ -358,7 +359,15 @@ final class GenerationViewModel: ObservableObject {
             case .firstLastFrame:
                 if firstFramePath == nil { return "最初の画像を選んでください" }
             case .referenceImage:
-                if referenceImages.isEmpty { return "参照画像・動画を選んでください" }
+                if referenceImages.isEmpty { return "参照画像・動画・音声を選んでください" }
+                // h3.c rejects this combination outright ("reference audio
+                // requires an image or video reference") - an audio file
+                // can season a visual reference but can't carry a
+                // generation on its own.
+                let hasVisualReference = referenceImages.contains { $0.kind == .image || $0.kind == .video }
+                if !hasVisualReference {
+                    return "音声だけの参照はできません。画像か動画の参照も追加してください"
+                }
             }
         }
         if computeMode == .attentionCache {
