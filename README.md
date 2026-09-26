@@ -140,37 +140,20 @@ source (start from [h3_dit.c](h3_dit.c), [h3_gpu.m](h3_gpu.m), and
 
 ## Reference-conditioning cost: why a bigger reference is not free
 
-This is the single most important thing to understand before feeding a large
-reference video into Ref2VA. The DiT's own joint self-attention
-(`h3_gpu_sdpa_bf16`) is **non-causal and attends over every token every
-layer, every evaluated denoising step** — main video/audio latents *and*
-reference-conditioning tokens together. A reference isn't encoded once and
-cached; it's re-attended to by all 50 DiT blocks on every step. Since
-attention cost scales at least quadratically with total token count, a
-larger or longer reference video multiplies the cost of the *entire*
-generation, not just a one-time encoding pass.
+A Ref2VA reference isn't encoded once and cached — the DiT re-attends to it
+on every layer, every denoising step, alongside the main video/audio
+latents. Since attention cost scales at least quadratically with total
+token count, a larger or longer reference multiplies the cost of the
+*entire* generation, not just a one-time encoding pass. Measured cases with
+large/long references have taken 4+ hours to complete (correctly, but
+slowly). The memory-aware sizing described above reduces the risk of an
+extreme case but doesn't change this scaling.
 
-Measured on this basis: a 672×384/10s generation against a large reference
-video took ~4 hours (but completed correctly); the same reference enlarged
-further to 15s, and separately a 1344×768/15s case, both also completed in
-over 4 hours. None of these are bugs — isolated benchmarking of
-`h3_gpu_gqa_causal_bf16` and `h3_gpu_sdpa_bf16` in isolation ruled out the
-attention kernels themselves as anomalously slow; the cost is architectural.
-The memory-aware cap described above (`h3_reference_max_pixels`) reduces
-the *risk* of an extreme case, but does not change this scaling — expect
-large/long reference videos to be slow, and prefer a smaller/shorter
-reference, fewer denoising steps, or a higher `reuse` value when iterating.
-
-A related, harder failure this scaling can cause: the causal-attention
-fallback that runs when a sequence exceeds the custom Metal kernel's
-threadgroup-memory limit (`h3_gpu_gqa_mps`, an MPSGraph path that builds an
-explicit `O(sequence²)` mask) is capped at a 512 MiB mask — beyond that,
-generation is refused with a clear error rather than risking the machine
-running out of memory (see [h3_gpu.m](h3_gpu.m)). The general lesson,
-applicable anywhere else a cache is keyed by a caller-controlled size: **a
-cache keyed by unbounded input size needs an explicit ceiling, checked
-before the allocation, not just a comment saying the input is expected to
-be small.**
+**If a generation with references is unexpectedly slow**: use a
+smaller/shorter reference, fewer denoising steps, or a higher `reuse`
+value. An extreme case is refused outright with a clear error (a 512 MiB
+attention-mask cap in the MPSGraph fallback path, see [h3_gpu.m](h3_gpu.m))
+rather than risking an out-of-memory crash.
 
 ## Repository layout
 
