@@ -424,6 +424,7 @@ h3_gpu *h3_gpu_create(const char *shader_source_path,
             @"h3_cast_f32_to_bf16",
             @"h3_cast_bf16_to_f32",
             @"h3_cast_bf16_to_f32_bias",
+            @"h3_lora_add_rows_bf16", @"h3_lora_add_int8",
             @"h3_rms_norm_f32",
             @"h3_scale_add_f32", @"h3_layer_norm_f32",
             @"h3_video_qkv_rope_f32",
@@ -2516,6 +2517,100 @@ static int h3_gpu_linear_mps(H3GPU *gpu, h3_gpu_tensor *output,
     stats.mps_linear_dispatches++;
     gpu.stats = stats;
     return 1;
+}
+
+typedef struct {
+    uint32_t rows, columns, interleaved, group, head_dim, seed;
+} lora_rows_args;
+
+/* delta[rows, columns] = b[rows, rank] @ at[columns, rank]^T. Always the
+ * MPSGraph matmul: LoRA ranks are usually below the inner-dimension bound
+ * h3_gpu_linear_bf16 applies before choosing it. */
+int h3_gpu_lora_delta_bf16(h3_gpu *opaque, h3_gpu_tensor *delta,
+                           const h3_gpu_tensor *b, const h3_gpu_tensor *at,
+                           uint32_t rows, uint32_t rank, uint32_t columns) {
+    H3GPU *gpu = GPU(opaque);
+    if (!rows || !rank || !columns ||
+        !h3_gpu_require_bf16(gpu, b, (size_t)rows * rank, @"LoRA B") ||
+        !h3_gpu_require_bf16(gpu, at, (size_t)columns * rank, @"LoRA A") ||
+        !h3_gpu_require_bf16(gpu, delta, (size_t)rows * columns,
+                             @"LoRA delta")) return 0;
+    /* M5 TensorOps: the same BF16 tile kernel the DiT's own projections use
+     * (h3_lora pads ranks to a multiple of 32 for it). MPSGraph's BF16
+     * matmul measured ~4x slower at these skinny shapes. */
+    if (gpu.tensorOpsEnabled && rows >= 128 && !(rank % 32) &&
+        !(columns % 64) && !getenv("H3_LORA_MPS")) {
+        if (!h3_gpu_require_command(gpu)) return 0;
+        id<MTLComputePipelineState> pipeline =
+            h3_gpu_pipeline(gpu, @"h3_linear_bf16_nax_r128");
+        if (!pipeline || pipeline.maxTotalThreadsPerThreadgroup < 128) {
+            h3_gpu_set_error(gpu, @"device cannot dispatch M5 BF16 TensorOps");
+            return 0;
+        }
+        linear_args args = {rows, rank, columns, 0};
+        @autoreleasepool {
+            id<MTLComputeCommandEncoder> encoder =
+                [gpu.command computeCommandEncoder];
+            [encoder setComputePipelineState:pipeline];
+            [encoder setBuffer:TENSOR(b).buffer offset:0 atIndex:0];
+            [encoder setBuffer:TENSOR(at).buffer offset:0 atIndex:1];
+            [encoder setBuffer:TENSOR(delta).buffer offset:0 atIndex:3];
+            [encoder setBytes:&args length:sizeof(args) atIndex:4];
+            [encoder dispatchThreadgroups:
+                MTLSizeMake((rows + 127) / 128, (columns + 63) / 64, 1)
+                 threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
+            [encoder endEncoding];
+        }
+        h3_gpu_stats stats = gpu.stats;
+        stats.direct_dispatches++;
+        gpu.stats = stats;
+        return 1;
+    }
+    return h3_gpu_linear_mps(gpu, delta, b, at, NULL, rows, rank, columns,
+                             MPSDataTypeBFloat16);
+}
+
+int h3_gpu_lora_add_rows_bf16(h3_gpu *opaque, h3_gpu_tensor *weight,
+                              const h3_gpu_tensor *delta, uint32_t rows,
+                              uint32_t columns, uint32_t interleaved,
+                              uint32_t group, uint32_t head_dim,
+                              uint32_t seed) {
+    H3GPU *gpu = GPU(opaque);
+    size_t weight_rows = interleaved ? (size_t)rows * 3 : rows;
+    if (!h3_gpu_require_bf16(gpu, weight, weight_rows * columns,
+                             @"LoRA target weight") ||
+        !h3_gpu_require_bf16(gpu, delta, (size_t)rows * columns,
+                             @"LoRA delta")) return 0;
+    lora_rows_args args = {rows, columns, interleaved, group, head_dim, seed};
+    return h3_gpu_dispatch_2d(gpu, @"h3_lora_add_rows_bf16", columns, rows,
+        ^(id<MTLComputeCommandEncoder> encoder) {
+            [encoder setBuffer:TENSOR(weight).buffer offset:0 atIndex:0];
+            [encoder setBuffer:TENSOR(delta).buffer offset:0 atIndex:1];
+            [encoder setBytes:&args length:sizeof(args) atIndex:2];
+        });
+}
+
+int h3_gpu_lora_add_int8(h3_gpu *opaque, h3_gpu_tensor *weight,
+                         const h3_gpu_tensor *scales,
+                         const h3_gpu_tensor *delta, uint32_t rows,
+                         uint32_t columns, uint32_t interleaved,
+                         uint32_t group, uint32_t head_dim, uint32_t seed) {
+    H3GPU *gpu = GPU(opaque);
+    size_t weight_rows = interleaved ? (size_t)rows * 3 : rows;
+    if (!h3_gpu_require_i8(gpu, weight, weight_rows * columns,
+                           @"LoRA target int8 weight") ||
+        !h3_gpu_require_f32(gpu, scales, weight_rows,
+                            @"LoRA target int8 scales") ||
+        !h3_gpu_require_bf16(gpu, delta, (size_t)rows * columns,
+                             @"LoRA delta")) return 0;
+    lora_rows_args args = {rows, columns, interleaved, group, head_dim, seed};
+    return h3_gpu_dispatch_2d(gpu, @"h3_lora_add_int8", columns, rows,
+        ^(id<MTLComputeCommandEncoder> encoder) {
+            [encoder setBuffer:TENSOR(weight).buffer offset:0 atIndex:0];
+            [encoder setBuffer:TENSOR(scales).buffer offset:0 atIndex:1];
+            [encoder setBuffer:TENSOR(delta).buffer offset:0 atIndex:2];
+            [encoder setBytes:&args length:sizeof(args) atIndex:3];
+        });
 }
 
 int h3_gpu_linear_bf16(h3_gpu *opaque, h3_gpu_tensor *output,

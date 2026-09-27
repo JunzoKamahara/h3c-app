@@ -308,6 +308,27 @@ int h3_gpu_vae_encoder_group_norm_silu_f32(
                       uint32_t depth, uint32_t height, uint32_t width,
                       uint32_t channels, uint32_t groups, float epsilon);
 
+/* LoRA weight patching (see h3_lora.h). delta[rows, columns] =
+ * b[rows, rank] @ at[columns, rank]^T; the add forms apply one row
+ * group of it to a projection weight, mapping group row r to the per-head
+ * interleaved QKV row when `interleaved` is set, with stochastic rounding
+ * seeded by `seed` so the tiny delta survives. */
+int h3_gpu_lora_delta_bf16(h3_gpu *gpu, h3_gpu_tensor *delta,
+                           const h3_gpu_tensor *b, const h3_gpu_tensor *at,
+                           uint32_t rows, uint32_t rank, uint32_t columns);
+int h3_gpu_lora_add_rows_bf16(h3_gpu *gpu, h3_gpu_tensor *weight,
+                              const h3_gpu_tensor *delta, uint32_t rows,
+                              uint32_t columns, uint32_t interleaved,
+                              uint32_t group, uint32_t head_dim,
+                              uint32_t seed);
+/* Per-row int8 weight += stochastically rounded delta / scale; scales are
+ * left unchanged (see h3_shaders.metal). */
+int h3_gpu_lora_add_int8(h3_gpu *gpu, h3_gpu_tensor *weight,
+                         const h3_gpu_tensor *scales,
+                         const h3_gpu_tensor *delta, uint32_t rows,
+                         uint32_t columns, uint32_t interleaved,
+                         uint32_t group, uint32_t head_dim, uint32_t seed);
+
 /* Portable BF16 storage path. Arithmetic accumulates in F32 and rounds at
  * operation boundaries, matching the released checkpoint's compute dtype. */
 int h3_gpu_linear_bf16(h3_gpu *gpu, h3_gpu_tensor *output,

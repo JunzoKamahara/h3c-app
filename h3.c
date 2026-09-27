@@ -4,6 +4,7 @@
 #include "h3_av_reader.h"
 #include "h3_av_writer.h"
 #include "h3_dit.h"
+#include "h3_lora.h"
 #include "h3_metal.h"
 #include "h3_multimodal.h"
 #include "h3_safetensors.h"
@@ -189,6 +190,14 @@ static char *h3_prepared_key(const char *conditioning,
         free(key.text);
         return NULL;
     }
+    /* The DiT's weights carry its LoRA patches, so a different adapter set
+     * or strength needs a different prepared DiT. */
+    for (size_t index = 0; index < params->lora_count; index++)
+        if (!h3_key_append(&key, "|lora=%s@%.6g", params->loras[index].path,
+                           (double)params->loras[index].strength)) {
+            free(key.text);
+            return NULL;
+        }
     return key.text;
 }
 
@@ -587,6 +596,23 @@ static int h3_valid_params(h3_ctx *ctx, const h3_params *params) {
     if (params->core_reuse > 1 && params->denoise_reuse > 1) {
         h3_set_error(ctx, "core reuse and denoiser reuse cannot be combined");
         return 0;
+    }
+    if (params->lora_count && !params->loras) {
+        h3_set_error(ctx, "lora_count is nonzero but loras is NULL");
+        return 0;
+    }
+    if (params->lora_count > H3_MAX_LORAS) {
+        h3_set_error(ctx, "at most %d LoRA adapters can be stacked",
+                     H3_MAX_LORAS);
+        return 0;
+    }
+    for (size_t index = 0; index < params->lora_count; index++) {
+        if (!params->loras[index].path || !*params->loras[index].path ||
+            !isfinite(params->loras[index].strength)) {
+            h3_set_error(ctx, "LoRA %zu needs a path and a finite strength",
+                         index + 1);
+            return 0;
+        }
     }
     if (params->reference_count && !params->references) {
         h3_set_error(ctx, "reference_count is nonzero but references is NULL");
@@ -1584,6 +1610,7 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
             params->use_slower_dynamic_fc1_k,
             params->use_slower_grouped_quantizer,
             params->use_int8_row_fc2,
+            params->loras, params->lora_count,
             condition_video_rows, condition_video_elements,
             condition_audio_rows, condition_audio_elements,
             h3_dit_progress_bridge, &progress, detail, sizeof(detail));
@@ -1605,6 +1632,7 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
             params->use_slower_dynamic_fc1_k,
             params->use_slower_grouped_quantizer,
             params->use_int8_row_fc2,
+            params->loras, params->lora_count,
             h3_dit_progress_bridge, &progress, detail, sizeof(detail));
     }
     if (!dit) {

@@ -1,5 +1,6 @@
 #include "h3_host.h"
 #include "h3_dit.h"
+#include "h3_lora.h"
 #include "h3_metal.h"
 #include "h3_safetensors.h"
 
@@ -372,6 +373,91 @@ static void test_dit_row_conversions(void) {
     CHECK(memcmp(audio, unpacked, sizeof(audio)) == 0);
 }
 
+static void check_lora_key(const char *name, int refiner, int block,
+                           int projection, h3_lora_part part,
+                           h3_lora_role role, h3_lora_style style) {
+    h3_lora_key key;
+    CHECK(h3_lora_parse_key(name, &key));
+    CHECK(key.refiner == refiner);
+    CHECK(key.block == block);
+    CHECK(key.projection == projection);
+    CHECK(key.part == part);
+    CHECK(key.role == role);
+    CHECK(key.style == style);
+}
+
+/* Names taken from published H3 adapters (lightx2v Turbo, fal, drbaph,
+ * TaoMate, larryvrh, alibaba-pai, Cseti) - one per layout. */
+static void test_lora_keys_and_rows(void) {
+    check_lora_key("transformer_blocks.7.attn.to_q.lora_A.default.weight",
+                   0, 7, H3_LORA_QKV, H3_LORA_PART_Q, H3_LORA_ROLE_A,
+                   H3_LORA_STYLE_DIFFUSERS);
+    check_lora_key("transformer_blocks.7.attn.to_v.lora_B.default.weight",
+                   0, 7, H3_LORA_QKV, H3_LORA_PART_V, H3_LORA_ROLE_B,
+                   H3_LORA_STYLE_DIFFUSERS);
+    check_lora_key("transformer_blocks.0.ff.net.0.proj.lora_B.default.weight",
+                   0, 0, H3_LORA_FC1, H3_LORA_PART_FC1_VALUE_GATE,
+                   H3_LORA_ROLE_B, H3_LORA_STYLE_DIFFUSERS);
+    check_lora_key("transformer_blocks.49.ff.net.2.lora_A.default.weight",
+                   0, 49, H3_LORA_FC2, H3_LORA_PART_ALL, H3_LORA_ROLE_A,
+                   H3_LORA_STYLE_DIFFUSERS);
+    check_lora_key("token_refiner.refiner_blocks.1.attn.to_out.0.lora_B.default.weight",
+                   1, 1, H3_LORA_OUT, H3_LORA_PART_ALL, H3_LORA_ROLE_B,
+                   H3_LORA_STYLE_DIFFUSERS);
+    check_lora_key("diffusion_model.blocks.12.attn.qkv_proj.lora_A.weight",
+                   0, 12, H3_LORA_QKV, H3_LORA_PART_ALL, H3_LORA_ROLE_A,
+                   H3_LORA_STYLE_COMFYUI);
+    check_lora_key("diffusion_model.blocks.12.attn.qkv_proj.alpha",
+                   0, 12, H3_LORA_QKV, H3_LORA_PART_ALL, H3_LORA_ROLE_ALPHA,
+                   H3_LORA_STYLE_COMFYUI);
+    check_lora_key("diffusion_model.token_refiner.blocks.0.mlp.fc1.lora_B.weight",
+                   1, 0, H3_LORA_FC1, H3_LORA_PART_ALL, H3_LORA_ROLE_B,
+                   H3_LORA_STYLE_COMFYUI);
+    check_lora_key("diffusion_model.blocks.3.mlp.fc2.lora_up.weight",
+                   0, 3, H3_LORA_FC2, H3_LORA_PART_ALL, H3_LORA_ROLE_B,
+                   H3_LORA_STYLE_COMFYUI);
+    check_lora_key("blocks.20.attn.out_proj.lora_A.weight",
+                   0, 20, H3_LORA_OUT, H3_LORA_PART_ALL, H3_LORA_ROLE_A,
+                   H3_LORA_STYLE_NATIVE);
+    check_lora_key("blocks.20.mlp.fc1.lora_B.default.weight",
+                   0, 20, H3_LORA_FC1, H3_LORA_PART_ALL, H3_LORA_ROLE_B,
+                   H3_LORA_STYLE_NATIVE);
+    check_lora_key("token_refiner.refiner_blocks.0.attn.to_k.lora_down",
+                   1, 0, H3_LORA_QKV, H3_LORA_PART_K, H3_LORA_ROLE_A,
+                   H3_LORA_STYLE_DIFFUSERS);
+    check_lora_key("lora_unet_blocks_10_attn_qkv_proj.lora_down.weight",
+                   0, 10, H3_LORA_QKV, H3_LORA_PART_ALL, H3_LORA_ROLE_A,
+                   H3_LORA_STYLE_KOHYA);
+    check_lora_key("lora_unet_blocks_10_mlp_fc2.alpha",
+                   0, 10, H3_LORA_FC2, H3_LORA_PART_ALL, H3_LORA_ROLE_ALPHA,
+                   H3_LORA_STYLE_KOHYA);
+
+    h3_lora_key key;
+    CHECK(!h3_lora_parse_key("diffusion_model.blocks.0.adaln_proj.linear.lora_A.weight", &key));
+    CHECK(!h3_lora_parse_key("final_layer.adaln_proj.linear.lora_B.weight", &key));
+    CHECK(!h3_lora_parse_key("proj_out.weight", &key));
+    CHECK(!h3_lora_parse_key("diffusion_model.blocks.50.attn.qkv_proj.lora_A.weight", &key));
+    CHECK(!h3_lora_parse_key("token_refiner.blocks.2.mlp.fc1.lora_A.weight", &key));
+    CHECK(!h3_lora_parse_key("blocks.0.mlp.fc1.weight", &key));
+
+    /* Verified against the ComfyUI and official checkpoints: ComfyUI's
+     * contiguous row 128 (q, head 1) is official row 384, its row 7168
+     * (k, head 0) official row 128 and its row 14336 (v, head 0) row 256. */
+    CHECK(h3_lora_group_count(H3_LORA_QKV) == 3);
+    CHECK(h3_lora_group_rows(H3_LORA_QKV) == H3_LORA_INNER);
+    CHECK(h3_lora_engine_row(H3_LORA_QKV, 0, 0) == 0);
+    CHECK(h3_lora_engine_row(H3_LORA_QKV, 0, 128) == 384);
+    CHECK(h3_lora_engine_row(H3_LORA_QKV, 1, 0) == 128);
+    CHECK(h3_lora_engine_row(H3_LORA_QKV, 2, 0) == 256);
+    CHECK(h3_lora_engine_row(H3_LORA_QKV, 2, H3_LORA_INNER - 1) ==
+          3u * H3_LORA_INNER - 1);
+    CHECK(h3_lora_group_count(H3_LORA_FC1) == 1);
+    CHECK(h3_lora_group_rows(H3_LORA_FC1) == 2u * H3_LORA_FFN);
+    CHECK(h3_lora_engine_row(H3_LORA_FC1, 0, 77) == 77);
+    CHECK(h3_lora_columns(H3_LORA_OUT) == H3_LORA_INNER);
+    CHECK(h3_lora_columns(H3_LORA_FC2) == H3_LORA_FFN);
+}
+
 static void test_metal_probe(void) {
     h3_device_info info;
     char error[256];
@@ -393,6 +479,7 @@ int main(void) {
     test_rng_and_solver();
     test_rgb_resize();
     test_dit_row_conversions();
+    test_lora_keys_and_rows();
     test_metal_probe();
     printf("ok: %d checks\n", tests_run);
     return 0;

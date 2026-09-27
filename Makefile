@@ -30,13 +30,6 @@ libh3.a: $(LIB_OBJ)
 build_attention_cache: h3_build_attention_cache.o $(LIB_OBJ)
 	$(CC) -o $@ $^ $(LDLIBS)
 
-# One-time tool: fuses a diffusers-format LoRA adapter into the base BF16
-# weights and writes the same H3AC cache format as build_attention_cache,
-# so H3_ATTENTION_CACHE streams it unmodified. The fusion itself (h3_lora.c,
-# in LIB_OBJ) is shared with h3_dit.c's H3_LORA_PATH. See h3_build_lora_cache.c.
-build_lora_cache: h3_build_lora_cache.o $(LIB_OBJ)
-	$(CC) -o $@ $^ $(LDLIBS)
-
 h3_tests: tests/test_h3.o $(LIB_OBJ)
 	$(CC) -o $@ $^ $(LDLIBS)
 

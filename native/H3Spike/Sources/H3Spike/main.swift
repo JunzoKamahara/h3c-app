@@ -116,13 +116,28 @@ params.on_progress = progressCallback
 params.on_frame = frameCallback
 params.callback_opaque = opaque
 
+// H3SPIKE_LORA="path[@strength],path2[@strength]" stacks adapters.
+let loraSpecs = (ProcessInfo.processInfo.environment["H3SPIKE_LORA"] ?? "")
+    .split(separator: ",").map { spec -> (String, Float) in
+        let parts = spec.split(separator: "@", maxSplits: 1)
+        return (String(parts[0]), parts.count > 1 ? Float(parts[1]) ?? 1 : 1)
+    }
+let loraPaths = loraSpecs.map { strdup($0.0) }
+defer { loraPaths.forEach { free($0) } }
+var loras = zip(loraPaths, loraSpecs).map { h3_lora(path: $0.0, strength: $0.1.1) }
+for (path, strength) in loraSpecs { print("LoRA: \(path) @ \(strength)") }
+
 print("Generating \(params.width)x\(params.height), \(params.frames) frames, \(params.steps) steps...")
 let start = Date()
 
 let result: UnsafeMutablePointer<h3_result>? = outputPath.withCString { outputPathC in
     prompt.withCString { promptC in
-        params.output_path = outputPathC
-        return h3_generate(ctx, promptC, &params)
+        loras.withUnsafeBufferPointer { loraBuffer in
+            params.output_path = outputPathC
+            params.loras = loraBuffer.baseAddress
+            params.lora_count = loraBuffer.count
+            return h3_generate(ctx, promptC, &params)
+        }
     }
 }
 

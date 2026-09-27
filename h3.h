@@ -46,6 +46,31 @@ typedef enum {
     H3_REFERENCE_IMAGE_MAX = 1
 } h3_reference_image_size;
 
+/* One LoRA adapter to apply to the DiT. Several stack additively. The file
+ * may use any of the published H3 layouts: diffusers/PEFT (to_q/to_k/to_v,
+ * ff.net.*), ComfyUI (diffusion_model.blocks.N.attn.qkv_proj...),
+ * unprefixed native names, or kohya (lora_unet_blocks_N_...), with
+ * lora_A/lora_B or lora_down/lora_up factors in BF16, F16 or F32. */
+typedef struct {
+    const char *path;
+    /* Multiplies the adapter's own alpha/rank scale (1 = as trained). */
+    float strength;
+} h3_lora;
+
+/* What h3_lora_inspect found in an adapter file. Tensors outside the DiT
+ * block and token-refiner projections (e.g. adaln_proj, final_layer,
+ * proj_out) are counted in `unsupported` and ignored. */
+typedef struct {
+    int blocks;          /* DiT blocks (of 50) with at least one projection */
+    int refiner_blocks;  /* token-refiner blocks (of 2) touched */
+    int projections;     /* block projections matched in total */
+    int unsupported;     /* tensors that will not be applied */
+    int rank_min;
+    int rank_max;
+    char format[16];     /* "diffusers", "comfyui", "native" or "kohya" */
+    char base_model[96]; /* from metadata when the trainer recorded it */
+} h3_lora_info;
+
 typedef struct {
     int width;
     int height;
@@ -126,12 +151,18 @@ typedef struct {
     h3_frame_callback on_frame;
     h3_progress_callback on_progress;
     void *callback_opaque;
+    /* LoRA adapters, applied in every compute mode (resident, int8
+     * attention cache, SSD streaming) by patching each block's weights on
+     * the GPU as they are loaded or streamed - no fused cache files. */
+    const h3_lora *loras;
+    size_t lora_count;
 } h3_params;
 
 #define H3_PARAMS_DEFAULT { \
     H3_DEFAULT_WIDTH, H3_DEFAULT_HEIGHT, H3_DEFAULT_FRAMES, H3_DEFAULT_STEPS, \
     UINT64_C(42), NULL, NULL, NULL, NULL, 0, H3_REFERENCE_IMAGE_MATCH, \
-    1, H3_DEFAULT_DIT_LAYERS, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, NULL \
+    1, H3_DEFAULT_DIT_LAYERS, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, NULL, \
+    NULL, 0 \
 }
 
 typedef struct {
@@ -187,6 +218,12 @@ void h3_cache_get_info(const h3_ctx *ctx, h3_cache_info *info);
 h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
                        const h3_params *params);
 void h3_result_free(h3_result *result);
+
+/* Reads only an adapter file's header and reports which layout it uses and
+ * how much of the DiT it covers. Returns 0 (with error set) for files that
+ * are not readable safetensors or match no known H3 projection. */
+int h3_lora_inspect(const char *path, h3_lora_info *info,
+                    char *error, size_t error_size);
 
 /* Builds a pre-quantized int8 attention cache for one DiT transformer
  * directory (a path ending in "FL2VA/transformer" or "Ref2VA/transformer"),

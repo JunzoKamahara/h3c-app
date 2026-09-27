@@ -213,6 +213,74 @@ kernel void h3_cast_bf16_to_f32_bias(device const ushort *input [[buffer(0)]],
     output[index] = h3_bf16_to_f32(input[index]) + bias[column];
 }
 
+/* LoRA deltas are computed per row group (see h3_lora.h); QKV groups land on
+ * the per-head interleaved rows of the official checkpoint layout.
+ *
+ * A LoRA delta is typically ~400x smaller than an int8 quantization step and
+ * below BF16 resolution too, so round-to-nearest erases it. Both kernels
+ * round stochastically instead (unbiased: the expected patched weight is
+ * exactly W + delta), with a hash of the element position as the random
+ * source so every step patches identically. */
+struct lora_rows_args {
+    uint rows;
+    uint columns;
+    uint interleaved;
+    uint group;
+    uint head_dim;
+    uint seed;
+};
+
+inline uint h3_lora_target_row(constant lora_rows_args &args, uint row) {
+    if (!args.interleaved) return row;
+    return (row / args.head_dim) * 3u * args.head_dim +
+           args.group * args.head_dim + row % args.head_dim;
+}
+
+inline uint h3_lora_hash(uint value, uint seed) {
+    uint h = value * 0x9E3779B1u ^ seed * 0x85EBCA77u;
+    h ^= h >> 16; h *= 0x7FEB352Du;
+    h ^= h >> 15; h *= 0x846CA68Bu;
+    h ^= h >> 16;
+    return h;
+}
+
+kernel void h3_lora_add_rows_bf16(device ushort *weight [[buffer(0)]],
+                                  device const ushort *delta [[buffer(1)]],
+                                  constant lora_rows_args &args [[buffer(2)]],
+                                  uint2 gid [[thread_position_in_grid]]) {
+    uint column = gid.x;
+    uint row = gid.y;
+    if (row >= args.rows || column >= args.columns) return;
+    uint target = h3_lora_target_row(args, row) * args.columns + column;
+    float sum = h3_bf16_to_f32(weight[target]) +
+                h3_bf16_to_f32(delta[row * args.columns + column]);
+    uint bits = as_type<uint>(sum);
+    if ((bits & 0x7f800000u) != 0x7f800000u)
+        bits += h3_lora_hash(target, args.seed) & 0xffffu;
+    weight[target] = ushort(bits >> 16);
+}
+
+/* Per-row int8 weights keep their scale: q += stochastic_round(delta /
+ * scale), clamped to +-127. Statistically this matches quantizing W + delta
+ * from full precision, without re-rounding the base weight. */
+kernel void h3_lora_add_int8(device char *weight [[buffer(0)]],
+                             device const float *scales [[buffer(1)]],
+                             device const ushort *delta [[buffer(2)]],
+                             constant lora_rows_args &args [[buffer(3)]],
+                             uint2 gid [[thread_position_in_grid]]) {
+    uint column = gid.x;
+    uint row = gid.y;
+    if (row >= args.rows || column >= args.columns) return;
+    uint target_row = h3_lora_target_row(args, row);
+    uint target = target_row * args.columns + column;
+    float steps = h3_bf16_to_f32(delta[row * args.columns + column]) /
+                  scales[target_row];
+    float whole = floor(steps);
+    float random = float(h3_lora_hash(target, args.seed) >> 8) * (1.0f / 16777216.0f);
+    int change = int(whole) + (random < steps - whole ? 1 : 0);
+    weight[target] = char(clamp(int(weight[target]) + change, -127, 127));
+}
+
 struct norm_args {
     uint rows;
     uint width;
