@@ -1,4 +1,5 @@
 import Foundation
+import H3Engine
 
 /// This developer's own hand-placed model checkout - not inside Application
 /// Support like a fresh download would be, so it needs its own literal path
@@ -34,21 +35,41 @@ struct LoRAEntry: Identifiable, Codable, Equatable {
     let id: UUID
     var name: String
     var path: String
-    /// Empty means "auto": the engine detects a scale from the adapter's
-    /// own alpha/rank metadata instead (h3_lora_detect_scale in h3_lora.c).
+    /// Multiplier on the adapter's own alpha/rank scale; empty means 1.0
+    /// (as trained). Named for what it held before strengths became
+    /// relative - kept so saved libraries still decode.
     var scaleText: String
-    /// Step count a distilled (Turbo) LoRA was trained for; selecting the
+    /// Step count a distilled (Turbo) LoRA was trained for; enabling the
     /// LoRA switches the draft to it. nil for ordinary style LoRAs. Optional
     /// so entries saved before this field existed still decode.
     var recommendedSteps: Int?
+    /// Part of the stack applied to the next generation. Any number of
+    /// entries (up to maxStackedLoRAs) can be on at once; they add up.
+    var enabled: Bool
 
     init(id: UUID = UUID(), name: String, path: String, scaleText: String = "",
-         recommendedSteps: Int? = nil) {
+         recommendedSteps: Int? = nil, enabled: Bool = false) {
         self.id = id
         self.name = name
         self.path = path
         self.scaleText = scaleText
         self.recommendedSteps = recommendedSteps
+        self.enabled = enabled
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        path = try container.decode(String.self, forKey: .path)
+        scaleText = try container.decodeIfPresent(String.self, forKey: .scaleText) ?? ""
+        recommendedSteps = try container.decodeIfPresent(Int.self, forKey: .recommendedSteps)
+        enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+    }
+
+    var strength: Float {
+        guard let value = Float(scaleText), value.isFinite else { return 1 }
+        return value
     }
 
     /// "…_turbo_4step_…" / "8-step" style names, as the lightx2v and
@@ -60,6 +81,9 @@ struct LoRAEntry: Identifiable, Codable, Equatable {
     }
 }
 
+/// H3_MAX_LORAS in h3_lora.h - the engine rejects longer stacks.
+let maxStackedLoRAs = 8
+
 /// Registered H3 checkpoint directories and LoRA files, operated on through
 /// ModelManagerView. Persisted in UserDefaults - this only stores small
 /// JSON (names/paths/ids), never the multi-GB model or cache files
@@ -69,22 +93,25 @@ final class ModelLibrary: ObservableObject {
     @Published private(set) var models: [H3ModelEntry] = []
     @Published private(set) var activeModelID: UUID?
     @Published private(set) var loras: [LoRAEntry] = []
-    @Published private(set) var activeLoRAID: UUID?
+    /// Successful h3_lora_inspect results by path, filled on demand (header
+    /// reads only). Failures aren't kept, so a file put back is picked up.
+    private var loraInfoCache: [String: Result<H3LoRAInfo, Error>] = [:]
 
     private let defaults = UserDefaults.standard
     private static let modelsKey = "H3ModelLibrary.models"
     private static let activeModelKey = "H3ModelLibrary.activeModelID"
     private static let lorasKey = "H3ModelLibrary.loras"
-    private static let activeLoRAKey = "H3ModelLibrary.activeLoRAID"
+    /// Before stacking: the one selected LoRA. Read once to migrate.
+    private static let legacyActiveLoRAKey = "H3ModelLibrary.activeLoRAID"
 
     var activeModel: H3ModelEntry? { models.first { $0.id == activeModelID } }
-    var activeLoRA: LoRAEntry? { loras.first { $0.id == activeLoRAID } }
+    /// The stack the next generation applies, in list order.
+    var enabledLoRAs: [LoRAEntry] { loras.filter(\.enabled) }
 
     init() {
         models = Self.decodeArray(H3ModelEntry.self, key: Self.modelsKey)
         loras = Self.decodeArray(LoRAEntry.self, key: Self.lorasKey)
         activeModelID = UUID(uuidString: defaults.string(forKey: Self.activeModelKey) ?? "")
-        activeLoRAID = UUID(uuidString: defaults.string(forKey: Self.activeLoRAKey) ?? "")
 
         // Upgrading from before this feature existed: seed the one path the
         // app used to hardcode, so an existing setup (and any already-built
@@ -114,9 +141,25 @@ final class ModelLibrary: ObservableObject {
             persistLoRAs()
             defaults.set(true, forKey: Self.lorasStepsMigratedKey)
         }
+
+        // Single selection -> stack: the selected LoRA becomes the one
+        // enabled entry. Its strength used to replace the adapter's
+        // alpha/rank scale outright and now multiplies it, so an old
+        // absolute value would be wrong by that factor - reset to 1.0.
+        if !defaults.bool(forKey: Self.lorasStackMigratedKey) {
+            let legacy = defaults.string(forKey: Self.legacyActiveLoRAKey)
+            for index in loras.indices {
+                loras[index].enabled = loras[index].id.uuidString == legacy
+                loras[index].scaleText = ""
+            }
+            persistLoRAs()
+            defaults.removeObject(forKey: Self.legacyActiveLoRAKey)
+            defaults.set(true, forKey: Self.lorasStackMigratedKey)
+        }
     }
 
     private static let lorasStepsMigratedKey = "H3ModelLibrary.lorasStepsMigrated"
+    private static let lorasStackMigratedKey = "H3ModelLibrary.lorasStackMigrated"
 
     // MARK: Models
 
@@ -185,24 +228,44 @@ final class ModelLibrary: ObservableObject {
 
     func setLoRAScale(id: UUID, scaleText: String) {
         guard let index = loras.firstIndex(where: { $0.id == id }) else { return }
-        let filtered = scaleText.filter { $0.isNumber || $0 == "." }
+        let filtered = scaleText.filter { $0.isNumber || $0 == "." || $0 == "-" }
         loras[index].scaleText = filtered
         persistLoRAs()
     }
 
     func removeLoRA(id: UUID) {
         loras.removeAll { $0.id == id }
-        if activeLoRAID == id {
-            activeLoRAID = nil
-            persistActiveLoRA()
-        }
         persistLoRAs()
     }
 
-    /// nil deselects - "追加モデルなし" is a valid, common choice.
-    func selectLoRA(_ id: UUID?) {
-        activeLoRAID = id
-        persistActiveLoRA()
+    /// Enabling past maxStackedLoRAs is refused (returns false).
+    @discardableResult
+    func setLoRAEnabled(id: UUID, _ enabled: Bool) -> Bool {
+        guard let index = loras.firstIndex(where: { $0.id == id }) else { return false }
+        if enabled && !loras[index].enabled && enabledLoRAs.count >= maxStackedLoRAs { return false }
+        loras[index].enabled = enabled
+        persistLoRAs()
+        return true
+    }
+
+    /// Replaces the whole stack: exactly `ids` end up enabled.
+    func setEnabledLoRAs(_ ids: Set<UUID>) {
+        for index in loras.indices { loras[index].enabled = ids.contains(loras[index].id) }
+        persistLoRAs()
+    }
+
+    /// Stack order is list order; it decides which Turbo LoRA's step count
+    /// wins when more than one is on.
+    func moveLoRAs(fromOffsets source: IndexSet, toOffset destination: Int) {
+        loras.move(fromOffsets: source, toOffset: destination)
+        persistLoRAs()
+    }
+
+    func loraInfo(for entry: LoRAEntry) -> Result<H3LoRAInfo, Error> {
+        if let cached = loraInfoCache[entry.path] { return cached }
+        let result = Result { try H3LoRAInfo.inspect(path: entry.path) }
+        if case .success = result { loraInfoCache[entry.path] = result }
+        return result
     }
 
     // MARK: Persistence
@@ -212,10 +275,6 @@ final class ModelLibrary: ObservableObject {
 
     private func persistActiveModel() {
         defaults.set(activeModelID?.uuidString, forKey: Self.activeModelKey)
-    }
-
-    private func persistActiveLoRA() {
-        defaults.set(activeLoRAID?.uuidString, forKey: Self.activeLoRAKey)
     }
 
     private static func decodeArray<T: Decodable>(_ type: T.Type, key: String) -> [T] {

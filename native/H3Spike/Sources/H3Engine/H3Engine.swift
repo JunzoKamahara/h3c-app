@@ -71,6 +71,44 @@ public struct H3ReferenceInput: Sendable, Identifiable {
     }
 }
 
+public struct H3LoRAInput: Sendable, Equatable {
+    public var path: String
+    /// Multiplies the adapter's own alpha/rank scale (1 = as trained).
+    public var strength: Float
+
+    public init(path: String, strength: Float = 1) {
+        self.path = path
+        self.strength = strength
+    }
+}
+
+/// What h3_lora_inspect found in an adapter file (see h3.h).
+public struct H3LoRAInfo: Sendable, Equatable {
+    public let blocks: Int
+    public let refinerBlocks: Int
+    public let projections: Int
+    public let unsupported: Int
+    public let rankMin: Int
+    public let rankMax: Int
+    public let format: String
+    public let baseModel: String
+
+    /// Reads only the safetensors header - cheap enough to call from the UI.
+    public static func inspect(path: String) throws -> H3LoRAInfo {
+        var info = h3_lora_info()
+        var errorBuffer = [CChar](repeating: 0, count: 512)
+        let ok = errorBuffer.withUnsafeMutableBufferPointer { errorBuf in
+            h3_lora_inspect(path, &info, errorBuf.baseAddress, errorBuf.count)
+        }
+        guard ok != 0 else { throw H3EngineError.unusableLoRA(String(cString: errorBuffer)) }
+        return H3LoRAInfo(
+            blocks: Int(info.blocks), refinerBlocks: Int(info.refiner_blocks),
+            projections: Int(info.projections), unsupported: Int(info.unsupported),
+            rankMin: Int(info.rank_min), rankMax: Int(info.rank_max),
+            format: fixedCString(info.format), baseModel: fixedCString(info.base_model))
+    }
+}
+
 public struct H3GenerationParams: Sendable {
     public var width: Int32 = 512
     public var height: Int32 = 512
@@ -91,24 +129,17 @@ public struct H3GenerationParams: Sendable {
     // call instead of once at process startup - different generation modes
     // (default/Ref2VA) need different prebuilt caches.
     public var attentionCachePath: String?
-    // H3_LORA_PATH / H3_LORA_SCALE (see h3_lora.c/h3_dit.c on the
-    // int8-cache-lora branch): fuses one diffusers/peft-format LoRA adapter
-    // into the DiT weights at load time - works for either the resident
-    // BF16 path or, combined with attentionCachePath, the streamed int8
-    // path (which then transparently materializes and reuses a fused H3AC
-    // cache keyed by the LoRA file's hash). nil scale means auto-detect the
-    // adapter's own alpha/rank metadata, falling back to 1.0.
-    public var loraPath: String?
-    public var loraScale: Float?
+    // h3_params.loras: adapters added to the DiT weights, stacked in order.
+    // Any published H3 LoRA layout (diffusers, ComfyUI, kohya, native) works
+    // with every compute mode - the engine patches resident weights once at
+    // load and streamed ones (int8 cache, SSD) as each block streams in.
+    public var loras: [H3LoRAInput] = []
     // h3_params.ssd_streaming: keep only two original BF16 DiT blocks
     // resident and read the next from the checkpoint while the GPU runs the
     // current one. It's an alternative to attentionCachePath, not an
     // addition: it runs on the unquantized BF16 weights, so the int8 cache
-    // (and H3_INT8_STREAM_MLP) don't apply, and LoRA fusion isn't wired into
-    // its layer-loading path at all (h3_dit.c only fuses in load_block /
-    // load_block_norms_and_mlp) - the engine would silently skip it. So when
-    // this is set, generate() clears the cache and LoRA settings instead of
-    // passing along a combination that quietly does the wrong thing.
+    // (and H3_INT8_STREAM_MLP) don't apply - generate() clears those
+    // instead of passing along a combination the engine would ignore.
     public var ssdStreaming = false
     public init() {}
 }
@@ -135,6 +166,20 @@ private func withOptionalCString<R>(_ string: String?, _ body: (UnsafePointer<CC
     return body(nil)
 }
 
+/* Same nesting trick as withReferenceArray below, for h3_lora paths. */
+private func withLoRAArray<R>(_ loras: [H3LoRAInput], built: [h3_lora] = [],
+                              _ body: (UnsafeBufferPointer<h3_lora>) -> R) -> R {
+    guard let lora = loras.first else {
+        return built.withUnsafeBufferPointer(body)
+    }
+    let rest = Array(loras.dropFirst())
+    return lora.path.withCString { pathC in
+        var next = built
+        next.append(h3_lora(path: pathC, strength: lora.strength))
+        return withLoRAArray(rest, built: next, body)
+    }
+}
+
 /* Builds the h3_reference array by nesting one withCString/withOptionalCString
  * per path so all of them stay valid for the single call to `body`, without
  * resorting to manual strdup/free bookkeeping. */
@@ -158,6 +203,7 @@ public enum H3EngineError: Error, LocalizedError {
     case loadFailed(String)
     case generationFailed(String)
     case cacheBuildFailed(String)
+    case unusableLoRA(String)
     case cancelled
 
     public var errorDescription: String? {
@@ -165,6 +211,7 @@ public enum H3EngineError: Error, LocalizedError {
         case .loadFailed(let message): return "Failed to load model: \(message)"
         case .generationFailed(let message): return "Generation failed: \(message)"
         case .cacheBuildFailed(let message): return "Attention cache build failed: \(message)"
+        case .unusableLoRA(let message): return message
         case .cancelled: return "Cancelled"
         }
     }
@@ -296,36 +343,21 @@ public final class H3Engine: @unchecked Sendable {
                 defer { ProcessInfo.processInfo.endActivity(activity) }
 
                 if params.ssdStreaming {
-                    // Exclusive with the int8 cache and with LoRA - see
+                    // Exclusive with the int8 cache - see
                     // H3GenerationParams.ssdStreaming.
                     unsetenv("H3_ATTENTION_CACHE")
                     unsetenv("H3_INT8_STREAM_MLP")
-                    unsetenv("H3_LORA_PATH")
-                    unsetenv("H3_LORA_SCALE")
+                } else if let attentionCachePath = params.attentionCachePath {
+                    setenv("H3_ATTENTION_CACHE", attentionCachePath, 1)
+                    // Same pairing gui/server.py always used with a cache:
+                    // stream FC1/FC2 from it too instead of keeping ~10.8GiB
+                    // of int8 MLP resident for every block, which on a 24GB
+                    // machine turns into memory pressure on longer clips
+                    // (and measured +10s of setup even on a short one).
+                    setenv("H3_INT8_STREAM_MLP", "1", 1)
                 } else {
-                    if let attentionCachePath = params.attentionCachePath {
-                        setenv("H3_ATTENTION_CACHE", attentionCachePath, 1)
-                        // Same pairing gui/server.py always used with a cache:
-                        // stream FC1/FC2 from it too instead of keeping ~10.8GiB
-                        // of int8 MLP resident for every block, which on a 24GB
-                        // machine turns into memory pressure on longer clips
-                        // (and measured +10s of setup even on a short one).
-                        setenv("H3_INT8_STREAM_MLP", "1", 1)
-                    } else {
-                        unsetenv("H3_ATTENTION_CACHE")
-                        unsetenv("H3_INT8_STREAM_MLP")
-                    }
-                    if let loraPath = params.loraPath, !loraPath.isEmpty {
-                        setenv("H3_LORA_PATH", loraPath, 1)
-                        if let loraScale = params.loraScale {
-                            setenv("H3_LORA_SCALE", String(loraScale), 1)
-                        } else {
-                            unsetenv("H3_LORA_SCALE")
-                        }
-                    } else {
-                        unsetenv("H3_LORA_PATH")
-                        unsetenv("H3_LORA_SCALE")
-                    }
+                    unsetenv("H3_ATTENTION_CACHE")
+                    unsetenv("H3_INT8_STREAM_MLP")
                 }
                 // gui/server.py also pins the Qwen text-encoder prefetch
                 // depth to 1 (default is 3 on M5) to keep its footprint down.
@@ -350,17 +382,21 @@ public final class H3Engine: @unchecked Sendable {
                 cParams.on_frame = h3FrameTrampoline
                 cParams.callback_opaque = bridgeHandle.toOpaque()
 
-                let result: UnsafeMutablePointer<h3_result>? = withReferenceArray(params.references) { refBuffer in
-                    outputPath.withCString { outputPathC in
-                        prompt.withCString { promptC in
-                            withOptionalCString(params.firstFrame) { firstFrameC in
-                                withOptionalCString(params.lastFrame) { lastFrameC in
-                                    cParams.output_path = outputPathC
-                                    cParams.first_frame = firstFrameC
-                                    cParams.last_frame = lastFrameC
-                                    cParams.references = refBuffer.baseAddress
-                                    cParams.reference_count = refBuffer.count
-                                    return h3_generate(ctx, promptC, &cParams)
+                let result: UnsafeMutablePointer<h3_result>? = withLoRAArray(params.loras) { loraBuffer in
+                    withReferenceArray(params.references) { refBuffer in
+                        outputPath.withCString { outputPathC in
+                            prompt.withCString { promptC in
+                                withOptionalCString(params.firstFrame) { firstFrameC in
+                                    withOptionalCString(params.lastFrame) { lastFrameC in
+                                        cParams.output_path = outputPathC
+                                        cParams.first_frame = firstFrameC
+                                        cParams.last_frame = lastFrameC
+                                        cParams.references = refBuffer.baseAddress
+                                        cParams.reference_count = refBuffer.count
+                                        cParams.loras = loraBuffer.baseAddress
+                                        cParams.lora_count = loraBuffer.count
+                                        return h3_generate(ctx, promptC, &cParams)
+                                    }
                                 }
                             }
                         }

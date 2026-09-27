@@ -9,7 +9,7 @@ struct ModelManagerView: View {
     @ObservedObject var library: ModelLibrary
     /// Called after the active model changes (a direct selection, or the
     /// previously-active model being removed) so GenerationViewModel can
-    /// reload the engine. Not called for LoRA changes - those only take
+    /// reload the engine. Not called for LoRA changes - the stack only takes
     /// effect at the next generate() call, no engine reload needed.
     var onActiveModelChange: (UUID?) -> Void
 
@@ -170,15 +170,15 @@ struct ModelManagerView: View {
                 emptyState("登録されたLoRAはありません。")
             } else {
                 List {
-                    loraRow(nil)
                     ForEach(library.loras) { entry in
                         loraRow(entry)
                     }
+                    .onMove { library.moveLoRAs(fromOffsets: $0, toOffset: $1) }
                 }
                 .listStyle(.inset)
             }
             HStack {
-                Text(".safetensors形式のLoRAアダプタファイルを登録してください。")
+                Text("チェックしたLoRAを重ねて適用します（最大\(maxStackedLoRAs)個、ドラッグで並べ替え）。")
                     .font(.caption)
                     .foregroundStyle(palette.textSecondary)
                 Spacer()
@@ -188,67 +188,88 @@ struct ModelManagerView: View {
         }
     }
 
-    /// nil represents "追加モデルなし" - always shown first, selectable like
-    /// any registered entry, so the manager's own list is a complete picture
-    /// of every possible selection state, not just the registered files.
-    private func loraRow(_ entry: LoRAEntry?) -> some View {
-        HStack(spacing: H3Spacing.sm) {
-            let isActive = entry?.id == library.activeLoRAID
-            Image(systemName: isActive ? "checkmark.circle.fill" : "circle")
-                .foregroundStyle(isActive ? palette.accent : palette.textSecondary)
+    private func loraRow(_ entry: LoRAEntry) -> some View {
+        HStack(alignment: .top, spacing: H3Spacing.sm) {
+            Toggle("", isOn: Binding(
+                get: { entry.enabled },
+                set: { library.setLoRAEnabled(id: entry.id, $0) }
+            ))
+            .toggleStyle(.checkbox)
+            .labelsHidden()
+            .disabled(!entry.enabled && library.enabledLoRAs.count >= maxStackedLoRAs)
             VStack(alignment: .leading, spacing: 2) {
-                if let entry, renamingLoRAID == entry.id {
+                if renamingLoRAID == entry.id {
                     TextField("名前", text: $renameText, onCommit: {
                         library.renameLoRA(id: entry.id, name: renameText)
                         renamingLoRAID = nil
                     })
                     .textFieldStyle(.roundedBorder)
                 } else {
-                    Text(entry?.name ?? "なし").font(.body)
+                    Text(entry.name).font(.body)
                 }
-                if let entry {
-                    Text(entry.path)
-                        .font(.caption)
-                        .foregroundStyle(palette.textSecondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
+                Text(entry.path)
+                    .font(.caption)
+                    .foregroundStyle(palette.textSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                loraInfoText(entry)
             }
             Spacer()
-            if let entry {
-                HStack(spacing: 4) {
-                    Text("強さ").font(.caption2).foregroundStyle(palette.textSecondary)
-                    TextField("自動", text: Binding(
-                        get: { entry.scaleText },
-                        set: { library.setLoRAScale(id: entry.id, scaleText: $0) }
-                    ))
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 56)
-                    Text("ステップ").font(.caption2).foregroundStyle(palette.textSecondary)
-                    TextField("—", text: Binding(
-                        get: { entry.recommendedSteps.map(String.init) ?? "" },
-                        set: { library.setLoRARecommendedSteps(id: entry.id, text: $0) }
-                    ))
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 40)
-                    .help("Turbo（蒸留）LoRAの学習ステップ数。選ぶと生成ステップ数がこれに切り替わります。空欄は通常のLoRA。")
-                }
-                Menu {
-                    Button("名前を変更") {
-                        renameText = entry.name
-                        renamingLoRAID = entry.id
-                    }
-                    Button("削除", role: .destructive) { library.removeLoRA(id: entry.id) }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                }
-                .menuStyle(.borderlessButton)
-                .frame(width: 24)
+            HStack(spacing: 4) {
+                Text("強さ").font(.caption2).foregroundStyle(palette.textSecondary)
+                TextField("1", text: Binding(
+                    get: { entry.scaleText },
+                    set: { library.setLoRAScale(id: entry.id, scaleText: $0) }
+                ))
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 56)
+                .help("学習時の効き具合に対する倍率。空欄は1。")
+                Text("ステップ").font(.caption2).foregroundStyle(palette.textSecondary)
+                TextField("—", text: Binding(
+                    get: { entry.recommendedSteps.map(String.init) ?? "" },
+                    set: { library.setLoRARecommendedSteps(id: entry.id, text: $0) }
+                ))
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 40)
+                .help("Turbo（蒸留）LoRAの学習ステップ数。オンにすると生成ステップ数がこれに切り替わります。空欄は通常のLoRA。")
             }
+            Menu {
+                Button("名前を変更") {
+                    renameText = entry.name
+                    renamingLoRAID = entry.id
+                }
+                Button("削除", role: .destructive) { library.removeLoRA(id: entry.id) }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+            .menuStyle(.borderlessButton)
+            .frame(width: 24)
         }
-        .contentShape(Rectangle())
-        .onTapGesture { library.selectLoRA(entry?.id) }
         .padding(.vertical, 4)
+    }
+
+    /// What h3_lora_inspect read from the file's header: layout, how much
+    /// of the DiT it touches, rank - or why it can't be used.
+    private func loraInfoText(_ entry: LoRAEntry) -> some View {
+        let text: String
+        var isError = false
+        switch library.loraInfo(for: entry) {
+        case .success(let info):
+            var parts = [info.format,
+                         "\(info.blocks)/50ブロック" + (info.refinerBlocks > 0 ? "+refiner" : ""),
+                         info.rankMin == info.rankMax ? "rank \(info.rankMax)" : "rank \(info.rankMin)–\(info.rankMax)"]
+            if info.unsupported > 0 { parts.append("未対応\(info.unsupported)件は無視") }
+            text = parts.joined(separator: " ・ ")
+        case .failure(let error):
+            text = FileManager.default.fileExists(atPath: entry.path)
+                ? "MiniMax-H3用として読み込めません: \(error.localizedDescription)"
+                : "ファイルが見つかりません"
+            isError = true
+        }
+        return Text(text)
+            .font(.caption2)
+            .foregroundStyle(isError ? palette.errorColor : palette.textSecondary)
+            .lineLimit(2)
     }
 
     private func addLoRA() {

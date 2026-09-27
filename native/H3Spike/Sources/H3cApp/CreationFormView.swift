@@ -304,15 +304,15 @@ struct CreationFormView: View {
             .frame(maxWidth: 260)
             switch viewModel.computeMode {
             case .attentionCache:
-                Text("事前に作ったint8キャッシュを読みながら計算します。速く、追加モデル（LoRA）も使えます。キャッシュと、Tensor演算ユニットを搭載したGPU（M5以降）が必要です。")
+                Text("事前に作ったint8キャッシュを読みながら計算します。速く動作します。キャッシュと、Tensor演算ユニットを搭載したGPU（M5以降）が必要です。")
                     .font(.caption)
                     .foregroundStyle(palette.textSecondary)
             case .resident:
-                Text("キャッシュファイルを作らず、起動のたびにモデル全体をメモリ上に展開して計算します。追加モデル（LoRA）も使えます。Tensor演算ユニット搭載GPU（M5以降）ではint8に量子化して常駐、それ以外ではBF16のまま常駐するため、大容量メモリのMac向けです。")
+                Text("キャッシュファイルを作らず、起動のたびにモデル全体をメモリ上に展開して計算します。Tensor演算ユニット搭載GPU（M5以降）ではint8に量子化して常駐、それ以外ではBF16のまま常駐するため、大容量メモリのMac向けです。")
                     .font(.caption)
                     .foregroundStyle(palette.textSecondary)
             case .ssdStreaming:
-                Text("元のBF16モデルを、必要なブロックだけSSDから読みながら計算します。メモリは少なくて済みますが遅くなります。キャッシュは使わず、追加モデル（LoRA）は使えません。")
+                Text("元のBF16モデルを、必要なブロックだけSSDから読みながら計算します。メモリは少なくて済みますが遅くなります。キャッシュは使いません。")
                     .font(.caption)
                     .foregroundStyle(palette.textSecondary)
             }
@@ -451,52 +451,63 @@ struct CreationFormView: View {
 
     private var loraSection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("追加モデル（LoRA）").font(.caption).foregroundStyle(palette.textSecondary)
             HStack {
-                Picker("追加モデル（LoRA）", selection: Binding(
-                    get: { library.activeLoRAID },
-                    set: { library.selectLoRA($0) }
-                )) {
-                    Text("なし").tag(UUID?.none)
-                    ForEach(library.loras) { entry in
-                        Text(entry.name).tag(UUID?.some(entry.id))
-                    }
-                }
-                .pickerStyle(.menu)
-                .labelsHidden()
-                .frame(maxWidth: 200)
+                Text("追加モデル（LoRA）").font(.caption).foregroundStyle(palette.textSecondary)
                 Spacer()
                 Button("管理…") { showingModelManager = true }
                     .font(.caption)
             }
-            .disabled(viewModel.computeMode == .ssdStreaming)
-
-            if viewModel.computeMode == .ssdStreaming {
-                // Not just disabled: the engine wouldn't error, it would
-                // silently not apply it, so say so where the selection is shown.
-                Text(library.activeLoRA == nil
-                     ? "SSDストリーミングでは追加モデル（LoRA）を使えません。"
-                     : "SSDストリーミングでは適用されないため、この追加モデルは今回の生成に使われません。")
+            if library.loras.isEmpty {
+                Text("登録された追加モデルはありません。「管理…」から追加できます。")
                     .font(.caption)
                     .foregroundStyle(palette.textSecondary)
-            } else if let active = library.activeLoRA {
-                HStack {
-                    Text("強さ（空欄=自動）").font(.caption).foregroundStyle(palette.textSecondary)
-                    TextField("自動", text: Binding(
-                        get: { active.scaleText },
-                        set: { library.setLoRAScale(id: active.id, scaleText: $0) }
-                    ))
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 80)
+            } else {
+                ForEach(library.loras) { entry in
+                    loraStackRow(entry)
                 }
-                if let turboSteps = active.recommendedSteps {
-                    Text("Turbo用の追加モデルです。生成ステップ数を\(turboSteps)に合わせました（\(turboSteps)以外では品質が落ちます）。")
-                        .font(.caption)
-                        .foregroundStyle(viewModel.steps == turboSteps ? palette.textSecondary : palette.errorColor)
-                }
+                Text("オンにした追加モデルは重ねて適用されます。強さは学習時の効き具合に対する倍率です（空欄=1）。")
+                    .font(.caption)
+                    .foregroundStyle(palette.textSecondary)
+            }
+            let enabled = library.enabledLoRAs
+            let turbo = enabled.filter { $0.recommendedSteps != nil }
+            if let first = turbo.first, let turboSteps = first.recommendedSteps {
+                Text("「\(first.name)」はTurbo用の追加モデルです。生成ステップ数を\(turboSteps)に合わせました（\(turboSteps)以外では品質が落ちます）。")
+                    .font(.caption)
+                    .foregroundStyle(viewModel.steps == turboSteps ? palette.textSecondary : palette.errorColor)
+            }
+            if turbo.count > 1 {
+                Text("Turbo用の追加モデルを複数重ねると効果が強くなりすぎます。1つにすることをおすすめします。")
+                    .font(.caption)
+                    .foregroundStyle(palette.errorColor)
+            }
+            if !enabled.isEmpty {
                 Text("読み込むモデル（最初/最後の画像・参照画像・動画）に対応したファイルか、事前に確認できません。")
                     .font(.caption)
                     .foregroundStyle(palette.textSecondary)
+            }
+        }
+    }
+
+    private func loraStackRow(_ entry: LoRAEntry) -> some View {
+        HStack(spacing: H3Spacing.sm) {
+            Toggle(isOn: Binding(
+                get: { entry.enabled },
+                set: { library.setLoRAEnabled(id: entry.id, $0) }
+            )) {
+                Text(entry.name).lineLimit(1).truncationMode(.middle)
+            }
+            .toggleStyle(.checkbox)
+            .disabled(!entry.enabled && library.enabledLoRAs.count >= maxStackedLoRAs)
+            Spacer()
+            if entry.enabled {
+                Text("強さ").font(.caption).foregroundStyle(palette.textSecondary)
+                TextField("1", text: Binding(
+                    get: { entry.scaleText },
+                    set: { library.setLoRAScale(id: entry.id, scaleText: $0) }
+                ))
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 56)
             }
         }
     }

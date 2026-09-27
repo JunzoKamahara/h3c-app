@@ -47,8 +47,7 @@ enum JobStage: Int, Comparable {
         case "encode":
             return .encode
         case "tokenizer", "text encoder", "refine text", "precompute AdaLN", "load transformer core",
-             "audio VAE encoder", "video VAE encoder",
-             "fuse LoRA into attention cache", "reuse cached LoRA attention cache":
+             "audio VAE encoder", "video VAE encoder":
             return .setup
         default:
             return nil
@@ -64,8 +63,6 @@ private let phaseLabels: [String: String] = [
     "load transformer core": "モデルを読み込み",
     "audio VAE encoder": "音声を解析",
     "video VAE encoder": "画像を解析",
-    "fuse LoRA into attention cache": "追加モデル（LoRA）を統合",
-    "reuse cached LoRA attention cache": "統合済みLoRAを読み込み",
 ]
 
 struct TimingSample: Codable {

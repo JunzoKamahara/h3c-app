@@ -71,8 +71,8 @@ final class GenerationViewModel: ObservableObject {
     @Published var seconds: Int = 5
     @Published var steps: Int = defaultSteps
     @Published var denoiseReuse: Int = defaultReuse
-    // See ComputeMode: cache vs SSD streaming are mutually exclusive, and
-    // LoRA only exists on the cache side.
+    // See ComputeMode: cache, resident and SSD streaming are mutually
+    // exclusive; LoRA works with all three.
     @Published var computeMode: ComputeMode = .attentionCache
     // The int8 path (and so the cache) needs the Metal 4 hardware tensor
     // units first shipped in M5 - h3_gpu.m enables tensor ops based on the
@@ -121,15 +121,11 @@ final class GenerationViewModel: ObservableObject {
     @Published var lastFramePath: String?
     @Published var referenceImages: [H3ReferenceInput] = []
 
-    /// LoRA is now chosen from ModelLibrary's registered library rather than
-    /// a one-off file pick; only applies on the cache path - under SSD
-    /// streaming the engine would silently skip it, so it's excluded from
-    /// the request (the library selection itself stays untouched across
-    /// mode switches, like images do).
-    var effectiveLoraPath: String? { computeMode == .ssdStreaming ? nil : library.activeLoRA?.path }
-    var effectiveLoraScale: Float? {
-        guard computeMode != .ssdStreaming, let entry = library.activeLoRA else { return nil }
-        return Float(entry.scaleText)
+    /// The LoRA stack is chosen from ModelLibrary's registered library
+    /// (entries switched on there or in the form) and applies in every
+    /// compute mode.
+    var effectiveLoRAs: [ResolvedLoRA] {
+        library.enabledLoRAs.map { ResolvedLoRA(name: $0.name, path: $0.path, strength: $0.strength) }
     }
 
     /// Where the active model's attention cache files live. Isolated per
@@ -172,7 +168,7 @@ final class GenerationViewModel: ObservableObject {
     var hasAdvancedChanges: Bool {
         sizeProfile != defaultSizeProfile || steps != defaultSteps || denoiseReuse != defaultReuse
             || computeMode != defaultComputeMode || speedMode != .quality || !seedText.isEmpty
-            || effectiveLoraPath != nil
+            || !library.enabledLoRAs.isEmpty
     }
 
     /// Max-resolution + long duration + SSD streaming measured as
@@ -302,28 +298,26 @@ final class GenerationViewModel: ObservableObject {
 
     /// A distilled Turbo LoRA only works at the step count it was trained
     /// for, and base-model quality collapses at that count once the LoRA is
-    /// gone - so the draft's steps follow the *effective* LoRA (none under
-    /// SSD streaming): switching to one with recommendedSteps adopts them,
-    /// and leaving it restores the default if the user hadn't changed them.
-    /// Also runs at launch, since steps aren't persisted but the LoRA is.
+    /// gone - so the draft's steps follow the stack: enabling one with
+    /// recommendedSteps adopts them (the first such entry in list order
+    /// wins), and disabling it restores the default if the user hadn't
+    /// changed them. Also runs at launch, since steps aren't persisted but
+    /// the stack is.
     private func followTurboLoRASteps() {
-        turboStepsSubscription = Publishers.CombineLatest3(
-            library.$activeLoRAID, library.$loras, $computeMode
-        )
-        .map { activeID, loras, mode -> Int? in
-            guard mode != .ssdStreaming else { return nil }
-            return loras.first { $0.id == activeID }?.recommendedSteps
-        }
-        .removeDuplicates()
-        .scan((previous: Int?.none, current: Int?.none)) { ($0.current, $1) }
-        .sink { [weak self] change in
-            guard let self else { return }
-            if let steps = change.current {
-                self.steps = steps
-            } else if let previous = change.previous, self.steps == previous {
-                self.steps = defaultSteps
+        turboStepsSubscription = library.$loras
+            .map { loras -> Int? in
+                loras.first { $0.enabled && $0.recommendedSteps != nil }?.recommendedSteps
             }
-        }
+            .removeDuplicates()
+            .scan((previous: Int?.none, current: Int?.none)) { ($0.current, $1) }
+            .sink { [weak self] change in
+                guard let self else { return }
+                if let steps = change.current {
+                    self.steps = steps
+                } else if let previous = change.previous, self.steps == previous {
+                    self.steps = defaultSteps
+                }
+            }
     }
 
     private static func sweepStaleTempFiles() {
@@ -417,7 +411,7 @@ final class GenerationViewModel: ObservableObject {
         computeMode = defaultComputeMode
         speedMode = .quality
         seedText = ""
-        library.selectLoRA(nil)
+        library.setEnabledLoRAs([])
     }
 
     // MARK: Validation (UI-07: block generation with a locatable reason
@@ -442,6 +436,14 @@ final class GenerationViewModel: ObservableObject {
                 if !hasVisualReference {
                     return "音声だけの参照はできません。画像か動画の参照も追加してください"
                 }
+            }
+        }
+        for lora in library.enabledLoRAs {
+            if !FileManager.default.fileExists(atPath: lora.path) {
+                return "追加モデル「\(lora.name)」のファイルが見つかりません。モデル管理で確認してください"
+            }
+            if case .failure = library.loraInfo(for: lora) {
+                return "追加モデル「\(lora.name)」はMiniMax-H3用として読み込めません。モデル管理で確認してください"
             }
         }
         if computeMode == .attentionCache {
@@ -469,7 +471,8 @@ final class GenerationViewModel: ObservableObject {
             if computeMode != defaultComputeMode { parts.append(computeMode.summaryLabel) }
             if speedMode != .quality { parts.append(speedMode.summaryLabel) }
             if !seedText.isEmpty { parts.append("シード固定") }
-            if effectiveLoraPath != nil, let name = library.activeLoRA?.name { parts.append("追加モデル: \(name)") }
+            let loras = library.enabledLoRAs
+            if !loras.isEmpty { parts.append("追加モデル: " + loras.map(\.name).joined(separator: " + ")) }
         }
         return parts.joined(separator: " ・ ")
     }
@@ -531,8 +534,8 @@ final class GenerationViewModel: ObservableObject {
         params.references = effectiveReferences
         params.ssdStreaming = computeMode == .ssdStreaming
         params.attentionCachePath = computeMode == .attentionCache ? currentAttentionCachePath : nil
-        params.loraPath = effectiveLoraPath
-        params.loraScale = effectiveLoraScale
+        let capturedLoRAs = effectiveLoRAs
+        params.loras = capturedLoRAs.map { H3LoRAInput(path: $0.path, strength: $0.strength) }
         let speed = speedSettings
         params.ditLayers = speed.ditLayers
         params.coreReuse = speed.coreReuse
@@ -546,8 +549,6 @@ final class GenerationViewModel: ObservableObject {
         let capturedReuse = denoiseReuse.clamped(to: reuseRange)
         let capturedComputeMode = computeMode
         let capturedSpeedMode = speedMode
-        let capturedLoraPath = effectiveLoraPath
-        let capturedLoraScale = effectiveLoraScale
         let capturedDeviceLine = deviceLine
 
         generationTask = Task {
@@ -585,8 +586,7 @@ final class GenerationViewModel: ObservableObject {
                             speedMode: capturedSpeedMode,
                             seed: result.seed,
                             seedWasRandom: seedWasRandom,
-                            loraPath: capturedLoraPath,
-                            loraScale: capturedLoraScale,
+                            loras: capturedLoRAs,
                             deviceLine: capturedDeviceLine,
                             completedAt: Date()
                         )
@@ -682,15 +682,17 @@ final class GenerationViewModel: ObservableObject {
         computeMode = result.computeMode
         speedMode = result.speedMode
         seedText = result.seedWasRandom ? "" : result.seedDecimalString
-        // The result only kept the raw path/scale actually used, not a
-        // library entry id (which may since have been renamed or removed) -
-        // best-effort match it back to a still-registered LoRA by path.
-        if let path = result.loraPath, let match = library.loras.first(where: { $0.path == path }) {
-            library.selectLoRA(match.id)
-        } else {
-            library.selectLoRA(nil)
+        // The result only kept the paths/strengths actually used, not
+        // library entry ids (which may since have been renamed or removed) -
+        // best-effort match them back to still-registered LoRAs by path.
+        var ids = Set<UUID>()
+        for used in result.loras {
+            guard let match = library.loras.first(where: { $0.path == used.path }) else { continue }
+            ids.insert(match.id)
+            library.setLoRAScale(id: match.id, scaleText: used.strength == 1 ? "" : "\(used.strength)")
         }
-        // After the LoRA: selecting a Turbo LoRA moves steps to its
+        library.setEnabledLoRAs(ids)
+        // After the LoRAs: enabling a Turbo LoRA moves steps to its
         // recommended count, and the past result's own value should win.
         steps = result.steps
     }

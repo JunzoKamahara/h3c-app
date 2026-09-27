@@ -105,19 +105,18 @@ enum ImageInputMode: String, CaseIterable, Identifiable {
 // engine, not just in the UI:
 // - attentionCache: pre-quantized int8 cache streamed from disk (+ streamed
 //   MLP). Fast, needs the cache file, an M5-class GPU (tensor ops gate the
-//   int8 path, h3_gpu.m) and supports LoRA.
+//   int8 path, h3_gpu.m).
 // - resident: every DiT block loaded fully into memory at once instead of
 //   streamed - h3_dit.c's plain load_block() path, the same one
 //   attentionCache falls back on when H3_ATTENTION_CACHE isn't set. Needs
 //   no cache file (quantizes to int8 in place at load time on a tensor-
 //   capable GPU, same ~28s cost as building a cache, just not saved to
-//   disk; falls back to full BF16 residency on older GPUs), supports LoRA,
-//   but needs enough RAM to hold that residency - meant for a Mac with
+//   disk; falls back to full BF16 residency on older GPUs), but needs enough RAM to hold that residency - meant for a Mac with
 //   memory to spare, not the default choice.
 // - ssdStreaming: the original BF16 checkpoint, two blocks resident at a
-//   time. No cache or quantization needed and far less memory, but slower,
-//   and the engine has no LoRA path for it (h3_dit.c only fuses LoRA when
-//   loading resident/cache blocks).
+//   time. No cache or quantization needed and far less memory, but slower.
+// LoRA stacks apply in all three (h3_lora.c patches whichever weights the
+// mode loads or streams).
 // Approximations the engine already implements and validated (h3.h):
 // gate-ranked DiT block skipping (dit_layers), transformer-core reuse across
 // steps (core_reuse) and horizontal token pairing in the middle blocks
@@ -170,6 +169,13 @@ enum ComputeMode: String, CaseIterable, Identifiable, Codable {
 // showing "設定を見る" or reusing it never depends on (and is never
 // clobbered by) whatever the user has since typed. See invariant #1/#10 in
 // the design spec.
+/// One adapter of the stack a generation actually used.
+struct ResolvedLoRA: Equatable {
+    let name: String
+    let path: String
+    let strength: Float
+}
+
 struct ResolvedResult {
     let prompt: String
     let creationMethod: CreationMethod
@@ -186,8 +192,7 @@ struct ResolvedResult {
     let speedMode: SpeedMode
     let seed: UInt64
     let seedWasRandom: Bool
-    let loraPath: String?
-    let loraScale: Float?
+    let loras: [ResolvedLoRA]
     let deviceLine: String
     let completedAt: Date
 
@@ -205,8 +210,9 @@ struct ResolvedResult {
             "速度: \(speedMode.label)",
             "シード: \(seedDecimalString)" + (seedWasRandom ? "（毎回変える設定で決定）" : "（固定）"),
         ]
-        if let loraPath {
-            lines.append("追加モデル（LoRA）: \(URL(fileURLWithPath: loraPath).lastPathComponent)")
+        for lora in loras {
+            let strength = lora.strength == 1 ? "" : "（強さ \(lora.strength)）"
+            lines.append("追加モデル（LoRA）: \(URL(fileURLWithPath: lora.path).lastPathComponent)" + strength)
         }
         lines.append("動作環境: \(deviceLine)")
         return lines.joined(separator: "\n")

@@ -78,17 +78,20 @@ to skip that step and stream the original BF16 weights instead.
   (`h3_reference_max_pixels()` in [h3_host.c](h3_host.c)) before it reaches
   the model, rather than always targeting the same fixed cap regardless of
   what the machine can hold. See [Reference-conditioning cost](#reference-conditioning-cost-why-a-bigger-reference-is-not-free) below for why this matters.
-- **LoRA**: the app's model manager keeps a library of registered LoRA
-  files (each with its own saved strength), fused into the model at load
-  time under any residency mode (see [h3_lora.c](h3_lora.c)). A 4-step
-  Turbo distillation LoRA (from
+- **Stackable LoRAs**: the model manager keeps a library of LoRA files;
+  any of them (up to 8) can be switched on at once, each with its own
+  strength, and they add up. Every published H3 layout loads as-is —
+  diffusers/PEFT (`to_q`/`to_k`/`to_v`), ComfyUI
+  (`diffusion_model.blocks.N...`), kohya (`lora_unet_...`) and plain native
+  names, BF16/F16/F32, any rank, full or partial coverage — and the manager
+  shows what each file touches (format, blocks, rank). Adapters work in all
+  three compute modes with no fused cache files: the engine adds the
+  stacked delta to each weight on the GPU as it is loaded or streamed in
+  (see [LoRA](#lora)). A 4-step Turbo distillation LoRA (from
   [lightx2v/Minimax-h3-Turbo](https://huggingface.co/lightx2v/Minimax-h3-Turbo))
-  works end to end. Each LoRA can carry a recommended step count
-  (auto-detected from names like `..._4step_...`); selecting such a Turbo
-  LoRA switches the generation to that many steps, and deselecting it
-  restores the default. `build_lora_cache` (built via `make build_lora_cache`)
-  additionally pre-fuses a LoRA into an int8 cache file offline, for
-  anyone driving the engine directly rather than through the app.
+  works end to end; each LoRA can carry a recommended step count
+  (auto-detected from names like `..._4step_...`), and switching such a
+  Turbo LoRA on moves the generation to that many steps.
 - **Three compute modes**, see [Compute modes](#compute-modes): a fast int8
   attention cache, a resident mode for a Mac with memory to spare that
   needs no cache file, and a slow-but-low-memory SSD-streaming mode.
@@ -124,11 +127,10 @@ app's compute-mode picker (or the API's `compute_mode` field):
 | Speed | Fastest measured path | Comparable to the cache path (no per-step disk I/O either) | Slower; a 22-frame/512-square clip measured 141s vs. ~78s for the cache path (both 20 steps) |
 | Memory | int8-quantized weights streamed in double-buffered slots | Every DiT block resident at once — ~18 GiB int8-quantized on a tensor-capable GPU, or the full ~37 GiB BF16 otherwise | Only 2 DiT blocks resident (~2 GiB tracked storage) at a time |
 | Requires | M5-class GPU (Metal 4 TensorOps / int8 path) | Any Apple Silicon GPU (falls back to BF16 residency without tensor hardware) — meant for a Mac with memory to spare | Any Apple Silicon GPU |
-| LoRA | Yes | Yes | No — the engine only fuses LoRA when loading resident/cache blocks |
+| LoRA | Yes | Yes | Yes |
 
 Full detail on the cache format — versioning, `model_kind`/`model_id`
-mismatch guards, LoRA fusion into a cache — is in
-[h3_attention_cache.c](h3_attention_cache.c) and [h3_lora.c](h3_lora.c). A
+mismatch guards — is in [h3_attention_cache.c](h3_attention_cache.c). A
 cache can also be built as a standalone step with
 `build_attention_cache <FL2VA/transformer dir> <output file>` (`make
 build_attention_cache`), or pointed at a model root to build both FL2VA and
@@ -140,8 +142,7 @@ against the same ceiling here — see the next section.
 ### Library-level configuration
 
 The engine itself (`h3_dit.c`) reads a number of environment variables
-directly — `H3_ATTENTION_CACHE`, `H3_ATTENTION_CACHE_DIR`, `H3_LORA_PATH`,
-`H3_LORA_SCALE`, `H3_TOKEN_REFINER_LORA`, `H3_INT8_STREAM_MLP`,
+directly — `H3_ATTENTION_CACHE`, `H3_ATTENTION_CACHE_DIR`, `H3_INT8_STREAM_MLP`,
 `H3_QWEN_PREFETCH*`, `H3_ZERO_COPY_WEIGHTS`, `H3_VAE_TILE_PIXELS`,
 `H3_VAE_INT8`, `H3_DIT_COMMAND_BLOCKS`, `H3_PROFILE`, and a long tail of
 `H3_DISABLE_*`/`H3_USE_SLOWER_*`-style A/B diagnostic switches. These apply
@@ -171,6 +172,29 @@ scales with the step count (steps / 5, at most 4), so a 4-step Turbo LoRA run
 effectively keeps only the block skipping and token reduction, and it's
 turned off whenever the separate whole-velocity `reuse` is above 1.
 
+## LoRA
+
+Adapters are never fused into a cache file. [h3_lora.c](h3_lora.c) reads
+each file once per generation, maps its tensors onto the engine's own
+weight layout (ComfyUI and diffusers store attention q/k/v contiguously,
+the official checkpoint interleaves them per head; diffusers also swaps
+the two halves of the SwiGLU `fc1`), and concatenates the stack along the
+rank. Whenever a block's weights reach the GPU — once at load for resident
+weights, every step for streamed ones (int8 cache, SSD) — one matmul per
+projection adds `Σ strength_i · alpha_i/rank_i · B_i A_i` in place. The
+delta is far below one int8 or BF16 step, so it is added with stochastic
+rounding (round-to-nearest would silently drop most of it); the rounding
+noise is deterministic, so the same seed reproduces the same video.
+
+Covered: `qkv`, `out`, `fc1` and `fc2` of the 50 DiT blocks and the 2
+token-refiner blocks. Anything else in a file (`adaln_proj`, `final_layer`,
+…) is ignored, and the model manager shows how many such tensors there
+were. Measured on M5 at 512x512 / 39 frames / 4 steps: the lightx2v Turbo
+LoRA (rank 128, all 50 blocks) adds about 1.8 s per step with the int8
+cache (7.5 → 9.3 s) and about 2 s with SSD streaming (11.9 → 13.9 s); stacking a
+second, rank-16 LoRA on top costs nothing measurable. Its diffusers and
+ComfyUI releases produce bit-identical videos.
+
 ## Reference-conditioning cost: why a bigger reference is not free
 
 A Ref2VA reference isn't encoded once and cached — the DiT re-attends to it
@@ -195,7 +219,7 @@ h3.c, h3_dit.c, h3_gpu.m, ...   Core inference engine (C + Objective-C/Metal), b
 h3.h                            Public C API surface (h3_load_dir, h3_generate, h3_build_attention_cache, ...)
 h3_shaders.metal                All Metal compute kernels
 h3_build_attention_cache.c      CLI wrapper around h3_build_attention_cache() -> build_attention_cache
-h3_build_lora_cache.c           CLI tool that fuses a LoRA into an int8 cache offline -> build_lora_cache
+h3_lora.c                       LoRA loading (format normalization) and GPU weight patching
 tests/                          C test suite (make test / make parity)
 native/H3Spike/                 Native macOS app (SwiftPM)
   Sources/CH3                   C shim exposing libh3.a's C API to Swift
@@ -218,9 +242,8 @@ make test             # deterministic host suite (+ Metal/MLX parity if fixtures
 make parity            # just the Metal/MLX numerical checks
 ```
 
-`make build_attention_cache` and `make build_lora_cache` build the two
-standalone cache-preparation tools mentioned above; neither is part of the
-default `make` target.
+`make build_attention_cache` builds the standalone cache-preparation tool
+mentioned above; it isn't part of the default `make` target.
 
 ### Native app
 
@@ -320,7 +343,7 @@ plain filesystem paths, not uploads.
 | `POST` | `/api/cancel` | Cancels the running job, if any. |
 | `GET` | `/api/result/video` | Streams the current result as `video/mp4`; `404` if none, or once the next job's `generate()` call deletes it. |
 | `GET` | `/api/models` | Registered H3 model directories (id, name, path, whether active). |
-| `GET` | `/api/loras` | Registered LoRA files (id, name, path, scale, recommended steps, whether active). |
+| `GET` | `/api/loras` | Registered LoRA files (id, name, path, strength, recommended steps, whether enabled). |
 
 `POST /api/generate` body fields, all optional except `prompt`:
 
@@ -329,15 +352,15 @@ plain filesystem paths, not uploads.
 | `prompt` | — | Required. |
 | `size_profile` | `"square"` | One of `smallSquare`, `square`, `landscapeUpscaled`, `landscapeNative`, `portraitUpscaled`, `portraitNative` (see `SizeProfile` in [GenerationModels.swift](native/H3Spike/Sources/H3cApp/GenerationModels.swift)). |
 | `seconds` | `5` | 1–15. |
-| `steps` | `20`, or the selected LoRA's recommended steps | |
+| `steps` | `20`, or the first enabled Turbo LoRA's recommended steps | |
 | `reuse` | `1` | 1–3. |
 | `compute_mode` | the app's own default for this GPU | `attentionCache`, `resident`, or `ssdStreaming`. |
 | `speed_mode` | `"quality"` | `quality`, `fast`, or `fastest` (see [Speed modes](#speed-modes)). |
 | `seed` | random | |
 | `first_frame_path` / `last_frame_path` | none | FL2VA anchors; cannot combine with `reference_paths`. |
 | `reference_paths` | `[]` | Ordered Ref2VA references; image/video/audio is auto-detected per path. At least one image or video is required if any audio path is included. |
-| `lora_name` | none | Must match a name from `GET /api/loras`; omitting it (or `""`) means no LoRA for this job, even if one was selected in the window. |
-| `lora_scale` | the LoRA's own saved scale | Only meaningful with `lora_name`. |
+| `loras` | `[]` | The LoRA stack for this job: names from `GET /api/loras`, or `{"name": ..., "strength": 0.8}` objects (strength multiplies the adapter's trained scale; omitted keeps the entry's saved strength). Omitting it means no LoRA, even if some are switched on in the window. |
+| `lora_name` / `lora_scale` | none | Older single-LoRA form of `loras`; ignored when `loras` is given. |
 
 ```sh
 curl -X POST http://127.0.0.1:8420/api/generate -H "Content-Type: application/json" -d '{

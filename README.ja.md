@@ -81,17 +81,20 @@ MiniMax-H3を直接ダウンロードするか尋ねます（[機能](#機能)�
   これが重要かは下の
   [参照条件付けのコスト](#参照条件付けのコストなぜ参照動画を大きくすると遅くなるのか)
   を参照してください。
-- **LoRA**: アプリのモデルマネージャーが登録済みLoRAファイル（それぞれに
-  保存された強さ付き）のライブラリを保持し、どの常駐モードでもロード時に
-  融合します（[h3_lora.c](h3_lora.c)参照）。4ステップのTurbo蒸留LoRA
+- **LoRAの重ねがけ**: モデルマネージャーがLoRAファイルのライブラリを
+  保持し、そのうち最大8個を同時にオンにできます（それぞれ個別の強さ付きで、
+  効果は足し合わされます）。公開されているH3用LoRAの形式はそのまま読み込めます
+  — diffusers/PEFT（`to_q`/`to_k`/`to_v`）、ComfyUI
+  （`diffusion_model.blocks.N...`）、kohya（`lora_unet_...`）、ネイティブ名、
+  BF16/F16/F32、任意のrank、全ブロック・一部ブロックのどちらも対応し、
+  マネージャーには各ファイルの形式・対象ブロック数・rankが表示されます。
+  融合済みキャッシュファイルは作らず、エンジンが各重みをロード／ストリーム
+  するたびにGPU上で差分を加えるため、3つの計算方式すべてで使えます
+  （[LoRA](#lora)参照）。4ステップのTurbo蒸留LoRA
   （[lightx2v/Minimax-h3-Turbo](https://huggingface.co/lightx2v/Minimax-h3-Turbo)
   由来）はエンドツーエンドで動作します。LoRAごとに推奨ステップ数を
   持たせられ（`..._4step_...`のようなファイル名から自動判定）、そのTurbo
-  LoRAを選ぶと生成ステップ数が自動で切り替わり、外すと既定に戻ります。
-  `build_lora_cache`
-  （`make build_lora_cache`でビルド）は、アプリを介さずエンジンを直接
-  使う場合向けに、LoRAをint8キャッシュファイルへオフラインで事前融合する
-  ツールです。
+  LoRAをオンにすると生成ステップ数が自動で切り替わります。
 - **3つの計算方式**（[計算方式](#計算方式)参照）: 高速なint8アテンション
   キャッシュ、キャッシュ不要で大容量メモリのMac向けの常駐モード、
   低メモリだが低速なSSDストリーミング。
@@ -126,11 +129,11 @@ DiTの約37GiBのBF16重みは、生成のたびに何らかの形でGPUに供�
 | 速度 | 最速の実測経路 | キャッシュ方式と同程度（こちらもステップごとのディスクI/Oなし） | より遅い。22フレーム/512正方形のクリップで141秒 vs. キャッシュ方式の約78秒（いずれも20ステップ） |
 | メモリ | int8量子化された重みをダブルバッファリングで常時ストリーミング | 全DiTブロックを常時メモリに展開 — Tensor演算ユニット搭載GPUではint8量子化で約18GiB、それ以外では完全なBF16のまま約37GiB | 常時DiTブロック2個分のみ常駐（追跡ストレージ約2GiB） |
 | 必要条件 | M5クラスGPU（Metal 4 TensorOps／int8経路） | 任意のApple Silicon GPU（Tensor演算ユニットがない場合はBF16のまま常駐）— 大容量メモリのMac向け | 任意のApple Silicon GPU |
-| LoRA | 対応 | 対応 | 非対応 — エンジンは常駐/キャッシュブロックのロード時にしかLoRAを融合しない |
+| LoRA | 対応 | 対応 | 対応 |
 
 キャッシュ形式の詳細 — バージョン管理、`model_kind`/`model_id`の不一致
-検出、キャッシュへのLoRA融合 — は[h3_attention_cache.c](h3_attention_cache.c)
-と[h3_lora.c](h3_lora.c)にあります。キャッシュは独立したステップとして
+検出 — は[h3_attention_cache.c](h3_attention_cache.c)にあります。
+キャッシュは独立したステップとして
 `build_attention_cache <FL2VA/transformer dir> <output file>`
 （`make build_attention_cache`）で作成することもでき、モデルの
 ルートディレクトリを指定すればFL2VA/Ref2VA両方のキャッシュを一度に
@@ -142,8 +145,7 @@ DiTの約37GiBのBF16重みは、生成のたびに何らかの形でGPUに供�
 ### ライブラリレベルの設定
 
 エンジン自体（`h3_dit.c`）は、いくつかの環境変数を直接読み取ります —
-`H3_ATTENTION_CACHE`、`H3_ATTENTION_CACHE_DIR`、`H3_LORA_PATH`、
-`H3_LORA_SCALE`、`H3_TOKEN_REFINER_LORA`、`H3_INT8_STREAM_MLP`、
+`H3_ATTENTION_CACHE`、`H3_ATTENTION_CACHE_DIR`、`H3_INT8_STREAM_MLP`、
 `H3_QWEN_PREFETCH*`、`H3_ZERO_COPY_WEIGHTS`、`H3_VAE_TILE_PIXELS`、
 `H3_VAE_INT8`、`H3_DIT_COMMAND_BLOCKS`、`H3_PROFILE`、および多数の
 `H3_DISABLE_*`/`H3_USE_SLOWER_*`系のA/B診断用スイッチです。これらは
@@ -174,6 +176,29 @@ FC2）を全部重ねると61.0秒まで速くなりましたが、被写体が�
 のみが効きます。また、別の「ノイズ除去の再利用（reuse）」を2以上にすると
 コア再利用は無効になります。
 
+## LoRA
+
+LoRAをキャッシュファイルへ融合することはありません。[h3_lora.c](h3_lora.c)が
+生成ごとに各ファイルを一度読み、テンソルをエンジン自身の重みの並びに対応付け
+（ComfyUIとdiffusersはアテンションのq/k/vを連続して格納しますが、公式
+チェックポイントはヘッドごとに交互に並んでいます。diffusersはさらにSwiGLUの
+`fc1`の前半と後半が逆です）、重ねるLoRAをrank方向に連結します。ブロックの
+重みがGPUに載るたびに — 常駐する重みはロード時に1回、ストリームされる重み
+（int8キャッシュ・SSD）は毎ステップ — 投影ごとに1回の行列積で
+`Σ 強さ_i · alpha_i/rank_i · B_i A_i`をその場で加えます。この差分はint8や
+BF16の1刻みよりはるかに小さいため確率的丸めで加えます（最近接丸めでは大半が
+消えてしまいます）。丸めのノイズは決定的なので、同じシードからは同じ動画が
+得られます。
+
+対象は50個のDiTブロックと2個のトークンリファイナーブロックの`qkv`・`out`・
+`fc1`・`fc2`です。ファイル内のそれ以外（`adaln_proj`、`final_layer`など）は
+無視され、その件数はモデルマネージャーに表示されます。M5・512x512・39フレーム・
+4ステップでの実測では、lightx2vのTurbo LoRA（rank 128、全50ブロック）の追加
+コストはint8キャッシュで1ステップあたり約1.8秒（7.5 → 9.3秒）、SSD
+ストリーミングで約2秒（11.9 → 13.9秒）でした。rank 16のLoRAをさらに重ねても
+差は測定できない程度です。同じTurbo LoRAのdiffusers版とComfyUI版からは
+ビット単位で同一の動画が得られます。
+
 ## 参照条件付けのコスト：なぜ参照動画を大きくすると遅くなるのか
 
 Ref2VAの参照は一度エンコードされてキャッシュされるのではなく、DiTが
@@ -198,7 +223,7 @@ h3.c, h3_dit.c, h3_gpu.m, ...   コア推論エンジン（C + Objective-C/Metal
 h3.h                            公開C API（h3_load_dir、h3_generate、h3_build_attention_cache、...）
 h3_shaders.metal                すべてのMetalコンピュートカーネル
 h3_build_attention_cache.c      h3_build_attention_cache()のCLIラッパー -> build_attention_cache
-h3_build_lora_cache.c           LoRAをint8キャッシュへオフラインで融合するCLIツール -> build_lora_cache
+h3_lora.c                       LoRAの読み込み（形式の正規化）とGPU上での重みへの適用
 tests/                          Cテストスイート（make test / make parity）
 native/H3Spike/                 ネイティブmacOSアプリ（SwiftPM）
   Sources/CH3                   libh3.aのC APIをSwiftへ橋渡しするCシム
@@ -221,9 +246,8 @@ make test             # 決定論的なホストテスト一式（+ フィクス
 make parity            # Metal/MLXの数値比較チェックのみ
 ```
 
-`make build_attention_cache`と`make build_lora_cache`は、上記の独立した
-キャッシュ準備ツール2つをビルドします。どちらもデフォルトの`make`
-ターゲットには含まれません。
+`make build_attention_cache`は、上記の独立したキャッシュ準備ツールを
+ビルドします。デフォルトの`make`ターゲットには含まれません。
 
 ### ネイティブアプリ
 
@@ -326,7 +350,7 @@ Network.frameworkやサードパーティ製サーバーは使っていません
 | `POST` | `/api/cancel` | 実行中のジョブがあれば中止。 |
 | `GET` | `/api/result/video` | 現在の結果を`video/mp4`としてストリーミング。結果が無いか、次のジョブの`generate()`呼び出しで削除された後は`404`。 |
 | `GET` | `/api/models` | 登録済みH3モデルディレクトリ一覧（id・名前・パス・アクティブかどうか）。 |
-| `GET` | `/api/loras` | 登録済みLoRAファイル一覧（id・名前・パス・強さ・推奨ステップ数・アクティブかどうか）。 |
+| `GET` | `/api/loras` | 登録済みLoRAファイル一覧（id・名前・パス・強さ・推奨ステップ数・オンかどうか）。 |
 
 `POST /api/generate`のボディフィールド（`prompt`以外はすべて省略可）:
 
@@ -335,15 +359,15 @@ Network.frameworkやサードパーティ製サーバーは使っていません
 | `prompt` | — | 必須。 |
 | `size_profile` | `"square"` | `smallSquare`、`square`、`landscapeUpscaled`、`landscapeNative`、`portraitUpscaled`、`portraitNative`のいずれか（[GenerationModels.swift](native/H3Spike/Sources/H3cApp/GenerationModels.swift)の`SizeProfile`参照）。 |
 | `seconds` | `5` | 1〜15。 |
-| `steps` | `20`、または選んだLoRAの推奨ステップ数 | |
+| `steps` | `20`、またはオンにした最初のTurbo LoRAの推奨ステップ数 | |
 | `reuse` | `1` | 1〜3。 |
 | `compute_mode` | このGPUでのアプリの既定値 | `attentionCache`、`resident`、`ssdStreaming`のいずれか。 |
 | `speed_mode` | `"quality"` | `quality`、`fast`、`fastest`のいずれか（[速度モード](#速度モード)参照）。 |
 | `seed` | ランダム | |
 | `first_frame_path` / `last_frame_path` | なし | FL2VAのアンカー。`reference_paths`とは併用不可。 |
 | `reference_paths` | `[]` | 順序付きのRef2VA参照。画像/動画/音声はパスごとに自動判定。音声パスを含める場合、画像か動画を最低1つ含める必要あり。 |
-| `lora_name` | なし | `GET /api/loras`の名前と一致させる必要あり。省略（または`""`）すると、ウィンドウ側で選択済みでもこのジョブではLoRAなし扱いになる。 |
-| `lora_scale` | そのLoRAの保存済みの強さ | `lora_name`指定時のみ意味を持つ。 |
+| `loras` | `[]` | このジョブで重ねるLoRA。`GET /api/loras`の名前、または`{"name": ..., "strength": 0.8}`形式（強さは学習時の効き具合に対する倍率。省略するとそのLoRAの保存済みの強さ）。省略すると、ウィンドウ側でオンにしていてもこのジョブではLoRAなし扱いになる。 |
+| `lora_name` / `lora_scale` | なし | `loras`の旧・単一LoRA形式。`loras`を指定した場合は無視される。 |
 
 ```sh
 curl -X POST http://127.0.0.1:8420/api/generate -H "Content-Type: application/json" -d '{

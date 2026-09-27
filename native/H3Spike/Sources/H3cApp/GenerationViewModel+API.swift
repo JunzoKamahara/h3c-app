@@ -49,8 +49,8 @@ extension GenerationViewModel {
         case ("GET", "/api/loras"):
             return .json(200, library.loras.map {
                 ["id": $0.id.uuidString, "name": $0.name, "path": $0.path,
-                 "scale": $0.scaleText, "recommended_steps": $0.recommendedSteps.map { $0 as Any } ?? NSNull(),
-                 "active": $0.id == library.activeLoRAID]
+                 "strength": $0.strength, "recommended_steps": $0.recommendedSteps.map { $0 as Any } ?? NSNull(),
+                 "enabled": $0.enabled]
             })
         default:
             return .error(404, "no such endpoint: \(request.method) \(request.path)")
@@ -161,25 +161,46 @@ extension GenerationViewModel {
             creationMethod = .text
         }
 
-        if let loraName = json["lora_name"] as? String {
-            if loraName.isEmpty {
-                library.selectLoRA(nil)
-            } else if let entry = library.loras.first(where: { $0.name == loraName }) {
-                library.selectLoRA(entry.id)
-                if let scale = json["lora_scale"] {
-                    library.setLoRAScale(id: entry.id, scaleText: "\(scale)")
+        // "loras": [{"name": ..., "strength": 0.8}, ...] (or bare names)
+        // replaces the stack; the older single "lora_name"/"lora_scale"
+        // pair still works. Neither means no LoRA. Strength multiplies the
+        // adapter's own alpha/rank scale; omitted keeps the entry's own.
+        var requested: [(name: String, strength: Any?)] = []
+        if let list = json["loras"] as? [Any] {
+            for item in list {
+                if let name = item as? String {
+                    requested.append((name, nil))
+                } else if let object = item as? [String: Any], let name = object["name"] as? String {
+                    requested.append((name, object["strength"]))
+                } else {
+                    return .error(400, "each \"loras\" item must be a name or {\"name\", \"strength\"}")
                 }
-            } else {
-                return .error(400, "unknown lora_name \(loraName) - see GET /api/loras")
             }
-        } else {
-            library.selectLoRA(nil)
+        } else if let loraName = json["lora_name"] as? String, !loraName.isEmpty {
+            requested.append((loraName, json["lora_scale"]))
         }
+        if requested.count > maxStackedLoRAs {
+            return .error(400, "at most \(maxStackedLoRAs) LoRAs can be stacked")
+        }
+        var stack: [(entry: LoRAEntry, strength: Any?)] = []
+        for (name, strength) in requested {
+            guard let entry = library.loras.first(where: { $0.name == name }) else {
+                return .error(400, "unknown LoRA \(name) - see GET /api/loras")
+            }
+            if let strength, !(strength is NSNumber) {
+                return .error(400, "strength for \(name) must be a number")
+            }
+            stack.append((entry, strength))
+        }
+        for (entry, strength) in stack {
+            if let strength { library.setLoRAScale(id: entry.id, scaleText: "\(strength)") }
+        }
+        library.setEnabledLoRAs(Set(stack.map { $0.entry.id }))
 
-        // After the LoRA/compute mode are settled: selecting a Turbo LoRA
-        // moves the draft to its recommended steps (followTurboLoRASteps),
-        // which an explicit "steps" in the request still overrides.
-        let turboSteps = computeMode == .ssdStreaming ? nil : library.activeLoRA?.recommendedSteps
+        // After the LoRAs are settled: enabling a Turbo LoRA moves the draft
+        // to its recommended steps (followTurboLoRASteps), which an explicit
+        // "steps" in the request still overrides.
+        let turboSteps = library.enabledLoRAs.first { $0.recommendedSteps != nil }?.recommendedSteps
         steps = (json["steps"] as? Int) ?? turboSteps ?? defaultStepsForAPI
 
         guard canGenerate else {
