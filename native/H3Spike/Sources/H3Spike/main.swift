@@ -17,6 +17,10 @@ func fixedCString<T>(_ tuple: T) -> String {
 final class GenerationContext {
     var framesReceived = 0
     var previewsReceived = 0
+    // H3SPIKE_DUMP=<path>: append every final frame as raw packed RGB24, so
+    // two runs (e.g. H3_VAE_INT8=0 vs default) can be compared numerically
+    // without the lossy mp4 encode in between.
+    var dump: FileHandle?
 }
 
 let traceStart = Date()
@@ -38,18 +42,22 @@ let frameCallback: h3_frame_callback = { framePtr, opaque in
     } else {
         context.framesReceived += 1
         print(String(format: "[%7.2fs] [frame] ", Date().timeIntervalSince(traceStart)) + "\(frame.frame_index + 1)/\(frame.frame_count)")
+        if let dump = context.dump, let rgb = frame.rgb {
+            let rowBytes = Int(frame.width) * 3
+            for row in 0 ..< Int(frame.height) {
+                dump.write(Data(bytes: rgb + row * Int(frame.stride), count: rowBytes))
+            }
+        }
     }
     return 0
 }
 
 let arguments = CommandLine.arguments
-// This spike target isn't part of the distributed .app (see Package.swift -
-// it's a separate executable target from H3cApp), so its fallback just
-// points at this dev machine's actual, pre-existing model checkout under
-// the app's old name, rather than the H3cApp target's current
-// h3c-app-branded default (ModelLibrary.defaultH3ModelDownloadPath).
+// This spike target isn't part of the distributed .app (see Package.swift),
+// so its fallbacks just point at this dev machine's model and cache under
+// ~/models - the same pinned location H3cApp's ModelLibrary recognizes.
 let modelDir = arguments.count > 1 ? arguments[1]
-    : (NSHomeDirectory() + "/Library/Application Support/h3c-analysis/MiniMax-H3")
+    : (NSHomeDirectory() + "/models/MiniMax-H3")
 let outputPath = arguments.count > 2 ? arguments[2] : "/tmp/h3spike_output.mp4"
 let prompt = arguments.count > 3 ? arguments[3] : "A cat playing with a ball of yarn."
 
@@ -71,15 +79,19 @@ if let model = h3_model(ctx)?.pointee {
     print("FL2VA transformer: \(model.fl2va_transformer.bytes) bytes, \(model.fl2va_transformer.tensors) tensors")
 }
 
-// Point at the existing validated attention cache from the h3c working
-// checkout so this spike runs the same fast int8 path the CLI/GUI use by
-// default, rather than the slower close-reference BF16 path.
+// Point at the existing validated attention cache so this spike runs the
+// same fast int8 path the app uses by default, rather than the slower
+// close-reference BF16 path.
 let useSSD = ProcessInfo.processInfo.environment["H3SPIKE_SSD"] == "1"
 if getenv("H3_ATTENTION_CACHE") == nil && !useSSD {
-    setenv("H3_ATTENTION_CACHE", "/Users/kamahara/Documents/work/h3c-app/dit_int8_v2.cache", 1)
+    setenv("H3_ATTENTION_CACHE", NSHomeDirectory() + "/models/cache/dit_int8_v2.cache", 1)
 }
 
 let context = GenerationContext()
+if let dumpPath = ProcessInfo.processInfo.environment["H3SPIKE_DUMP"] {
+    FileManager.default.createFile(atPath: dumpPath, contents: nil)
+    context.dump = FileHandle(forWritingAtPath: dumpPath)
+}
 let opaque = Unmanaged.passUnretained(context).toOpaque()
 
 var params = h3_params()
