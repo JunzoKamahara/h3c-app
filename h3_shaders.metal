@@ -199,6 +199,20 @@ kernel void h3_cast_bf16_to_f32(device const ushort *input [[buffer(0)]],
     if (gid < count) output[gid] = h3_bf16_to_f32(input[gid]);
 }
 
+struct cast_bias_args { uint rows; uint width; };
+
+kernel void h3_cast_bf16_to_f32_bias(device const ushort *input [[buffer(0)]],
+                                     device const float *bias [[buffer(1)]],
+                                     device float *output [[buffer(2)]],
+                                     constant cast_bias_args &args [[buffer(3)]],
+                                     uint2 gid [[thread_position_in_grid]]) {
+    uint column = gid.x;
+    uint row = gid.y;
+    if (row >= args.rows || column >= args.width) return;
+    uint index = row * args.width + column;
+    output[index] = h3_bf16_to_f32(input[index]) + bias[column];
+}
+
 struct norm_args {
     uint rows;
     uint width;
