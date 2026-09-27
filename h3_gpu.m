@@ -375,8 +375,14 @@ h3_gpu *h3_gpu_create(const char *shader_source_path,
             BOOL hasTensorHardware = h3_device_has_tensor_ops(gpu.device);
             BOOL wantsTensorOps =
                 hasTensorHardware && (!nax || !*nax || strcmp(nax, "0") != 0);
-            if (wantsTensorOps)
+            if (wantsTensorOps) {
                 options.preprocessorMacros = @{ @"H3_METAL_HAS_TENSOR": @"1" };
+                /* metal_tensor and MetalPerformancePrimitives are Metal 4.0
+                 * APIs; don't rely on the runtime's default language version
+                 * to include them. */
+                if (@available(macOS 26.0, *))
+                    options.languageVersion = MTLLanguageVersion4_0;
+            }
             gpu.library = [gpu.device newLibraryWithSource:source
                                                    options:options
                                                      error:&libraryError];
