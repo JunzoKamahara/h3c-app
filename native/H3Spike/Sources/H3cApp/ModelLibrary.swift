@@ -37,12 +37,26 @@ struct LoRAEntry: Identifiable, Codable, Equatable {
     /// Empty means "auto": the engine detects a scale from the adapter's
     /// own alpha/rank metadata instead (h3_lora_detect_scale in h3_lora.c).
     var scaleText: String
+    /// Step count a distilled (Turbo) LoRA was trained for; selecting the
+    /// LoRA switches the draft to it. nil for ordinary style LoRAs. Optional
+    /// so entries saved before this field existed still decode.
+    var recommendedSteps: Int?
 
-    init(id: UUID = UUID(), name: String, path: String, scaleText: String = "") {
+    init(id: UUID = UUID(), name: String, path: String, scaleText: String = "",
+         recommendedSteps: Int? = nil) {
         self.id = id
         self.name = name
         self.path = path
         self.scaleText = scaleText
+        self.recommendedSteps = recommendedSteps
+    }
+
+    /// "…_turbo_4step_…" / "8-step" style names, as the lightx2v and
+    /// FastVideo distillations are published.
+    static func detectedSteps(fromFileName name: String) -> Int? {
+        guard let match = name.lowercased().firstMatch(of: #/(\d{1,2})[-_ ]?steps?/#),
+              let steps = Int(match.1), (1 ... 50).contains(steps) else { return nil }
+        return steps
     }
 }
 
@@ -88,7 +102,21 @@ final class ModelLibrary: ObservableObject {
             persistModels()
             persistActiveModel()
         }
+
+        // LoRAs registered before recommendedSteps existed decode as nil;
+        // fill them in from the file name once, so a later deliberate clear
+        // isn't undone on every launch.
+        if !defaults.bool(forKey: Self.lorasStepsMigratedKey) {
+            for index in loras.indices where loras[index].recommendedSteps == nil {
+                loras[index].recommendedSteps = LoRAEntry.detectedSteps(
+                    fromFileName: (loras[index].path as NSString).lastPathComponent)
+            }
+            persistLoRAs()
+            defaults.set(true, forKey: Self.lorasStepsMigratedKey)
+        }
     }
+
+    private static let lorasStepsMigratedKey = "H3ModelLibrary.lorasStepsMigrated"
 
     // MARK: Models
 
@@ -134,8 +162,18 @@ final class ModelLibrary: ObservableObject {
     // MARK: LoRA
 
     func addLoRA(path: String, name: String? = nil) {
-        let entry = LoRAEntry(name: name ?? (path as NSString).lastPathComponent, path: path)
+        let fileName = (path as NSString).lastPathComponent
+        let entry = LoRAEntry(name: name ?? fileName, path: path,
+                              recommendedSteps: LoRAEntry.detectedSteps(fromFileName: fileName))
         loras.append(entry)
+        persistLoRAs()
+    }
+
+    /// Empty text clears it (an ordinary, non-distilled LoRA).
+    func setLoRARecommendedSteps(id: UUID, text: String) {
+        guard let index = loras.firstIndex(where: { $0.id == id }) else { return }
+        let steps = Int(text.filter(\.isNumber))
+        loras[index].recommendedSteps = steps.map { $0.clamped(to: stepsRange) }
         persistLoRAs()
     }
 

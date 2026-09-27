@@ -99,9 +99,13 @@ struct TimingCalibration: Codable {
     // One calibration per compute mode: SSD streaming reads the whole BF16
     // checkpoint every step, so its setup and per-step times have nothing
     // in common with the int8-cache path's. (v2: stage model changed.)
-    private static func defaultsKey(_ mode: ComputeMode) -> String {
-        mode == .attentionCache ? "h3c-app.timingCalibration.v2"
-                                : "h3c-app.timingCalibration.v2.\(mode.rawValue)"
+    // Faster speed modes also get their own history - their per-step times
+    // would otherwise drag the standard mode's estimates down. The standard
+    // mode keeps the original key so existing calibration carries over.
+    private static func defaultsKey(_ mode: ComputeMode, _ speed: SpeedMode) -> String {
+        let base = mode == .attentionCache ? "h3c-app.timingCalibration.v2"
+                                           : "h3c-app.timingCalibration.v2.\(mode.rawValue)"
+        return speed == .quality ? base : base + ".speed.\(speed.rawValue)"
     }
     private static let keep = 12
 
@@ -122,17 +126,17 @@ struct TimingCalibration: Codable {
         return value
     }
 
-    static func load(for mode: ComputeMode) -> TimingCalibration {
-        guard let data = UserDefaults.standard.data(forKey: defaultsKey(mode)),
+    static func load(for mode: ComputeMode, speed: SpeedMode = .quality) -> TimingCalibration {
+        guard let data = UserDefaults.standard.data(forKey: defaultsKey(mode, speed)),
               let value = try? JSONDecoder().decode(TimingCalibration.self, from: data) else {
             return initial(for: mode)
         }
         return value
     }
 
-    func save(for mode: ComputeMode) {
+    func save(for mode: ComputeMode, speed: SpeedMode = .quality) {
         if let data = try? JSONEncoder().encode(self) {
-            UserDefaults.standard.set(data, forKey: Self.defaultsKey(mode))
+            UserDefaults.standard.set(data, forKey: Self.defaultsKey(mode, speed))
         }
     }
 

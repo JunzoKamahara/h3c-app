@@ -82,6 +82,7 @@ public struct H3GenerationParams: Sendable {
     public var ditLayers: Int32 = 50
     public var denoiseReuse: Int32 = 1
     public var coreReuse: Int32 = 1
+    public var tokenReduction = false
     public var firstFrame: String?
     public var lastFrame: String?
     public var references: [H3ReferenceInput] = []
@@ -343,6 +344,7 @@ public final class H3Engine: @unchecked Sendable {
                 cParams.dit_layers = params.ditLayers
                 cParams.denoise_reuse = params.denoiseReuse
                 cParams.core_reuse = params.coreReuse
+                cParams.token_reduction = params.tokenReduction ? 1 : 0
                 cParams.ssd_streaming = params.ssdStreaming ? 1 : 0
                 cParams.on_progress = h3ProgressTrampoline
                 cParams.on_frame = h3FrameTrampoline

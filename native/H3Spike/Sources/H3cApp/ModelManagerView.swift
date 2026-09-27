@@ -224,6 +224,14 @@ struct ModelManagerView: View {
                     ))
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 56)
+                    Text("ステップ").font(.caption2).foregroundStyle(palette.textSecondary)
+                    TextField("—", text: Binding(
+                        get: { entry.recommendedSteps.map(String.init) ?? "" },
+                        set: { library.setLoRARecommendedSteps(id: entry.id, text: $0) }
+                    ))
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 40)
+                    .help("Turbo（蒸留）LoRAの学習ステップ数。選ぶと生成ステップ数がこれに切り替わります。空欄は通常のLoRA。")
                 }
                 Menu {
                     Button("名前を変更") {

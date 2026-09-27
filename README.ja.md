@@ -85,13 +85,23 @@ MiniMax-H3を直接ダウンロードするか尋ねます（[機能](#機能)�
   保存された強さ付き）のライブラリを保持し、どの常駐モードでもロード時に
   融合します（[h3_lora.c](h3_lora.c)参照）。4ステップのTurbo蒸留LoRA
   （[lightx2v/Minimax-h3-Turbo](https://huggingface.co/lightx2v/Minimax-h3-Turbo)
-  由来）はエンドツーエンドで動作します。`build_lora_cache`
+  由来）はエンドツーエンドで動作します。LoRAごとに推奨ステップ数を
+  持たせられ（`..._4step_...`のようなファイル名から自動判定）、そのTurbo
+  LoRAを選ぶと生成ステップ数が自動で切り替わり、外すと既定に戻ります。
+  `build_lora_cache`
   （`make build_lora_cache`でビルド）は、アプリを介さずエンジンを直接
   使う場合向けに、LoRAをint8キャッシュファイルへオフラインで事前融合する
   ツールです。
 - **3つの計算方式**（[計算方式](#計算方式)参照）: 高速なint8アテンション
   キャッシュ、キャッシュ不要で大容量メモリのMac向けの常駐モード、
   低メモリだが低速なSSDストリーミング。
+- **速度モード**: 標準／高速／最速。エンジン側の近似手法（ゲートに基づく
+  DiTブロックの省略`dit_layers`、ステップ間でのTransformerコアの再利用
+  `core_reuse`（ステップ数に応じて調整）、トークン削減）をまとめて切り替え、
+  20ステップで最大約3.2倍速くなります。詳細は[速度モード](#速度モード)。
+- **M5でのint8動画VAE**: 動画VAEデコーダーのTransformer線形層をint8
+  TensorOpsカーネルで計算し、F32比で約3倍速いデコードをPSNR 46dBの画質で
+  実現しています（`H3_VAE_INT8=0`でF32に戻せます）。
 - **モデルマネージャー**: 固定の1パスではなく、複数のH3チェックポイント
   ディレクトリとLoRAファイルを登録・切り替え可能。FL2VA/Ref2VAは外部依存
   なし（Python/huggingface_hub不要）でHugging Faceから直接ダウンロード
@@ -135,7 +145,7 @@ DiTの約37GiBのBF16重みは、生成のたびに何らかの形でGPUに供�
 `H3_ATTENTION_CACHE`、`H3_ATTENTION_CACHE_DIR`、`H3_LORA_PATH`、
 `H3_LORA_SCALE`、`H3_TOKEN_REFINER_LORA`、`H3_INT8_STREAM_MLP`、
 `H3_QWEN_PREFETCH*`、`H3_ZERO_COPY_WEIGHTS`、`H3_VAE_TILE_PIXELS`、
-`H3_DIT_COMMAND_BLOCKS`、`H3_PROFILE`、および多数の
+`H3_VAE_INT8`、`H3_DIT_COMMAND_BLOCKS`、`H3_PROFILE`、および多数の
 `H3_DISABLE_*`/`H3_USE_SLOWER_*`系のA/B診断用スイッチです。これらは
 `libh3.a`を直接リンクする人向けのもので、アプリ自身は通常の利用では
 これらに頼らず、同じ内部オプションを自前のUIと`H3GenerationParams`
@@ -143,6 +153,26 @@ DiTの約37GiBのBF16重みは、生成のたびに何らかの形でGPUに供�
 （[h3_dit.c](h3_dit.c)、[h3_gpu.m](h3_gpu.m)、
 [h3_attention_cache.c](h3_attention_cache.c)から辿るのがおすすめ）に
 ドキュメント化されています。
+
+## 速度モード
+
+計算方式とは独立に、詳細設定の「速度」（またはAPIの`speed_mode`）で
+エンジンの近似の度合いを選べます。
+
+| モード | エンジン設定 | M5で512×512・39フレーム・20ステップ |
+|---|---|---|
+| 標準（`quality`） | 近似なし | 232.6秒 |
+| 高速（`fast`） | 50ブロック中45ブロック、Transformerコアを4ステップ間再利用 | 82.3秒（2.8倍） |
+| 最速（`fastest`） | 高速＋トークン削減 | 73.7秒（3.2倍） |
+
+どちらの高速モードも、並べて比較した範囲では鮮明で破綻のない映像でした。
+ただし生成の経過が変わるため、同じシードでも構図は標準と異なります。
+エンジンの最も攻めた設定（40ブロック、コア再利用6、トークン削減、int8 row
+FC2）を全部重ねると61.0秒まで速くなりましたが、被写体が目に見えて崩れたため、
+プリセットはその手前に留めています。コア再利用はステップ数に応じて調整され
+（ステップ数÷5、最大4）、4ステップのTurbo LoRAではブロック省略とトークン削減
+のみが効きます。また、別の「ノイズ除去の再利用（reuse）」を2以上にすると
+コア再利用は無効になります。
 
 ## 参照条件付けのコスト：なぜ参照動画を大きくすると遅くなるのか
 
@@ -296,7 +326,7 @@ Network.frameworkやサードパーティ製サーバーは使っていません
 | `POST` | `/api/cancel` | 実行中のジョブがあれば中止。 |
 | `GET` | `/api/result/video` | 現在の結果を`video/mp4`としてストリーミング。結果が無いか、次のジョブの`generate()`呼び出しで削除された後は`404`。 |
 | `GET` | `/api/models` | 登録済みH3モデルディレクトリ一覧（id・名前・パス・アクティブかどうか）。 |
-| `GET` | `/api/loras` | 登録済みLoRAファイル一覧（id・名前・パス・強さ・アクティブかどうか）。 |
+| `GET` | `/api/loras` | 登録済みLoRAファイル一覧（id・名前・パス・強さ・推奨ステップ数・アクティブかどうか）。 |
 
 `POST /api/generate`のボディフィールド（`prompt`以外はすべて省略可）:
 
@@ -305,9 +335,10 @@ Network.frameworkやサードパーティ製サーバーは使っていません
 | `prompt` | — | 必須。 |
 | `size_profile` | `"square"` | `smallSquare`、`square`、`landscapeUpscaled`、`landscapeNative`、`portraitUpscaled`、`portraitNative`のいずれか（[GenerationModels.swift](native/H3Spike/Sources/H3cApp/GenerationModels.swift)の`SizeProfile`参照）。 |
 | `seconds` | `5` | 1〜15。 |
-| `steps` | `20` | |
+| `steps` | `20`、または選んだLoRAの推奨ステップ数 | |
 | `reuse` | `1` | 1〜3。 |
 | `compute_mode` | このGPUでのアプリの既定値 | `attentionCache`、`resident`、`ssdStreaming`のいずれか。 |
+| `speed_mode` | `"quality"` | `quality`、`fast`、`fastest`のいずれか（[速度モード](#速度モード)参照）。 |
 | `seed` | ランダム | |
 | `first_frame_path` / `last_frame_path` | なし | FL2VAのアンカー。`reference_paths`とは併用不可。 |
 | `reference_paths` | `[]` | 順序付きのRef2VA参照。画像/動画/音声はパスごとに自動判定。音声パスを含める場合、画像か動画を最低1つ含める必要あり。 |

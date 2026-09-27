@@ -118,6 +118,32 @@ enum ImageInputMode: String, CaseIterable, Identifiable {
 //   time. No cache or quantization needed and far less memory, but slower,
 //   and the engine has no LoRA path for it (h3_dit.c only fuses LoRA when
 //   loading resident/cache blocks).
+// Approximations the engine already implements and validated (h3.h):
+// gate-ranked DiT block skipping (dit_layers), transformer-core reuse across
+// steps (core_reuse) and horizontal token pairing in the middle blocks
+// (token_reduction). See GenerationViewModel.speedSettings for the values
+// and the measurements behind them.
+enum SpeedMode: String, CaseIterable, Identifiable, Codable {
+    case quality, fast, fastest
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .quality: return "標準（高品質）"
+        case .fast: return "高速"
+        case .fastest: return "最速"
+        }
+    }
+
+    var summaryLabel: String {
+        switch self {
+        case .quality: return "標準"
+        case .fast: return "高速"
+        case .fastest: return "最速"
+        }
+    }
+}
+
 enum ComputeMode: String, CaseIterable, Identifiable, Codable {
     case attentionCache, resident, ssdStreaming
     var id: String { rawValue }
@@ -157,6 +183,7 @@ struct ResolvedResult {
     let steps: Int
     let denoiseReuse: Int
     let computeMode: ComputeMode
+    let speedMode: SpeedMode
     let seed: UInt64
     let seedWasRandom: Bool
     let loraPath: String?
@@ -175,6 +202,7 @@ struct ResolvedResult {
             "生成ステップ数: \(steps)",
             "ノイズ除去の再利用（reuse）: \(denoiseReuse)",
             "計算方式: \(computeMode.label)",
+            "速度: \(speedMode.label)",
             "シード: \(seedDecimalString)" + (seedWasRandom ? "（毎回変える設定で決定）" : "（固定）"),
         ]
         if let loraPath {

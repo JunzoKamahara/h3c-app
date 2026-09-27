@@ -272,6 +272,8 @@ struct CreationFormView: View {
 
                 computeModeSection
 
+                speedSection
+
                 reuseSection
 
                 seedSection
@@ -327,6 +329,34 @@ struct CreationFormView: View {
                     .font(.caption)
                     .foregroundStyle(palette.errorColor)
             }
+        }
+    }
+
+    private var speedSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("速度").font(.caption).foregroundStyle(palette.textSecondary)
+            Picker("速度", selection: $viewModel.speedMode) {
+                ForEach(SpeedMode.allCases) { mode in
+                    Text(mode.label).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(maxWidth: 300)
+            Text(speedDescription)
+                .font(.caption)
+                .foregroundStyle(palette.textSecondary)
+        }
+    }
+
+    private var speedDescription: String {
+        switch viewModel.speedMode {
+        case .quality:
+            return "省略なしで計算します。"
+        case .fast:
+            return "影響の小さいDiTブロックを省き、ステップ間でTransformerの計算結果を使い回します（20ステップで約2.8倍速）。画質は保たれますが、同じシードでも構図は標準と変わります。"
+        case .fastest:
+            return "高速に加えて、一部のトークンをまとめて計算します（20ステップで約3.2倍速）。細部がわずかに甘くなることがあります。"
         }
     }
 
@@ -458,6 +488,11 @@ struct CreationFormView: View {
                     ))
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 80)
+                }
+                if let turboSteps = active.recommendedSteps {
+                    Text("Turbo用の追加モデルです。生成ステップ数を\(turboSteps)に合わせました（\(turboSteps)以外では品質が落ちます）。")
+                        .font(.caption)
+                        .foregroundStyle(viewModel.steps == turboSteps ? palette.textSecondary : palette.errorColor)
                 }
                 Text("読み込むモデル（最初/最後の画像・参照画像・動画）に対応したファイルか、事前に確認できません。")
                     .font(.caption)

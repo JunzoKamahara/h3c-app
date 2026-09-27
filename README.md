@@ -83,12 +83,23 @@ to skip that step and stream the original BF16 weights instead.
   time under any residency mode (see [h3_lora.c](h3_lora.c)). A 4-step
   Turbo distillation LoRA (from
   [lightx2v/Minimax-h3-Turbo](https://huggingface.co/lightx2v/Minimax-h3-Turbo))
-  works end to end. `build_lora_cache` (built via `make build_lora_cache`)
+  works end to end. Each LoRA can carry a recommended step count
+  (auto-detected from names like `..._4step_...`); selecting such a Turbo
+  LoRA switches the generation to that many steps, and deselecting it
+  restores the default. `build_lora_cache` (built via `make build_lora_cache`)
   additionally pre-fuses a LoRA into an int8 cache file offline, for
   anyone driving the engine directly rather than through the app.
 - **Three compute modes**, see [Compute modes](#compute-modes): a fast int8
   attention cache, a resident mode for a Mac with memory to spare that
   needs no cache file, and a slow-but-low-memory SSD-streaming mode.
+- **Speed modes**: standard / fast / fastest, bundling the engine's own
+  approximations - gate-ranked DiT block skipping (`dit_layers`),
+  transformer-core reuse across steps (`core_reuse`, scaled to the step
+  count) and token reduction - up to ~3.2x faster at 20 steps; see
+  [Speed modes](#speed-modes).
+- **int8 video VAE on M5**: the video VAE decoder's transformer linears run
+  on the int8 TensorOps kernels, about 3x faster decode than F32 at 46 dB
+  PSNR against it (`H3_VAE_INT8=0` restores F32).
 - **Model manager**: register and switch between several H3 checkpoint
   directories and LoRA files instead of one fixed path, and download
   FL2VA/Ref2VA directly from Hugging Face with no external dependency (no
@@ -132,13 +143,33 @@ The engine itself (`h3_dit.c`) reads a number of environment variables
 directly — `H3_ATTENTION_CACHE`, `H3_ATTENTION_CACHE_DIR`, `H3_LORA_PATH`,
 `H3_LORA_SCALE`, `H3_TOKEN_REFINER_LORA`, `H3_INT8_STREAM_MLP`,
 `H3_QWEN_PREFETCH*`, `H3_ZERO_COPY_WEIGHTS`, `H3_VAE_TILE_PIXELS`,
-`H3_DIT_COMMAND_BLOCKS`, `H3_PROFILE`, and a long tail of
+`H3_VAE_INT8`, `H3_DIT_COMMAND_BLOCKS`, `H3_PROFILE`, and a long tail of
 `H3_DISABLE_*`/`H3_USE_SLOWER_*`-style A/B diagnostic switches. These apply
 to anyone linking `libh3.a` directly; the app itself doesn't rely on them
 for normal use; it drives the same underlying options through its own UI
 and `H3GenerationParams`. They're documented at their point of use in the
 source (start from [h3_dit.c](h3_dit.c), [h3_gpu.m](h3_gpu.m), and
 [h3_attention_cache.c](h3_attention_cache.c)).
+
+## Speed modes
+
+Independent of the compute mode, the advanced settings (or the API's
+`speed_mode`) choose how much the engine approximates:
+
+| Mode | Engine settings | 512x512 / 39 frames / 20 steps on M5 |
+|---|---|---|
+| Standard (`quality`) | exact | 232.6 s |
+| Fast (`fast`) | 45 of 50 DiT blocks, transformer core reused over 4 steps | 82.3 s (2.8x) |
+| Fastest (`fastest`) | fast + token reduction | 73.7 s (3.2x) |
+
+Both faster modes stayed sharp and coherent in side-by-side checks, but they
+change the sampling trajectory, so the same seed gives a different
+composition than standard. Stacking the engine's most aggressive values
+(40 blocks, core reuse 6, token reduction, int8 row FC2) reached 61.0 s but
+visibly smeared the subject, so the presets stop short of that. Core reuse
+scales with the step count (steps / 5, at most 4), so a 4-step Turbo LoRA run
+effectively keeps only the block skipping and token reduction, and it's
+turned off whenever the separate whole-velocity `reuse` is above 1.
 
 ## Reference-conditioning cost: why a bigger reference is not free
 
@@ -289,7 +320,7 @@ plain filesystem paths, not uploads.
 | `POST` | `/api/cancel` | Cancels the running job, if any. |
 | `GET` | `/api/result/video` | Streams the current result as `video/mp4`; `404` if none, or once the next job's `generate()` call deletes it. |
 | `GET` | `/api/models` | Registered H3 model directories (id, name, path, whether active). |
-| `GET` | `/api/loras` | Registered LoRA files (id, name, path, scale, whether active). |
+| `GET` | `/api/loras` | Registered LoRA files (id, name, path, scale, recommended steps, whether active). |
 
 `POST /api/generate` body fields, all optional except `prompt`:
 
@@ -298,9 +329,10 @@ plain filesystem paths, not uploads.
 | `prompt` | — | Required. |
 | `size_profile` | `"square"` | One of `smallSquare`, `square`, `landscapeUpscaled`, `landscapeNative`, `portraitUpscaled`, `portraitNative` (see `SizeProfile` in [GenerationModels.swift](native/H3Spike/Sources/H3cApp/GenerationModels.swift)). |
 | `seconds` | `5` | 1–15. |
-| `steps` | `20` | |
+| `steps` | `20`, or the selected LoRA's recommended steps | |
 | `reuse` | `1` | 1–3. |
 | `compute_mode` | the app's own default for this GPU | `attentionCache`, `resident`, or `ssdStreaming`. |
+| `speed_mode` | `"quality"` | `quality`, `fast`, or `fastest` (see [Speed modes](#speed-modes)). |
 | `seed` | random | |
 | `first_frame_path` / `last_frame_path` | none | FL2VA anchors; cannot combine with `reference_paths`. |
 | `reference_paths` | `[]` | Ordered Ref2VA references; image/video/audio is auto-detected per path. At least one image or video is required if any audio path is included. |

@@ -1,5 +1,6 @@
 import AppKit
 import AVFoundation
+import Combine
 import Foundation
 import H3Engine
 
@@ -79,6 +80,34 @@ final class GenerationViewModel: ObservableObject {
     // not its marketing name. Set from the real device in loadModel().
     @Published private(set) var supportsInt8Cache = true
     var defaultComputeMode: ComputeMode { supportsInt8Cache ? .attentionCache : .ssdStreaming }
+    @Published var speedMode: SpeedMode = .quality
+
+    struct SpeedSettings {
+        var ditLayers: Int32 = 50
+        var coreReuse: Int32 = 1
+        var tokenReduction = false
+    }
+
+    /// The engine options behind speedMode for the current draft. Measured on
+    /// an M5 (512x512, 39 frames, 20 steps, int8 cache): 232.6s exact, 82.3s
+    /// fast (2.8x), 73.7s fastest (3.2x), both still sharp and coherent.
+    /// Stacking the engine's most aggressive values instead (40 layers, core
+    /// reuse 6, token reduction, int8 row FC2) reached 61.0s but visibly
+    /// smeared the subject, and int8 row FC2 alone bought nothing.
+    ///
+    /// Core reuse refreshes the transformer core only every N steps, so it's
+    /// scaled to the step count (a 4-step Turbo run has nothing to reuse
+    /// across) and dropped when the separate whole-velocity reuse is on -
+    /// the engine rejects combining the two.
+    var speedSettings: SpeedSettings {
+        var settings = SpeedSettings()
+        guard speedMode != .quality else { return settings }
+        settings.ditLayers = 45
+        settings.coreReuse = denoiseReuse > 1 ? 1 :
+            Int32(max(1, min(4, steps.clamped(to: stepsRange) / 5)))
+        settings.tokenReduction = speedMode == .fastest
+        return settings
+    }
     @Published var seedText: String = "" {
         didSet {
             let digitsOnly = seedText.filter(\.isNumber)
@@ -142,7 +171,8 @@ final class GenerationViewModel: ObservableObject {
 
     var hasAdvancedChanges: Bool {
         sizeProfile != defaultSizeProfile || steps != defaultSteps || denoiseReuse != defaultReuse
-            || computeMode != defaultComputeMode || !seedText.isEmpty || effectiveLoraPath != nil
+            || computeMode != defaultComputeMode || speedMode != .quality || !seedText.isEmpty
+            || effectiveLoraPath != nil
     }
 
     /// Max-resolution + long duration + SSD streaming measured as
@@ -265,6 +295,35 @@ final class GenerationViewModel: ObservableObject {
             }
         }
         startAPIServer()
+        followTurboLoRASteps()
+    }
+
+    private var turboStepsSubscription: AnyCancellable?
+
+    /// A distilled Turbo LoRA only works at the step count it was trained
+    /// for, and base-model quality collapses at that count once the LoRA is
+    /// gone - so the draft's steps follow the *effective* LoRA (none under
+    /// SSD streaming): switching to one with recommendedSteps adopts them,
+    /// and leaving it restores the default if the user hadn't changed them.
+    /// Also runs at launch, since steps aren't persisted but the LoRA is.
+    private func followTurboLoRASteps() {
+        turboStepsSubscription = Publishers.CombineLatest3(
+            library.$activeLoRAID, library.$loras, $computeMode
+        )
+        .map { activeID, loras, mode -> Int? in
+            guard mode != .ssdStreaming else { return nil }
+            return loras.first { $0.id == activeID }?.recommendedSteps
+        }
+        .removeDuplicates()
+        .scan((previous: Int?.none, current: Int?.none)) { ($0.current, $1) }
+        .sink { [weak self] change in
+            guard let self else { return }
+            if let steps = change.current {
+                self.steps = steps
+            } else if let previous = change.previous, self.steps == previous {
+                self.steps = defaultSteps
+            }
+        }
     }
 
     private static func sweepStaleTempFiles() {
@@ -356,6 +415,7 @@ final class GenerationViewModel: ObservableObject {
         steps = defaultSteps
         denoiseReuse = defaultReuse
         computeMode = defaultComputeMode
+        speedMode = .quality
         seedText = ""
         library.selectLoRA(nil)
     }
@@ -407,6 +467,7 @@ final class GenerationViewModel: ObservableObject {
             parts.append("Steps \(steps)")
             if denoiseReuse != defaultReuse { parts.append("reuse \(denoiseReuse)") }
             if computeMode != defaultComputeMode { parts.append(computeMode.summaryLabel) }
+            if speedMode != .quality { parts.append(speedMode.summaryLabel) }
             if !seedText.isEmpty { parts.append("シード固定") }
             if effectiveLoraPath != nil, let name = library.activeLoRA?.name { parts.append("追加モデル: \(name)") }
         }
@@ -443,7 +504,7 @@ final class GenerationViewModel: ObservableObject {
                 totalFrames: requestedFrames,
                 ditUnits: Double(requestedFrames) * ditPixels,
                 decodeUnits: Double(requestedFrames) * Double(dimensions.width) * Double(dimensions.height)),
-            calibration: TimingCalibration.load(for: computeMode),
+            calibration: TimingCalibration.load(for: computeMode, speed: speedMode),
             start: Date())
         publishTiming()
         startElapsedTimer()
@@ -472,6 +533,10 @@ final class GenerationViewModel: ObservableObject {
         params.attentionCachePath = computeMode == .attentionCache ? currentAttentionCachePath : nil
         params.loraPath = effectiveLoraPath
         params.loraScale = effectiveLoraScale
+        let speed = speedSettings
+        params.ditLayers = speed.ditLayers
+        params.coreReuse = speed.coreReuse
+        params.tokenReduction = speed.tokenReduction
 
         let promptCopy = prompt
         let capturedMode = creationMethod
@@ -480,6 +545,7 @@ final class GenerationViewModel: ObservableObject {
         let capturedSteps = steps.clamped(to: stepsRange)
         let capturedReuse = denoiseReuse.clamped(to: reuseRange)
         let capturedComputeMode = computeMode
+        let capturedSpeedMode = speedMode
         let capturedLoraPath = effectiveLoraPath
         let capturedLoraScale = effectiveLoraScale
         let capturedDeviceLine = deviceLine
@@ -498,7 +564,8 @@ final class GenerationViewModel: ObservableObject {
                         break
                     case .finished(let result):
                         self.phase = "できあがりました"
-                        self.estimator?.finishedCalibration(now: Date()).save(for: capturedComputeMode)
+                        self.estimator?.finishedCalibration(now: Date())
+                            .save(for: capturedComputeMode, speed: capturedSpeedMode)
                         let url = URL(fileURLWithPath: result.outputPath)
                         self.resultURL = url
                         self.resultAspectRatio = CGFloat(dimensions.width) / CGFloat(dimensions.height)
@@ -515,6 +582,7 @@ final class GenerationViewModel: ObservableObject {
                             steps: capturedSteps,
                             denoiseReuse: capturedReuse,
                             computeMode: capturedComputeMode,
+                            speedMode: capturedSpeedMode,
                             seed: result.seed,
                             seedWasRandom: seedWasRandom,
                             loraPath: capturedLoraPath,
@@ -610,9 +678,9 @@ final class GenerationViewModel: ObservableObject {
         if let imageInputMode = result.imageInputMode { self.imageInputMode = imageInputMode }
         sizeProfile = result.sizeProfile
         seconds = result.requestedSeconds
-        steps = result.steps
         denoiseReuse = result.denoiseReuse
         computeMode = result.computeMode
+        speedMode = result.speedMode
         seedText = result.seedWasRandom ? "" : result.seedDecimalString
         // The result only kept the raw path/scale actually used, not a
         // library entry id (which may since have been renamed or removed) -
@@ -622,6 +690,9 @@ final class GenerationViewModel: ObservableObject {
         } else {
             library.selectLoRA(nil)
         }
+        // After the LoRA: selecting a Turbo LoRA moves steps to its
+        // recommended count, and the past result's own value should win.
+        steps = result.steps
     }
 
     /// "同じシードを使う": pins the exact seed regardless of the original

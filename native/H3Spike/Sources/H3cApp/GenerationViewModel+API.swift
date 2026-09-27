@@ -49,7 +49,8 @@ extension GenerationViewModel {
         case ("GET", "/api/loras"):
             return .json(200, library.loras.map {
                 ["id": $0.id.uuidString, "name": $0.name, "path": $0.path,
-                 "scale": $0.scaleText, "active": $0.id == library.activeLoRAID]
+                 "scale": $0.scaleText, "recommended_steps": $0.recommendedSteps.map { $0 as Any } ?? NSNull(),
+                 "active": $0.id == library.activeLoRAID]
             })
         default:
             return .error(404, "no such endpoint: \(request.method) \(request.path)")
@@ -111,7 +112,6 @@ extension GenerationViewModel {
         }
 
         seconds = (json["seconds"] as? Int) ?? 5
-        steps = (json["steps"] as? Int) ?? defaultStepsForAPI
         denoiseReuse = (json["reuse"] as? Int) ?? 1
 
         if let modeRaw = json["compute_mode"] as? String {
@@ -121,6 +121,15 @@ extension GenerationViewModel {
             computeMode = mode
         } else {
             computeMode = defaultComputeMode
+        }
+
+        if let speedRaw = json["speed_mode"] as? String {
+            guard let speed = SpeedMode(rawValue: speedRaw) else {
+                return .error(400, "unknown speed_mode \(speedRaw) - expected quality, fast, or fastest")
+            }
+            speedMode = speed
+        } else {
+            speedMode = .quality
         }
 
         if let seed = json["seed"] {
@@ -166,6 +175,12 @@ extension GenerationViewModel {
         } else {
             library.selectLoRA(nil)
         }
+
+        // After the LoRA/compute mode are settled: selecting a Turbo LoRA
+        // moves the draft to its recommended steps (followTurboLoRASteps),
+        // which an explicit "steps" in the request still overrides.
+        let turboSteps = computeMode == .ssdStreaming ? nil : library.activeLoRA?.recommendedSteps
+        steps = (json["steps"] as? Int) ?? turboSteps ?? defaultStepsForAPI
 
         guard canGenerate else {
             return .error(409, validationMessage ?? "a generation is already running")
