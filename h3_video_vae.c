@@ -1408,8 +1408,10 @@ int h3_video_vae_decode(const char *weight_directory,
     vae.weights = h3_weight_store_open(weight_directory, error, error_size);
     if (!vae.weights) return 0;
     vae.gpu = h3_gpu_create(shader_source_path, error, error_size);
-    if (vae.gpu)
+    if (vae.gpu) {
         h3_gpu_profile_set_label(vae.gpu, "video VAE decoder");
+        configure_linear_precision(&vae);
+    }
     int ok = vae.gpu &&
         load_input_weights(&vae, error, error_size) &&
         prepare_input(&vae, normalized_latent, latent_mean, latent_std,
