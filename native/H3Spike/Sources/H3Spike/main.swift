@@ -94,17 +94,23 @@ if let dumpPath = ProcessInfo.processInfo.environment["H3SPIKE_DUMP"] {
 }
 let opaque = Unmanaged.passUnretained(context).toOpaque()
 
+func envInt(_ name: String, _ fallback: Int32) -> Int32 {
+    Int32(ProcessInfo.processInfo.environment[name] ?? "") ?? fallback
+}
+
 var params = h3_params()
-let sizeArg = Int32(ProcessInfo.processInfo.environment["H3SPIKE_SIZE"] ?? "") ?? 256
+let sizeArg = envInt("H3SPIKE_SIZE", 256)
 params.width = sizeArg
 params.height = sizeArg
-params.frames = Int32(ProcessInfo.processInfo.environment["H3SPIKE_FRAMES"] ?? "") ?? 9
-params.steps = Int32(ProcessInfo.processInfo.environment["H3SPIKE_STEPS"] ?? "") ?? 4
-params.seed = 42
-params.dit_layers = 50
+params.frames = envInt("H3SPIKE_FRAMES", 9)
+params.steps = envInt("H3SPIKE_STEPS", 4)
+params.seed = UInt64(envInt("H3SPIKE_SEED", 42))
+params.dit_layers = envInt("H3SPIKE_LAYERS", 50)
 params.ssd_streaming = useSSD ? 1 : 0
-params.denoise_reuse = 1
-params.core_reuse = 1
+params.denoise_reuse = envInt("H3SPIKE_REUSE", 1)
+params.core_reuse = envInt("H3SPIKE_CORE_REUSE", 1)
+params.token_reduction = envInt("H3SPIKE_TOKEN_REDUCTION", 0)
+params.use_int8_row_fc2 = envInt("H3SPIKE_INT8_ROW_FC2", 0)
 params.reference_image_size = H3_REFERENCE_IMAGE_MATCH
 params.on_progress = progressCallback
 params.on_frame = frameCallback
