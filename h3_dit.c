@@ -2461,6 +2461,89 @@ static int patch_streamed_int8(h3_dit *dit, unsigned block,
     return 1;
 }
 
+/* Debug-only: converts one BF16 element to FP16 (round-to-nearest, flush
+ * subnormals to zero - values here are RMSNorm/RoPE-scaled attention
+ * inputs, never subnormal in practice). Not used on any production path. */
+static uint16_t debug_bf16_to_f16(uint16_t bf16_bits) {
+    uint32_t bits = (uint32_t)bf16_bits << 16;
+    float value;
+    memcpy(&value, &bits, sizeof(value));
+    uint32_t f32; memcpy(&f32, &value, 4);
+    uint32_t sign = (f32 >> 16) & 0x8000u;
+    int32_t exponent = (int32_t)((f32 >> 23) & 0xFF) - 127 + 15;
+    uint32_t mantissa = f32 & 0x7FFFFFu;
+    if (exponent <= 0) return (uint16_t)sign;
+    if (exponent >= 0x1F) return (uint16_t)(sign | 0x7C00u);
+    uint32_t rounded = mantissa + 0x00001000u;
+    if (rounded & 0x00800000u) {
+        rounded = 0;
+        exponent++;
+        if (exponent >= 0x1F) return (uint16_t)(sign | 0x7C00u);
+    }
+    return (uint16_t)(sign | ((uint32_t)exponent << 10) | (rounded >> 13));
+}
+
+/* Debug-only: dumps this block's Q/K/V (right after QKV projection/RoPE,
+ * the exact inputs the production SDPA call below consumes) as contiguous
+ * FP16 [1, rows, HEADS, HEAD_DIM] - the raw format
+ * bin/mfa/na_int8_sol_attention_bench.cpp in a liuliu/ccv checkout reads
+ * for its `raw-prefix` argument, so a captured block can be replayed
+ * through both the app's production SDPA and ccv's Sol Attention kernel
+ * for a same-input comparison. Gated entirely behind three env vars,
+ * off by default, never touches the return-value error path (a failed
+ * dump only prints a warning, since it's not part of generation). */
+static void debug_dump_attention_qkv(h3_dit *dit, unsigned index, int step,
+                                     uint32_t rows) {
+    const char *prefix = getenv("H3_DUMP_ATTENTION_QKV");
+    if (!prefix || !*prefix) return;
+    const char *block_text = getenv("H3_DUMP_ATTENTION_BLOCK");
+    const char *step_text = getenv("H3_DUMP_ATTENTION_STEP");
+    unsigned want_block = block_text ? (unsigned)atoi(block_text) : 0;
+    int want_step = step_text ? atoi(step_text) : 0;
+    if (index != want_block || step != want_step) return;
+    if (!gpu_op(dit, h3_gpu_submit(dit->gpu), NULL, 0,
+                "flush for attention QKV dump") ||
+        !gpu_op(dit, h3_gpu_begin(dit->gpu), NULL, 0,
+                "resume after attention QKV dump")) {
+        fprintf(stderr, "h3: warning: could not flush GPU for "
+                "H3_DUMP_ATTENTION_QKV\n");
+        return;
+    }
+    size_t count = (size_t)rows * HEADS * HEAD_DIM;
+    uint16_t *bf16 = malloc(count * sizeof(*bf16));
+    uint16_t *f16 = malloc(count * sizeof(*f16));
+    h3_gpu_tensor *tensors[3] = { dit->query, dit->key, dit->value };
+    const char *suffix[3] = { "q", "k", "v" };
+    if (!bf16 || !f16) {
+        fprintf(stderr, "h3: warning: out of memory for "
+                "H3_DUMP_ATTENTION_QKV\n");
+        free(bf16); free(f16);
+        return;
+    }
+    for (int which = 0; which < 3; which++) {
+        if (!h3_gpu_tensor_read_bf16(tensors[which], bf16, count)) {
+            fprintf(stderr, "h3: warning: could not read %s for "
+                    "H3_DUMP_ATTENTION_QKV\n", suffix[which]);
+            continue;
+        }
+        for (size_t i = 0; i < count; i++) f16[i] = debug_bf16_to_f16(bf16[i]);
+        char path[1024];
+        snprintf(path, sizeof(path), "%s.%s.bin", prefix, suffix[which]);
+        FILE *file = fopen(path, "wb");
+        if (!file) {
+            fprintf(stderr, "h3: warning: cannot open %s for "
+                    "H3_DUMP_ATTENTION_QKV\n", path);
+            continue;
+        }
+        fwrite(f16, sizeof(*f16), count, file);
+        fclose(file);
+    }
+    fprintf(stderr, "h3: dumped attention block %u step %d QKV "
+            "(rows=%u heads=%d head_dim=%d) to %s.{q,k,v}.bin\n",
+            index, step, rows, HEADS, HEAD_DIM, prefix);
+    free(bf16); free(f16);
+}
+
 static int run_block(h3_dit *dit, unsigned index, int step,
                      h3_dit_block *weight,
                      int attention_adaln_ready,
@@ -2505,6 +2588,7 @@ static int run_block(h3_dit *dit, unsigned index, int step,
             rope_cos, rope_sin, rows, HIDDEN, HEADS, HEAD_DIM, ROPE_HALF,
             1e-5f), "DiT QKV projection/norm/RoPE");
     }
+    debug_dump_attention_qkv(dit, index, step, rows);
     int int8_attention_output = dit->int8_attention_out &&
         !getenv("H3_DISABLE_INT8_ATTENTION_OUT");
     int head_major_attention_output = int8_attention_output &&
