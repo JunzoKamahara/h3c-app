@@ -1080,6 +1080,69 @@ blocks with Q/K/V captured from the 15s run instead of full 50-minute
 generations. Note `upcast=1` does not un-quantize P/V, so it is not a
 substitute for B. The RoPE-interaction idea stays a hypothesis only.
 
+**Caveat on stages ②–④**: every run above used **4 steps on the base
+model without the Turbo LoRA**. The default is 20 steps; 4 steps is the
+Turbo LoRA's operating point. Those outputs were under-denoised (soft
+overall, baseline included), so stages ②–④ compare blurry outputs with
+each other and don't represent production quality. The foreground "net"
+in the 15s clip may be an intended scene element or a half-resolved
+structure from under-denoising; not determined.
+
+**Stage ⑤ (A/B/C split, 512²/39fr/20 steps, seed 7, `h3_generate_cli`).**
+B = `H3_ATTENTION_BACKEND=ccv_fp16` (same bridge, casts and layout
+handling as C, but `use_quantized_attention = 0`, i.e. ccv's
+non-quantized FP16 NAX kernel; `H3_CCV_UPCAST=1` additionally switches
+its intermediates to FP32, unused here). C = `ccv_dense` as before.
+
+Block-level check first (block 0, step 0, where Q/K/V are bit-identical
+across all three paths — confirmed, relative L2 = 0 for q/k/v):
+
+| vs. A (production SDPA) | relative L2 | PSNR |
+|---|---|---|
+| B (ccv FP16) | 0.15% | 82.2 dB |
+| C (ccv int8) | 1.57% | 61.9 dB |
+
+So the bridge, casts and layout handling plus ccv's float kernel
+reproduce production closely, and int8 quantization adds roughly 10x
+more per-call error on top — this is the int8 path's cost, isolated.
+
+Whole generation (1000 dispatches = 50 blocks × 20 steps for B and C):
+
+| | A | B (ccv fp16) | C (ccv int8) |
+|---|---|---|---|
+| wall clock | 220.3s | 306.1s | 219.8s |
+| peak footprint | 12.03 GiB | 12.20 GiB | 12.32 GiB |
+| RGB PSNR vs. A (pre-encode, 39 frames) | — | 15.3 dB | 15.1 dB |
+| RGB PSNR vs. B | — | — | 20.4 dB |
+
+Findings:
+- **At 20 steps all three outputs are sharp and detailed** (whiskers,
+  fur, yarn texture). Zoomed crops of the face at frame 19 show
+  comparable fine detail in all three; C may be marginally softer than B,
+  but that is too subtle to assert without the user's own viewing. The
+  heavy detail loss seen at 4 steps does not reproduce here.
+- **Generation-level PSNR against A measures trajectory divergence, not
+  quality.** B, whose per-call error is only 0.15%, ends up as far from A
+  (15.3 dB) as C does (15.1 dB). Over 50 blocks × 20 steps even a tiny
+  per-call difference moves the sample to a different — equally valid —
+  video. B and C are much closer to each other (20.4 dB; same
+  composition: cat centered, yarn left of center) than either is to A
+  (cat further left, larger). That means the split away from A comes
+  mostly from the non-int8 part (ccv's float kernel vs. MPSGraph), and
+  int8 adds a smaller further drift.
+- **Speed at this length**: C matches A (no gain at 39 frames, as
+  before); B is ~39% slower, so ccv's FP16 kernel is not a speed option
+  here.
+
+Interim reading: at 20 steps and short length, no quality defect
+attributable to the int8 path is visible; the per-call int8 cost is
+real and measured (~1.6% relative L2 vs. ~0.15% for the float path). The
+earlier stage ②–④ quality concerns are confounded by the 4-step
+under-denoised setting. Not yet tested: other seeds, and long sequences
+at 20 steps (where the speed gain is and where the P-rounding hypothesis
+predicts more loss — a single-block replay with Q/K/V captured at 15s
+length would test that cheaply).
+
 Scratch sources, **not committed** (existed only under a session scratchpad
 directory — rewrite from this description if resuming):
 
