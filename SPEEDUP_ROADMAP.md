@@ -407,18 +407,164 @@ materializes a scores matrix — and to benchmark any candidate against the
 app's actual 23.3ms production SDPA, not a from-scratch dense baseline,
 before claiming a win.**
 
+### Reproducible bench vs production SDPA (2026-09-28)
+
+Cloned `liuliu/ccv` (commit `6a611be`, `unstable` branch) and got its own
+official benchmark tools building. Two real findings, one negative and one
+strongly positive:
+
+**Update 2026-09-28, same day — the Sol/sparse compile blocker is fixed.**
+A patch was proposed (by another AI reviewing this document, working from
+the exact error text and a matching report at
+[ml-explore/mlx#4533](https://github.com/ml-explore/mlx/issues/4533))
+diagnosing the cause as a Metal address-space qualifier surviving into a
+`decltype(...)` used as a `get_destination_cooperative_tensor` template
+argument, fixed by wrapping each with `metal::remove_addrspace_t<...>` (7
+call sites in `NAInt8SolAttentionKernel.cpp`'s runtime-generated shader
+source, no change to math/precision/layout). Applied it, rebuilt
+`libccv.a` and `na_int8_sol_attention_bench`, and it now **compiles and
+runs successfully** — the original diagnosis below (kept for the record)
+turned out to be too pessimistic; this was fixable from outside Apple's
+compiler after all. See "Sol/sparse kernel, now working" further below for
+results.
+
+Original (now-resolved) negative finding, kept for the record:
+`bin/mfa/na_int8_sol_attention_bench` already does exactly what's needed
+(accepts real captured contiguous-FP16 `[1,T,H,128]` Q/K/V via a
+`raw-prefix` argument, compares native/all-exact-sol/sparse-sol). Building
+it needed `./configure --enable-mps` in `lib/` (an opt-in flag, not
+auto-detected) and `wget`. But its runtime-generated Metal shader **failed
+to compile** on this machine: `error: no matching member function for call
+to 'get_destination_cooperative_tensor'`, for matmul stages that chain a
+`cooperative_tensor` as the left operand of a subsequent `matmul2d` — the
+exact "no materialized scores buffer" fusion that makes this design
+attractive. Assumed at the time to be an SDK/OS version mismatch (this
+machine reports SDK 27.0; ccv's own published numbers were measured on
+"macOS 26.6.2"); that assumption was wrong, or at least not the whole
+story — the real cause was the address-space issue above.
+
+**Strongly positive — ccv's plain dense int8 attention kernel (no sparsity,
+no SDK blocker) already beats this app's production SDPA.** A second,
+simpler ccv tool, `bin/mfa/na_int8_attention_bench` (just
+`NAInt8AttentionKernel`, no Sol/routing stages), built and ran cleanly.
+Run at this app's real shape (D=128, Hq=Hk=56) and its three real
+sequence lengths:
+
+| sequence length | ccv int8 NAX (quantize+int8, avg) | this app's real MPSGraph SDPA | speedup |
+|---|---|---|---|
+| 3214 (~512²/39fr) | 18.9 ms | 23.3 ms | 1.23x |
+| 5744 (384²/124fr) | 54.0 ms | 75.0 ms | 1.39x |
+| 21728 (768²/124fr) | 840.8 ms | 1340.3 ms | 1.59x |
+
+(Synthetic random inputs — this tool has no raw-data-loading option, but
+attention throughput at a given dtype/shape doesn't depend on data
+content, only quality does. ccv's own internal FP16 "baseline" in the same
+run was noisy and much slower than either column and isn't a useful
+reference; the comparison that matters is the int8 column against this
+app's own independently-measured MPSGraph number, same shapes. ccv's own
+sampled validation against an FP32 reference reported `max_abs_o` ≈
+3.8e-4 at all three shapes.)
+
+**This is the clearest, most decisive result of the whole investigation:**
+a real, already-working, already-validated-by-its-authors int8 kernel
+beats this app's actual production attention by 1.2–1.6x, growing with
+sequence length — without needing any sparsity at all. This re-opens
+Sol-Attn in a more promising form than "block-sparse or nothing":
+integrating a plain int8-quantized dense attention kernel (`ccv`'s
+`NAInt8AttentionKernel` or an equivalent built from the same
+`matmul2d`/`cooperative_tensor` primitives) is likely worth doing on its
+own, before Sol's block-skip logic (which is still blocked by the SDK
+issue above, and would only add to this dense win once available).
+
+A capture hook now exists to get real (not synthetic) attention data out
+of this engine for a follow-up quality check: `h3_dit.c` gained
+`debug_dump_attention_qkv()`, called right after QKV projection/RoPE
+(the exact input the production SDPA call consumes), behind three
+off-by-default env vars (`H3_DUMP_ATTENTION_QKV=<prefix>`, `_BLOCK=<n>`,
+`_STEP=<n>`) — converts BF16 to FP16 and writes `<prefix>.{q,k,v}.bin` in
+ccv's expected format. Verified against a real 512²/39fr/4-step
+generation, and used below for a real-data run of the Sol/sparse kernel
+(not yet fed into `na_int8_attention_bench`, which still needs a small
+patch to load real files — the dense kernel above was only checked on
+synthetic-shape data).
+
+### Sol/sparse kernel, now working — fast, but not yet a proven quality win
+
+With the address-space patch applied, `na_int8_sol_attention_bench` runs
+end-to-end and reports its own internal `native_ms` (plain int8, same
+kernel family as the dense-only result above), `exact_ms` (Sol's
+all-blocks-exact path, no approximation — a correctness check, not meant
+to be fast), and `sparse_ms` (real routing/approximation active), plus
+relative-L2 error against an FP32 reference.
+
+Synthetic random Q/K/V, this app's real shape (H=56, head_dim=128) and
+three real sequence lengths, default routing (`tau=0.5`,
+`local_block_radius=1`, `approximation_start=470`):
+
+| sequence length | native (dense int8) | sparse (Sol routing) | vs. this app's SDPA | sparse relative L2 |
+|---|---|---|---|---|
+| 3214 | 19.4 ms | 13.4 ms | 1.74x | 0.199 |
+| 5744 | 54.8 ms | 38.5 ms | 1.95x | 0.217 |
+| 21728 | 829.9 ms | 474.6 ms | 2.82x | 0.238 |
+
+Then the same benchmark against the **real captured Q/K/V** from
+`debug_dump_attention_qkv()` (block 25, step 2 of an actual 512²/39fr
+generation, seed 7 — exactly T=3214, H=56):
+
+```
+native_ms=19.4265 exact_ms=27.2384 sparse_ms=12.6208
+paired_sparse_speedup=1.5467  (i.e. 1.85x vs. this app's 23.3ms SDPA)
+exact_block_fraction=0.512701
+exact_relative_l2=5.94e-06        <- int8 quantization alone: negligible
+protected_relative_l2=5.00e-06    <- protected/local region: negligible
+sparse_relative_l2=0.1274         <- routed-approximate blocks: NOT negligible
+```
+
+**Read this carefully — it is a real speed win with a real, unresolved
+quality question, not an unqualified win yet.** The int8 quantization
+itself is essentially lossless here (~6e-6 relative error, consistent
+with the dense-only kernel's ~3.8e-4 `max_abs_o` figure from ccv's own
+validation). The cost is entirely in Sol's block-approximation: on real
+attention inputs it produces a **12.7% relative L2 error** in the full
+output, versus a fraction of a percent for the quantization-only path.
+That is a per-attention-call, per-block number after just one DiT block's
+worth of attention — whether it is acceptable depends entirely on how it
+compounds or washes out across 50 DiT blocks and a VAE decode, which has
+not been tested. A 13% relative-L2 difference could be invisible after
+denoising smooths it out, or it could show up as visible drift/artifacts;
+this document is not going to guess which without actually rendering a
+frame. The synthetic-data error (0.199–0.238) is higher still, confirming
+error is data-dependent as expected — real (correlated, RoPE-structured)
+attention inputs approximate somewhat better than i.i.d. random noise, but
+not enormously so.
+
+Net: the reproducible bench asked for at the top of this section now
+exists and gives a clear, honest answer — **dense int8 alone is a safe
+1.2–1.6x win with negligible quality cost; adding Sol's sparsity on top
+pushes that to 1.7–2.8x but at a quality cost that is not yet validated
+end-to-end and must not be treated as free.**
+
 ### What's left
 
-- A fresh, fused-kernel attempt per the external review above, rather than
-  further tuning of v2–v6's gather/compact approach.
+- **End-to-end quality validation is now the actual blocker, not the Metal
+  compile error (fixed above).** Need a full generation run comparing
+  production SDPA vs. dense-int8-only vs. dense-int8+Sol-sparse outputs
+  (PSNR + visual, not just one block's relative-L2), to see whether the
+  12.7% per-block sparse error is invisible after 50 blocks + VAE decode
+  or actually degrades output.
+- If sparse quality doesn't hold up end-to-end, the plain dense int8 path
+  (1.2–1.6x, ~6e-6 error, no approximation at all) is still a clean,
+  low-risk win on its own and doesn't depend on Sol's routing logic.
 - Zeroth-order approximation for skipped blocks (v2–v6 hard-exclude them,
   like padding; `ccv`'s design keeps a pooled-block summary contribution
   instead) — and re-verify the actual arXiv 2607.24027 algorithm details
   instead of working from this document's own summary of it.
-- Real-data quality validation (PSNR + visual) using actual DiT block
-  Q/K/V, not synthetic clusters.
 - Wire into `h3_dit.c`'s block forward path behind an opt-in flag (never
   the default until end-to-end proven, and only once it beats 23.3ms).
+- A fresh, fused own-kernel attempt per the external review above (rather
+  than further tuning of v2–v6's gather/compact approach) only becomes
+  worth doing if a from-scratch kernel is preferred over depending on
+  `ccv`'s existing, now-working implementation.
 
 Scratch sources, **not committed** (existed only under a session scratchpad
 directory — rewrite from this description if resuming):
