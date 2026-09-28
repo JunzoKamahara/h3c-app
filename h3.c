@@ -1939,7 +1939,8 @@ int h3_debug_ccv_warmup(const char *shader_source_path, char *error,
         return 0;
     }
     int ok = h3_gpu_ccv_dense_attention_bf16(
-        gpu, o, q, k, v, rows, heads, head_dim, 1.0f / sqrtf((float)head_dim));
+        gpu, o, q, k, v, rows, heads, head_dim, 1.0f / sqrtf((float)head_dim),
+        1);
     if (!ok) snprintf(error, error_size, "h3_debug_ccv_warmup: ccv call failed");
     h3_gpu_free(gpu);
     return ok;

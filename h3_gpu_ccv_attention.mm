@@ -64,7 +64,8 @@ int ccv_dense_attention_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                              const h3_gpu_tensor *query,
                              const h3_gpu_tensor *key,
                              const h3_gpu_tensor *value, uint32_t rows,
-                             uint32_t heads, uint32_t head_dim, float scale) {
+                             uint32_t heads, uint32_t head_dim, float scale,
+                             int quantized) {
     id<MTLDevice> device = (__bridge id<MTLDevice>)h3_gpu_raw_device(gpu);
     if (!device) {
         h3_gpu_report_error(gpu, "ccv backend: no Metal device");
@@ -127,7 +128,12 @@ int ccv_dense_attention_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
     params.K_trans = 1;
     params.alpha = scale;
     params.use_neural_accelerators = 1;
-    params.use_quantized_attention = 1;
+    params.use_quantized_attention = quantized ? 1 : 0;
+    /* FP32 softmax/accumulator intermediates instead of FP16. Does not
+     * un-quantize the int8 kernel's P/V, so only meaningful with
+     * quantized=0. */
+    const char *upcast = getenv("H3_CCV_UPCAST");
+    params.upcast = upcast && *upcast == '1';
 
     auto command_buffer = (mtl_command_buffer_t *)raw_command_buffer;
     auto batch = ccv_nnc_start_command_batch_from_command_buffer(

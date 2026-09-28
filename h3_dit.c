@@ -2728,14 +2728,19 @@ static int run_block(h3_dit *dit, unsigned index, int step,
      * silently falls back to the default path, so a run that requests this
      * backend either really used it or aborted. Always produces row-major
      * output, so force the following projection down the row-major path
-     * regardless of what the int8 fast path would otherwise have picked. */
+     * regardless of what the int8 fast path would otherwise have picked.
+     * "ccv_fp16" is the same bridge with ccv's non-quantized FP16 kernel,
+     * so the two differ only in int8 quantization of Q/K/V/P. */
     const char *attention_backend = getenv("H3_ATTENTION_BACKEND");
-    if (attention_backend && !strcmp(attention_backend, "ccv_dense")) {
+    int ccv_int8 = attention_backend && !strcmp(attention_backend, "ccv_dense");
+    int ccv_fp16 = attention_backend && !strcmp(attention_backend, "ccv_fp16");
+    if (ccv_int8 || ccv_fp16) {
         head_major_attention_output = 0;
         OP(h3_gpu_ccv_dense_attention_bf16(
             dit->gpu, dit->attention_heads, dit->query, dit->key, dit->value,
-            rows, HEADS, HEAD_DIM, 1.0f / sqrtf((float)HEAD_DIM)),
-           "DiT ccv dense int8 attention (H3_ATTENTION_BACKEND=ccv_dense)");
+            rows, HEADS, HEAD_DIM, 1.0f / sqrtf((float)HEAD_DIM), ccv_int8),
+           ccv_int8 ? "DiT ccv dense int8 attention (H3_ATTENTION_BACKEND=ccv_dense)"
+                    : "DiT ccv fp16 attention (H3_ATTENTION_BACKEND=ccv_fp16)");
     } else if (head_major_attention_output)
         OP(h3_gpu_sdpa_bf16_head_major_output(
             dit->gpu, dit->attention_heads, dit->query, dit->key, dit->value,

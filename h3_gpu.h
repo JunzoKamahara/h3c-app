@@ -711,25 +711,26 @@ int h3_gpu_ccv_cast_f16_to_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
 
 /* The actual entry point h3_dit.c calls. Forwards to whatever
  * h3_gpu_register_ccv_dense_attention() registered (see
- * h3_gpu_ccv_attention.mm), or fails cleanly if nothing did. */
+ * h3_gpu_ccv_attention.mm), or fails cleanly if nothing did. `quantized`
+ * selects ccv's int8 kernel (Q/K/V and the softmax weights P all int8);
+ * zero selects its non-quantized FP16 kernel through the same bridge. */
 int h3_gpu_ccv_dense_attention_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                                     const h3_gpu_tensor *query,
                                     const h3_gpu_tensor *key,
                                     const h3_gpu_tensor *value,
                                     uint32_t rows, uint32_t heads,
-                                    uint32_t head_dim, float scale);
+                                    uint32_t head_dim, float scale,
+                                    int quantized);
 typedef int (*h3_gpu_ccv_dense_attention_fn)(
     h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *query,
     const h3_gpu_tensor *key, const h3_gpu_tensor *value, uint32_t rows,
-    uint32_t heads, uint32_t head_dim, float scale);
+    uint32_t heads, uint32_t head_dim, float scale, int quantized);
 void h3_gpu_register_ccv_dense_attention(h3_gpu_ccv_dense_attention_fn fn);
 int h3_gpu_ccv_dense_attention_available(void);
-/* Process-wide count of successful h3_gpu_ccv_dense_attention_bf16 calls
- * (only meaningful when h3_gpu_ccv_attention.mm is linked in) - use this
- * after a run to confirm the backend was really used for every block
- * expected, not silently skipped. Defined in h3_gpu_ccv_attention.mm
- * itself (not behind the same fail-cleanly indirection as the entry point
- * above), so it is only linked when that optional file is. */
+/* Process-wide count of successful h3_gpu_ccv_dense_attention_bf16 calls -
+ * use this after a run to confirm the backend was really used for every
+ * block expected, not silently skipped. Defined in h3_gpu.m so it links in
+ * every build, with or without CCV_DIR. */
 uint64_t h3_gpu_ccv_attention_dispatch_count(void);
 
 #ifdef __cplusplus
