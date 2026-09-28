@@ -537,6 +537,12 @@ int h3_gpu_sdpa_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                      const h3_gpu_tensor *query, const h3_gpu_tensor *key,
                      const h3_gpu_tensor *value, uint32_t sequence,
                      uint32_t heads, uint32_t head_dim, float scale);
+/* Debug-only: true if the most recent QKV projection call left query/key/
+ * value in [heads, rows, head_dim] layout for the next h3_gpu_sdpa_bf16
+ * call to consume (an internal producer/consumer optimization, reset to 0
+ * by that SDPA call), rather than the [rows, heads, head_dim] layout a raw
+ * capture of those tensors would otherwise assume. */
+int h3_gpu_head_major_sdpa_inputs(h3_gpu *gpu);
 /* Preserve SDPA's native [head,row,dimension] output for an immediately
  * following layout-aware projection. */
 int h3_gpu_sdpa_bf16_head_major_output(

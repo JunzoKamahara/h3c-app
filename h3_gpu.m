@@ -1693,6 +1693,10 @@ int h3_gpu_sdpa_bf16(h3_gpu *opaque, h3_gpu_tensor *output,
                        0);
 }
 
+int h3_gpu_head_major_sdpa_inputs(h3_gpu *opaque) {
+    return GPU(opaque).headMajorSDPAInputs != 0;
+}
+
 int h3_gpu_sdpa_bf16_head_major_output(
                      h3_gpu *opaque, h3_gpu_tensor *output,
                      const h3_gpu_tensor *query, const h3_gpu_tensor *key,

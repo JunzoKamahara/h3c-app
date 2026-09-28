@@ -991,6 +991,21 @@ static int attention_cache_validate(const char *path, int need_mlp,
     if (expected_model_id &&
         memcmp(header.model_id, (const uint8_t[32]){0}, 32) != 0 &&
         memcmp(header.model_id, expected_model_id, 32) != 0) {
+        /* A validation/benchmark run comparing against real captured
+         * activations must not silently proceed on a stale cache - set
+         * H3_ATTENTION_CACHE_STRICT=1 to turn this into a hard failure
+         * instead of a warning (found the hard way: a stale cache here
+         * once produced a garbage-looking kernel comparison that was
+         * actually just wrong quantized weights, not a real bug). */
+        if (getenv("H3_ATTENTION_CACHE_STRICT")) {
+            fail(error, error_size,
+                 "attention cache %s's model fingerprint does not match "
+                 "the loaded checkpoint (different weights, or weights "
+                 "rewritten since) - rebuild it with build_attention_cache "
+                 "(H3_ATTENTION_CACHE_STRICT is set, refusing to proceed)",
+                 path);
+            return 0;
+        }
         fprintf(stderr,
                 "h3: warning: attention cache %s's model fingerprint does "
                 "not match the loaded checkpoint (different weights, or "
@@ -2483,6 +2498,29 @@ static uint16_t debug_bf16_to_f16(uint16_t bf16_bits) {
     return (uint16_t)(sign | ((uint32_t)exponent << 10) | (rounded >> 13));
 }
 
+/* Debug-only: records shape/dtype and, critically, the SOURCE layout the
+ * tensor actually had on the GPU versus the layout it was WRITTEN in
+ * (input and output layouts can differ independently - see the head-major
+ * bug this was added to catch, documented in SPEEDUP_ROADMAP.md). Appends
+ * one line per tensor to <prefix>.meta.txt so a later comparison never has
+ * to assume a layout from context alone. */
+static void debug_append_attention_meta(const char *prefix, int truncate,
+                                        const char *tensor, uint32_t rows,
+                                        const char *source_layout,
+                                        const char *written_layout,
+                                        unsigned index, int step) {
+    char path[1024];
+    snprintf(path, sizeof(path), "%s.meta.txt", prefix);
+    FILE *file = fopen(path, truncate ? "w" : "a");
+    if (!file) return;
+    fprintf(file,
+            "tensor=%s rows=%u heads=%d head_dim=%d dtype=fp16 "
+            "source_layout=%s written_layout=%s block=%u step=%d\n",
+            tensor, rows, HEADS, HEAD_DIM, source_layout, written_layout,
+            index, step);
+    fclose(file);
+}
+
 /* Debug-only: dumps this block's Q/K/V (right after QKV projection/RoPE,
  * the exact inputs the production SDPA call below consumes) as contiguous
  * FP16 [1, rows, HEADS, HEAD_DIM] - the raw format
@@ -2501,6 +2539,13 @@ static void debug_dump_attention_qkv(h3_dit *dit, unsigned index, int step,
     unsigned want_block = block_text ? (unsigned)atoi(block_text) : 0;
     int want_step = step_text ? atoi(step_text) : 0;
     if (index != want_block || step != want_step) return;
+    /* The preceding QKV projection may have left query/key/value in
+     * [heads, rows, head_dim] layout for the SDPA call right after this
+     * dump to consume (an internal producer/consumer optimization) -
+     * read this now, before anything else touches it, so the capture can
+     * be transposed to the [rows, heads, head_dim] layout raw-prefix
+     * consumers (e.g. liuliu/ccv's benchmarks) expect. */
+    int head_major = h3_gpu_head_major_sdpa_inputs(dit->gpu);
     if (!gpu_op(dit, h3_gpu_submit(dit->gpu), NULL, 0,
                 "flush for attention QKV dump") ||
         !gpu_op(dit, h3_gpu_begin(dit->gpu), NULL, 0,
@@ -2526,7 +2571,16 @@ static void debug_dump_attention_qkv(h3_dit *dit, unsigned index, int step,
                     "H3_DUMP_ATTENTION_QKV\n", suffix[which]);
             continue;
         }
-        for (size_t i = 0; i < count; i++) f16[i] = debug_bf16_to_f16(bf16[i]);
+        for (size_t row = 0; row < rows; row++) {
+            for (int head = 0; head < HEADS; head++) {
+                size_t dst_base = (row * HEADS + (size_t)head) * HEAD_DIM;
+                size_t src_base = head_major
+                    ? ((size_t)head * rows + row) * HEAD_DIM : dst_base;
+                for (int d = 0; d < HEAD_DIM; d++)
+                    f16[dst_base + (size_t)d] =
+                        debug_bf16_to_f16(bf16[src_base + (size_t)d]);
+            }
+        }
         char path[1024];
         snprintf(path, sizeof(path), "%s.%s.bin", prefix, suffix[which]);
         FILE *file = fopen(path, "wb");
@@ -2537,10 +2591,81 @@ static void debug_dump_attention_qkv(h3_dit *dit, unsigned index, int step,
         }
         fwrite(f16, sizeof(*f16), count, file);
         fclose(file);
+        debug_append_attention_meta(prefix, which == 0, suffix[which], rows,
+                                    head_major ? "head_major" : "row_major",
+                                    "row_major", index, step);
     }
     fprintf(stderr, "h3: dumped attention block %u step %d QKV "
-            "(rows=%u heads=%d head_dim=%d) to %s.{q,k,v}.bin\n",
-            index, step, rows, HEADS, HEAD_DIM, prefix);
+            "(rows=%u heads=%d head_dim=%d, source layout %s) to "
+            "%s.{q,k,v}.bin\n", index, step, rows, HEADS, HEAD_DIM,
+            head_major ? "head-major" : "row-major", prefix);
+    free(bf16); free(f16);
+}
+
+/* Debug-only: sibling of debug_dump_attention_qkv, called right after the
+ * production SDPA call for the same block/step, dumping its real output
+ * (dit->attention_heads) in the same [1, rows, HEADS, HEAD_DIM] FP16
+ * format - lets an external kernel's output on the matching captured Q/K/V
+ * be diffed directly against what this engine actually produced, not just
+ * against that kernel's own internal reference. Only meaningful in the
+ * row-major output layout; skipped with a warning when the head-major
+ * fast path is active (set H3_DISABLE_HEAD_MAJOR_ATTENTION_OUTPUT=1 for a
+ * comparable capture). Gated behind the same env vars as the QKV dump. */
+static void debug_dump_attention_output(h3_dit *dit, unsigned index, int step,
+                                        uint32_t rows, int head_major) {
+    const char *prefix = getenv("H3_DUMP_ATTENTION_QKV");
+    if (!prefix || !*prefix) return;
+    const char *block_text = getenv("H3_DUMP_ATTENTION_BLOCK");
+    const char *step_text = getenv("H3_DUMP_ATTENTION_STEP");
+    unsigned want_block = block_text ? (unsigned)atoi(block_text) : 0;
+    int want_step = step_text ? atoi(step_text) : 0;
+    if (index != want_block || step != want_step) return;
+    if (head_major) {
+        fprintf(stderr, "h3: warning: H3_DUMP_ATTENTION_QKV output capture "
+                "skipped - head-major output layout active (set "
+                "H3_DISABLE_HEAD_MAJOR_ATTENTION_OUTPUT=1 for a row-major "
+                "dump comparable to the Q/K/V capture)\n");
+        return;
+    }
+    if (!gpu_op(dit, h3_gpu_submit(dit->gpu), NULL, 0,
+                "flush for attention output dump") ||
+        !gpu_op(dit, h3_gpu_begin(dit->gpu), NULL, 0,
+                "resume after attention output dump")) {
+        fprintf(stderr, "h3: warning: could not flush GPU for attention "
+                "output dump\n");
+        return;
+    }
+    size_t count = (size_t)rows * HEADS * HEAD_DIM;
+    uint16_t *bf16 = malloc(count * sizeof(*bf16));
+    uint16_t *f16 = malloc(count * sizeof(*f16));
+    if (!bf16 || !f16) {
+        fprintf(stderr, "h3: warning: out of memory for attention output "
+                "dump\n");
+        free(bf16); free(f16);
+        return;
+    }
+    if (!h3_gpu_tensor_read_bf16(dit->attention_heads, bf16, count)) {
+        fprintf(stderr, "h3: warning: could not read attention output for "
+                "H3_DUMP_ATTENTION_QKV\n");
+        free(bf16); free(f16);
+        return;
+    }
+    for (size_t i = 0; i < count; i++) f16[i] = debug_bf16_to_f16(bf16[i]);
+    char path[1024];
+    snprintf(path, sizeof(path), "%s.out.bin", prefix);
+    FILE *file = fopen(path, "wb");
+    if (file) {
+        fwrite(f16, sizeof(*f16), count, file);
+        fclose(file);
+        debug_append_attention_meta(prefix, 0, "out", rows, "row_major",
+                                    "row_major", index, step);
+        fprintf(stderr, "h3: dumped attention block %u step %d production "
+                "output (rows=%u heads=%d head_dim=%d) to %s.out.bin\n",
+                index, step, rows, HEADS, HEAD_DIM, prefix);
+    } else {
+        fprintf(stderr, "h3: warning: cannot open %s for attention output "
+                "dump\n", path);
+    }
     free(bf16); free(f16);
 }
 
@@ -2605,6 +2730,8 @@ static int run_block(h3_dit *dit, unsigned index, int step,
             dit->gpu, dit->attention_heads, dit->query, dit->key, dit->value,
             rows, HEADS, HEAD_DIM, 1.0f / sqrtf((float)HEAD_DIM)),
            "DiT full attention");
+    debug_dump_attention_output(dit, index, step, rows,
+                                head_major_attention_output);
     if (int8_attention_output) {
         if (head_major_attention_output)
             OP(h3_gpu_linear_int8_head_major_bf16(
