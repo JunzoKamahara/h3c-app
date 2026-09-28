@@ -626,33 +626,480 @@ and corrects for these, and a wildly-uncorrelated (`relative_l2 > 1`)
 comparison against a real reference is a strong, checkable signal that a
 layout assumption is wrong before concluding anything about quality.
 
-### What's left
+### End-to-end integration and A/B result (2026-09-28): net negative at this clip length
 
-- **End-to-end quality validation is now the actual blocker, not the Metal
-  compile error (fixed above) or capture correctness (fixed above).**
-  Three real block/step spot-checks now confirm both kernels' per-block
-  behavior against real ground truth (dense: 52-62 dB PSNR; sparse: 42-50
-  dB PSNR). What's still missing is a full generation run actually
-  substituting one of these kernels for every block's SDPA call (not an
-  offline per-block comparison against the untouched trajectory - once
-  block N's output changes, block N+1 sees a different input, so error
-  can compound or cancel in ways a per-block check can't show) and
-  comparing the final decoded video against the real baseline (PSNR +
-  visual).
-- Dense int8's per-block numbers are strong enough that it's likely a safe
-  default-quality win; if sparse's end-to-end quality doesn't hold up,
-  dense int8 alone is still a clean win on its own, independent of Sol's
-  routing logic.
-- Zeroth-order approximation for skipped blocks (v2–v6 hard-exclude them,
-  like padding; `ccv`'s design keeps a pooled-block summary contribution
-  instead) — and re-verify the actual arXiv 2607.24027 algorithm details
-  instead of working from this document's own summary of it.
-- Wire into `h3_dit.c`'s block forward path behind an opt-in flag (never
-  the default until end-to-end proven, and only once it beats 23.3ms).
-- A fresh, fused own-kernel attempt per the external review above (rather
-  than further tuning of v2–v6's gather/compact approach) only becomes
-  worth doing if a from-scratch kernel is preferred over depending on
-  `ccv`'s existing, now-working implementation.
+Per the plan above, built a real, opt-in `H3_ATTENTION_BACKEND=ccv_dense`
+path (not Sol — dense only, per instruction, with Sol deferred to its own
+evaluation) that substitutes ccv's dense int8 kernel for every block's
+production SDPA call, end to end, and ran the actual staged validation
+this section called for. Net result: **at this clip length, it is a clear
+net negative — no measurable speedup, and a real, visible quality
+regression that the per-block numbers above did not predict.**
+
+**What was built** (all opt-in; the default build and default runtime
+behavior are unaffected):
+
+- `h3_gpu_ccv_attention.mm` (new file, only built/linked when `CCV_DIR` is
+  set — see `Makefile`): bridges h3's own `id<MTLDevice>`/
+  `id<MTLCommandBuffer>`/`id<MTLBuffer>` objects to metal-cpp's
+  `MTL::Device*`/`MTL::CommandBuffer*`/`MTL::Buffer*` (metal-cpp's
+  documented interop — same pointer value, no separate allocation), calls
+  `ccv_nnc_mfa_encode_attention` inside h3's *existing* command buffer via
+  `ccv_nnc_start_command_batch_from_command_buffer(..., commit_on_finish=0)`
+  (no extra command-buffer submit/wait per block), and self-registers via
+  a static constructor so no other file needs an `#ifdef` to enable or
+  disable it.
+- Two new small Metal kernels (`h3_cast_bf16_to_f16_qkv`,
+  `h3_cast_f16_to_bf16_flat`, in `h3_shaders.metal`) to convert BF16↔FP16,
+  with the QKV cast also correcting for this engine's head-major/row-major
+  layout split (see the correction above) so the backend is correct
+  regardless of which internal layout was active — not just in the
+  forced-row-major layout the validation captures used.
+- `h3_gpu_head_major_sdpa_inputs()`/`h3_gpu_set_head_major_sdpa_inputs()`
+  and a handful of other small raw accessors (`h3_gpu.h`/`h3_gpu.m`) so the
+  bridging file never needs its own copy of h3's internal layout state.
+- A process-wide dispatch counter
+  (`h3_gpu_ccv_attention_dispatch_count()`) to positively confirm the
+  backend ran for every block, rather than trusting that it did.
+- `tools/ccv_eval/h3_generate_cli.c` (new): a plain-C equivalent of
+  `native/H3Spike`'s generation driver — see "A real, still-unexplained
+  Swift-runtime/ccv incompatibility" below for why this exists.
+
+**Build design note**: `h3_gpu_ccv_attention.o` is deliberately kept out of
+`libh3.a` itself. A static archive only links in a member that resolves
+some other object's undefined symbol; since nothing calls into this file
+directly (it self-registers via a constructor), archived it would simply
+be dropped by any consumer linking `libh3.a` as `-lh3` — confirmed by
+hitting exactly that (zero `ccv_nnc_mfa_*` symbols in the final binary)
+before switching to linking it as a loose object file everywhere it's
+wanted (`Makefile`'s `h3_generate_cli` target; `Package.swift` reads the
+same `CCV_DIR` variable at `swift build` time and adds the same `.o` path
+directly to the linker flags). A loose object file on the link line is
+always included, sidestepping archive-member selection entirely. An
+earlier attempt at a `weak_import` "link anchor" trick to force the
+archive to include it broke the **default** (non-`CCV_DIR`) build — a real
+regression, caught by testing an actual executable link (`build_
+attention_cache`) after the change, not just `ar`-based `libh3.a`
+creation, which doesn't check for unresolved symbols at all.
+
+**An unexplained shader-compile failure that reproduces only from
+H3Spike — root cause not identified, do not over-attribute it.** The
+exact same `ccv_nnc_mfa_encode_attention` call, with the exact same shape
+and params validated above, fails deterministically with a garbled-
+looking Metal shader compile error (`use of undeclared identifier 'mpp'`,
+or `redefinition of 'dynamic_extent'` depending on the run) whenever it is
+called from `native/H3Spike` (a Swift/SwiftPM executable) — including in
+the most minimal possible reproduction (a fresh `h3_gpu`, no model
+loaded, called immediately after `h3_gpu_create()`, via a diagnostic
+entry point, `h3_debug_ccv_warmup()` in `h3.c`/`h3.h`, exercised from
+`main.swift` behind `H3_CCV_WARMUP_DIAG=1`). The exact same call, with the
+exact same shapes/params/scratch-buffer setup, succeeds every time from a
+plain C or Objective-C++ binary built directly with `clang`.
+
+What this rules out, each via a direct isolated test: GPU memory pressure
+(tested up to ~62GB, both as a few large buffers and as ~800 small ones);
+h3's own ~100-kernel shader library being compiled on the same device
+first; a buffer-array-size bug (a real, separate bug that *was* found and
+fixed this way — `ccv_nnc_mfa_encode_attention` reads a fixed 10-slot
+tensor/offset array internally, and a 4-slot array reads past its end;
+fixed, and confirmed the Swift-only failure persists afterward with the
+bug gone, so it is not what's causing this); matching
+`-mmacosx-version-min` between the two binaries; and merely linking
+`libswiftXPC`/`libswiftCore` into a plain C binary without an actual
+Swift runtime present.
+
+**What this does *not* establish: a "Swift runtime / XPC incompatibility"
+as a confirmed cause.** An earlier draft of this section claimed that;
+it was too strong a conclusion from the tests actually run, for reasons
+worth recording so this isn't re-claimed later without better evidence:
+a call succeeding from a plain C driver and failing from Swift is equally
+consistent with an ordinary memory bug (uninitialized read, use-after-
+free, or similar) that happens to behave differently across the two
+binaries because of caller-side differences (memory layout, allocation
+order, object lifetimes) having nothing to do with Swift or XPC per se —
+exactly the kind of thing the array-size bug above turned out to be
+before it was found. ccv's author also ships `s4nnc`, a Swift interface to
+the same underlying library, which doesn't prove this exact kernel/SDK
+combination is fine under Swift, but does mean "Swift and ccv are
+inherently incompatible" is not a safe default assumption either. The
+"garbled-looking" description of the error text is itself just a
+description, not a diagnosis — it hasn't been established whether the
+*generated Metal source itself* differs between the two runs (which would
+point at generation-time memory corruption) or whether the source is
+identical and something about compiling or reporting on it differs (which
+would point elsewhere). That specific check — dumping the exact source
+string, byte length, and compile options right before `newLibraryWithSource`
+in both the C and Swift paths, and diffing them — is the next concrete
+step if this is picked back up, before any further theorizing about
+XPC or the Swift runtime specifically.
+
+Given the significant time already spent isolating this, it was set aside
+as a real, reproducible, but **causally unexplained** finding, recorded
+here as exactly that. **Workaround**: `tools/ccv_eval/h3_generate_cli.c`,
+a plain-C drop-in replacement for `H3Spike`'s generation driver using the
+same public `h3.h` API, sidesteps it completely and was used for
+everything below. Its results are not weakened by this open question:
+they come from the plain-C path where the encode call is known to run
+without error, and the finding below that the integrated path reproduces
+the independently-validated standalone kernel almost exactly means the
+plain-C driver is measuring the real kernel's real behavior, not some
+CLI-specific artifact.
+
+**Stage ① (connectivity check): passed.** Same real generation
+(512²/39fr/4-step, seed 7), `H3_ATTENTION_BACKEND=ccv_dense` active for
+every block: `h3_gpu_ccv_attention_dispatch_count()` read back **200** —
+exactly 50 DiT blocks × 4 denoise steps, confirming the backend ran for
+every single attention call with zero silent fallback to the default
+path.
+
+**Additional check the external review specifically asked for, and
+correctly identified as missing: does the *integrated* path reproduce the
+independently-validated *standalone* kernel on the same input, or could
+the wrapper itself (layout handling, cast kernels, command-buffer
+sharing) be the source of the later quality loss?** Captured real Q/K/V
+at block 0, step 0 of the `ccv_dense` run (the one point in the whole run
+guaranteed not to have diverged yet from the baseline run, since nothing
+attention-related has executed before it — confirmed: the two captures
+are bit-identical, `relative_l2=0`) and compared the integrated backend's
+actual output for that block against `h3_real_attention_compare`'s
+earlier, independently-validated output for the identical input:
+
+```
+integrated ccv output vs. standalone ccv output (same Q/K/V): relative_l2=0.17%, PSNR=81.3 dB
+integrated ccv output vs. real baseline SDPA:                 relative_l2=1.57%, PSNR=61.9 dB
+(reference) standalone ccv output vs. real baseline, from earlier validation: relative_l2=1.56%, PSNR=62.0 dB
+```
+
+**The integrated wrapper reproduces the standalone, independently-
+validated kernel almost exactly (81 dB — consistent with ordinary FP16
+rounding-mode differences between two independently-written BF16→FP16
+conversions, not a bug) and matches the earlier standalone-vs-baseline
+number to within 0.1 dB.** This is real evidence, not just an assumption,
+that the wrapper's layout handling, BF16↔FP16 casts, and command-buffer
+sharing are correct — the later quality loss is not explained by an
+integration bug at this checkpoint. It does not by itself rule out a
+different bug that only manifests after several blocks (e.g. a subtle
+buffer-reuse issue in the cached FP16 scratch buffers across many calls),
+but combined with GPU API/shader validation being unremarkable in these
+runs, it shifts the weight of evidence toward genuine cumulative
+approximation error rather than a wiring bug. Also checked and ruled out
+as a contributing factor: FP16 overflow/underflow on the real captured
+data (`max_abs` 12.7–120.5, `min_nonzero_abs` ~6×10⁻⁵, zero
+inf/nan — comfortably inside FP16's representable range, nowhere near its
+~65504 ceiling).
+
+As corroborating (not conclusive) evidence of compounding: the same Q/K/V
+capture at block 25/step 2 of the `ccv_dense` run — by which point 25
+blocks' and 2 steps' worth of `ccv_dense` attention have already run —
+had already diverged substantially from the baseline run's block-25 input
+(relative L2 16–26% across Q/K/V, vs. exactly 0% at block 0). This is the
+expected shape for cumulative divergence (small per-block error changing
+each block's output, which becomes the next block's input) but a single
+midpoint isn't a full trace; a step-by-step or block-by-block divergence
+curve was not collected and would be needed to say more precisely where
+or how sharply it grows.
+
+**Stage ② (generation A/B, same clip): dense int8 is a net negative
+here.** Config double-checked against the log to rule out confusion with
+this document's own earlier, unrelated 20-step "fastest"-preset benchmark
+(which happens to report a similar wall-clock number for a different
+config): this run's log shows exactly 4 denoise steps (`enqueue 0/4`
+through `4/4`), `core_reuse`/`denoise_reuse` at their no-reduction default
+of 1, `dit_layers=50`, `token_reduction=0` — a full, unreduced 4-step run,
+not an accidental mix-up. One run each (not a repeated/averaged
+measurement — see caveat below):
+
+| | baseline (production SDPA) | `H3_ATTENTION_BACKEND=ccv_dense` |
+|---|---|---|
+| wall clock | 73.7s | 74.2s (no measurable speedup — see caveat) |
+| decoded frames vs. baseline | — | mean PSNR 18.19 dB, worst 17.59 dB (frame 4) |
+
+**Timing caveat**: this is one run of each, not a distribution — 73.7s vs.
+74.2s does not by itself establish "no speedup" to any precision tighter
+than run-to-run noise. What can be said: no speedup large enough to show
+above that noise was observed in this single comparison. This is,
+however, exactly the outcome the external review's own math predicted
+ahead of running it: the earlier measured attention-share (~17.8% of one
+DiT block at this short sequence length) combined with dense int8's own
+measured 1.23x-per-op speedup predicts a whole-block improvement of only
+≈1.03x — small enough that it would need several repeated runs to
+distinguish from noise even if real, which was not done here. **The
+practical conclusion is unchanged either way: the speed case for this
+backend was always about long/large sequences (the ~65.7% attention-share,
+768²/124fr case, not tested), not this short clip**, so further chasing
+precision on this particular number is not a priority.
+
+**Correction (same day, after showing both videos to the user): the
+original description of this as a "banding/striping artifact" was wrong.**
+On careful re-inspection — cropped/zoomed regions and a proper side-by-
+side, not just a quick look at a thumbnail — there is no periodic
+banding or striping in either video. What's actually visible, at seed 7,
+is a same-composition/same-pose result with different *fine detail*: the
+cat's tabby stripe patterning is more pronounced in the `ccv_dense`
+frame, the overall color grading shifts slightly (more golden vs. more
+orange-and-white), and the blurred background shows a sharper/more
+defined edge (a door or shelf frame) than the baseline's smoother blur.
+This is a genuine, visible divergence, but it reads as "a similar but
+distinct generation" rather than an image-quality defect — closer to what
+this document elsewhere calls a trajectory/composition change (cf. the
+core_reuse/token_reduction "~12 dB PSNR, composition changes" note near
+the top of this file) than to noise, corruption, or a rendering bug.
+
+**Also checked a second seed (123) for reproducibility, and confirmed
+important nuance: the effect is real but seed-dependent in magnitude, not
+a fixed artifact.** Same config, `H3_ATTENTION_BACKEND=ccv_dense` vs.
+baseline, decoded through `ffmpeg`'s PSNR filter on the final encoded
+video (a different, cross-checking measurement from the raw-RGB PSNR
+used for seed 7 above — both are reported here since they were measured
+differently): seed 7 gives Y=19.7 dB/avg=21.4 dB, seed 123 gives Y=21.1
+dB/avg=22.8 dB. Both are real, both are well outside the "visually
+identical" range this codebase treats as safe elsewhere (VAE int8: 44.9
+dB worst-frame) — but side-by-side, seed 123's two videos look much closer
+to each other than seed 7's, consistent with the numeric gap. **The
+practical implication: whatever is driving this is not a fixed-magnitude
+bug that always produces the same visible defect — it varies with the
+specific input/trajectory, which is more consistent with compounding
+approximation error (sensitive to the specific values being compounded)
+than with a deterministic wiring bug (which would be expected to produce
+a more consistent symptom regardless of seed).**
+
+**This still directly confirms the concern raised before this run — per-
+block PSNR against real ground truth (52-62 dB) did not predict final
+quality — but the corrected visual description matters for what to do
+next.** Attention error compounds across 50 blocks × 4 steps in a way a
+per-block, non-substituting check cannot show. The integration-vs-
+standalone match above (81 dB at block 0) makes it unlikely that the
+wrapper itself (layout, casts, command-buffer sharing) is the primary
+cause, which shifts weight toward genuine cumulative approximation error
+in ccv's int8 quantization as the more likely explanation — but "unlikely
+to be the wrapper" is not the same as "proven to be the kernel": a bug
+that only manifests after many calls (e.g. in the cached FP16 scratch-
+buffer reuse across blocks) is not excluded by a block-0 check, and was
+not separately tested. Given the corrected description (subtle,
+seed-dependent detail/composition drift, not a fixed visual defect), a
+bug that always produces the same wrong symptom regardless of input seems
+somewhat less likely than before this correction, but this is still not
+confirmed either way.
+
+**Stage ③ (long sequence, 768²/124fr/4-step, seed 7): the first real
+measured speedup, smaller than predicted, plus real memory and quality
+numbers at this scale.** This is the case the whole speed argument was
+actually about (~65.7% attention-share vs. ~17.8% at the short clip
+above), measured via `/usr/bin/time -l` for wall clock and peak memory:
+
+| | baseline (production SDPA) | `H3_ATTENTION_BACKEND=ccv_dense` |
+|---|---|---|
+| wall clock | 505.3s | 462.2s (**1.09x — a real, measured speedup**) |
+| peak memory footprint | 15.6 GB | 17.4 GB (+1.8 GB) |
+| peak RSS | 7.63 GB | 7.93 GB (+0.3 GB) |
+| dispatch count | — | 200/200 (again exactly 50 blocks × 4 steps) |
+| decoded video vs. baseline (ffmpeg PSNR) | — | Y 21.3 dB, avg 23.0 dB |
+
+**Speed**: real, positive, but smaller than the naive prediction. Combining
+the standalone attention-only benchmark (840.8 ms ccv vs. 1340.3 ms real
+SDPA at this sequence length, from earlier in this section) with the
+65.7% attention-share measurement predicts a whole-block improvement of
+≈1.32x (`1 / (0.657/1.59 + 0.343)`); the actual measured whole-generation
+improvement was only 1.09x. The gap is plausibly the BF16↔FP16 cast
+kernels, scratch-buffer setup, and command-batch overhead per block (not
+present in the isolated attention-only microbenchmark) eating into the
+theoretical gain — not measured separately here, so this is a plausible
+explanation, not a confirmed one.
+
+**Memory**: `ccv_dense` uses **more** memory, not less — about +1.8 GB
+peak footprint, consistent with the four extra FP16 scratch buffers this
+backend allocates (`q_f16`/`k_f16`/`v_f16`/`out_f16`, each
+`rows×heads×head_dim×2` bytes ≈ 311 MB at this sequence length, ×4 ≈
+1.25 GB, roughly matching the observed increase). This machine has 24 GB
+total unified memory; both runs stayed well under that (15.6–17.4 GB
+peak), but the margin is not huge, and a smaller-memory machine or a
+larger clip could matter here in a way it wouldn't have shown up at the
+short-clip scale.
+
+**Quality: this is where stage ③ actually diverges from the short clip,
+and it's worse, not the same.** PSNR at this scale (Y 21.3 dB, avg 23.0
+dB) is numerically close to both short-clip seeds (seed 7: Y 19.7/avg
+21.4; seed 123: Y 21.1/avg 22.8) — an early draft of this section inferred
+from that alone that the *character* of the divergence was probably the
+same "similar-but-distinct generation" seen at the short clip. **That
+inference was wrong, and checking it by actually looking (the same
+zoomed/side-by-side treatment given to the short clip) matters more than
+the PSNR number suggested.** At this scale the two frame-0 decodes show a
+**different cat** — different coat pattern (baseline: brown/black
+calico-tabby markings; `ccv_dense`: solid orange tabby), different pose
+(baseline: cat lying low against the yarn; `ccv_dense`: cat with a paw
+raised near the yarn), not the "same cat, slightly different fur/color/
+background sharpness" seen at the short clip. This is a composition-level
+divergence, closer to what this document elsewhere calls a trajectory
+change (cf. the core_reuse/token_reduction "~12 dB PSNR, composition
+changes" note) than the more subtle detail-level drift at the short clip —
+despite both landing in a similar PSNR range. **PSNR alone did not
+distinguish these two qualitatively different outcomes; only looking at
+the actual frames did**, which is itself a useful, generalizable lesson
+for judging any future approximation here by number alone.
+
+**Net for the long-sequence case**: a real, positive but modest speed win
+(1.09x) at the cost of more (not less) peak memory and a quality
+divergence that is, on direct visual inspection, *more* severe in kind
+than the short clip's — a full composition/content change, not a subtle
+detail shift. This makes the long-sequence case, where the speed benefit
+actually exists, the one with the clearer-looking quality problem too.
+Whether this is genuine cumulative approximation error (more DiT blocks ×
+more steps × more spatial-temporal content for error to compound through)
+or a bug that only manifests at scale is exactly as open as before — but
+the visual evidence now argues for more caution at long sequences, not
+less, which is the opposite of what "same PSNR as short clip" would have
+suggested on its own.
+
+**Conclusion and recommendation**: do not adopt `H3_ATTENTION_BACKEND=
+ccv_dense` as implemented — not because the speed case is false (stage ③
+shows it is real, if smaller than predicted, at the long-sequence scale
+this was always meant for) but because the quality question underneath it
+is still open at every scale tested, short or long, and now with a
+confirmed real speed incentive to actually answer it rather than shelve
+it. If this is picked back up, the highest-value next steps, in order:
+(1) a per-block or per-step divergence trace (Q/K/V relative-L2 at every
+block, not just block 0 and block 25) to see whether error grows
+gradually or jumps sharply at a specific point; (2) a layout/cast-only
+round-trip experiment (cast Q/K/V BF16→FP16→BF16 through the same kernels
+this backend uses, then run this engine's own production SDPA on the
+round-tripped tensors, comparing against the untouched baseline) to
+isolate the cast path from ccv's int8 compute more directly than the
+block-0 check above does; (3) a proper visual review of the long-sequence
+output at the same level of care as the short-clip side-by-side above
+(this section's stage-③ PSNR numbers were checked, but not re-inspected
+frame-by-frame with zoomed crops the way the short clip was, so "same
+character as the short clip" is an inference from matching PSNR, not a
+confirmed visual match). Sol sparse attention was explicitly deferred to
+its own evaluation per instruction, and this result is a reason for extra
+caution there too, not less — Sol adds approximation on top of a
+dense-int8 path
+whose end-to-end quality is not yet fully understood.
+
+**Stage ④ (production-length, 768²/362fr ≈ 15s @ 24fps/4-step, seed 7):
+a ~19% time reduction at 15s, with loss of fine detail and a strengthened
+foreground net pattern — adoption on hold, cause not identified.**
+`align_frames`-style
+rounding (5 + 17k, matching the GUI's `align_frames`) puts a 15s clip at
+362 frames — 2.92x stage ③'s 124 frames. Measured the same way
+(`/usr/bin/time -l`, `H3SPIKE_FRAMES=362` otherwise identical params to
+stage ③, `h3_generate_cli`):
+
+| | baseline (production SDPA) | `H3_ATTENTION_BACKEND=ccv_dense` |
+|---|---|---|
+| wall clock | 2976.8s (49.6 min) | 2412.6s (40.2 min) (**1.23x — the best measured speedup yet, and it grows with length as expected**) |
+| peak memory footprint | 20.78 GiB | 25.40 GiB (+4.6 GiB) |
+| peak RSS | 10.77 GiB | 11.09 GiB (+0.3 GiB) |
+| dispatch count | — | 200/200 (again exactly 50 blocks × 4 steps) |
+| decoded video vs. baseline (ffmpeg PSNR) | — | Y 23.3 dB, avg 25.0 dB |
+
+**Speed**: real and, as expected from the attention-share argument, larger
+than stage ③'s 1.09x — a longer sequence spends a bigger fraction of its
+time in attention, so `ccv_dense`'s per-op speedup there compounds into a
+bigger whole-generation win. This is the first result that actually
+supports the "longer videos benefit more" case the whole effort was aimed
+at.
+
+**Memory**: peak footprint grew by +4.6 GiB here vs. stage ③'s +1.8 GiB —
+consistent with the four FP16 scratch buffers scaling with `rows` (which
+is ~2.92x larger at 362 frames), not a fixed overhead. Both runs still fit
+in this machine's 24 GiB unified memory, but the ccv_dense side's peak
+(25.40 GiB) is now *above* that nominal figure by the accounting `time -l`
+uses. Peak RSS (~11 GiB) alone doesn't settle GPU-side headroom either, so
+for a 24 GB target, memory compression/swap activity during the run should
+be part of any adoption criterion. In plain terms: 2976.8s → 2412.6s is a
+~9.4 minute, ~19% time reduction — practically meaningful — bought with a
++4.62 GiB (~22%) footprint increase, which is a real cost, and the speed
+ratio needs re-measuring after any quality fix.
+
+**Quality — corrected.** An earlier version of this paragraph claimed a
+"repeating diagonal lattice pattern ... absent from the baseline entirely"
+and argued from its regularity that it was a structured kernel artifact
+rather than quantization error. **Both claims were wrong.** The user's
+own viewing, then a full-size re-check of the baseline frames, shows the
+baseline *also* has the diagonal net across the whole frame: it is a
+scene element (an out-of-focus foreground net/fence the model put between
+the camera and the cat), present in both outputs. What actually differs:
+in `ccv_dense` the net is rendered more strongly/in-focus, while the cat
+loses fine detail (eyes, whiskers, fur texture) and the grading is
+darker/duller. So the observation is "fine-detail loss plus a
+strengthened existing net pattern," not "a new lattice." Two hypotheses
+remain undistinguished: the model emphasizing an existing scene element
+differently (a content/focus change), or a periodic computational error
+adding to it — separating them needs full-size, pre-encode RGB frames
+(`H3SPIKE_DUMP`) and more than four stills. The "regular, therefore not
+int8 quantization" reasoning was also unsound on its own: rounding is
+deterministic, and per-tile shared scales can produce errors that follow
+input/block structure, so regularity alone can't distinguish quantization
+from a layout bug or a RoPE interaction.
+
+PSNR: the 15s clip's Y 23.3/avg 25.0 dB is not comparable to stage ③'s
+23.0 dB as "better" — they cover different frame sets, ffmpeg's overall
+PSNR aggregates per-frame MSE over whatever frames are compared, and these
+YUV numbers are also not comparable to the earlier raw-RGB PSNR figures
+in this section.
+
+**What the "dense" int8 path actually quantizes (verified in the local ccv
+checkout, commit `6a611be`)**: not just Q/K. `NAInt8AttentionKernel.cpp`
+has `quantize_q`/`quantize_k`/`quantize_v` (per-tile max-abs scale,
+clamped to ±127), and in the forward pass the attention weights P
+(`exp(s − rowmax)`, in (0, 1]) are also multiplied by 127, rounded, and
+used as int8 in the PV product (`P_QUANTIZATION_SCALE = 127.0f` when
+Hq == Hk, which is h3's case; line ~1550). "Dense" means no blocks are
+skipped, not that the approximation is mild. This bridge sets
+`use_quantized_attention = 1` (`h3_gpu_ccv_attention.mm`). A plausible —
+**unconfirmed** — length-dependent mechanism: with more keys per row,
+more of the attention mass sits in small weights that 7-bit P rounding
+zeroes out, which would weaken diffuse/global contributions more as
+sequence length grows. This is a hypothesis to test, not a finding.
+
+**Net for the production-length case**: long-sequence speedup observed
+(~19% time reduction at 15s); fine-detail loss and a strengthened net
+pattern observed; adoption on hold; cause not identified.
+
+**Conclusion and recommendation (updated after stage ④)**: do not adopt
+`H3_ATTENTION_BACKEND=ccv_dense` yet. Next step, before repeating 15s
+generations, is a three-way split on the short clip (where divergence
+already shows):
+
+| path | purpose |
+|---|---|
+| A: production MPSGraph SDPA | reference |
+| B: same bridge + layout/cast path, **non-quantized** ccv attention (`use_quantized_attention = 0`) | checks casts, integration, and ccv's float path |
+| C: current ccv dense int8 attention | B→C difference isolates the int8 path |
+
+- B also degrades badly → look at the bridge, layout, casts, or ccv's
+  float kernel.
+- B fine, only C degrades → narrow to the int8 path (still separating
+  "inherent limit of this quantization scheme" from "implementation bug").
+- Integrated C disagrees with standalone C on the same Q/K/V → fix the
+  integration first.
+
+Length-dependent behavior can then be checked cheaply by replaying single
+blocks with Q/K/V captured from the 15s run instead of full 50-minute
+generations. Note `upcast=1` does not un-quantize P/V, so it is not a
+substitute for B. The RoPE-interaction idea stays a hypothesis only.
+
+Scratch sources, **not committed** (existed only under a session scratchpad
+directory — rewrite from this description if resuming):
+
+- `flash_attn.metal` / `flash_test.m` — v1, naive scalar kernel.
+- `flash_v2.metal` / `flash_test2.m` — v2, nax-based dense 3-pass.
+  `flash_v2.metal` also grew `h3_block_means_bf16` /
+  `h3_block_dot_means_bf16` / `h3_linear_bf16_nax_r128_masked` /
+  `h3_softmax_rows_masked_bf16` for QK^T sparsity, and the per-row_tile and
+  batched-across-row_tiles gather/transpose/matmul kernel pairs for the PV
+  compaction attempts.
+- `flash_test3.m` — v3, QK^T-only sparsity, properly batched (the
+  1.19–1.26x numbers).
+- `flash_test4.m` — PV compaction per-row_tile, invalid per-head-sync
+  comparison, superseded.
+- `flash_test5.m` — the same per-row_tile PV compaction properly batched —
+  the valid "PV sparsity loses badly" measurement, 0.66x.
+- `flash_test6.m` — PV compaction batched across row_tiles too — the
+  current, valid "PV sparsity still loses, less badly" measurement, 0.88x
+  (dense 48.6ms / QK-only 40.9ms (1.19x) / QK+PV 55.4ms (0.88x), `kept_max`
+  padding waste 1.41x).
 
 Scratch sources, **not committed** (existed only under a session scratchpad
 directory — rewrite from this description if resuming):
