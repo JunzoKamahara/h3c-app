@@ -62,6 +62,21 @@ let outputPath = arguments.count > 2 ? arguments[2] : "/tmp/h3spike_output.mp4"
 let prompt = arguments.count > 3 ? arguments[3] : "A cat playing with a ball of yarn."
 
 print("== h3c-app native spike ==")
+
+// Reproduces a real, unexplained failure: this exact call (creates its own
+// GPU, no model needed) succeeds from a plain C/Objective-C++ process but
+// consistently fails with a garbled Metal shader compile error when made
+// from this Swift binary - see SPEEDUP_ROADMAP.md item 5's "Swift runtime
+// blocks the live H3_ATTENTION_BACKEND=ccv_dense path" note. Kept here as
+// a minimal, fast repro for whoever investigates this further; not part
+// of normal operation.
+if ProcessInfo.processInfo.environment["H3_CCV_WARMUP_DIAG"] != nil {
+    var err = [CChar](repeating: 0, count: 4096)
+    let ok = h3_debug_ccv_warmup("h3_shaders.metal", &err, err.count)
+    print("H3_CCV_WARMUP_DIAG result=\(ok) err=\(String(cString: err))")
+    exit(ok != 0 ? 0 : 1)
+}
+
 print("Model dir: \(modelDir)")
 
 guard let ctx = h3_load_dir(modelDir) else {

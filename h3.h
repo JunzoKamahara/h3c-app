@@ -246,6 +246,15 @@ int h3_build_attention_cache(const char *transformer_dir,
                              void *callback_opaque,
                              char *error, size_t error_size);
 
+/* TEMPORARY diagnostic, not for production use: creates a standalone
+ * h3_gpu (no model needed) and makes one throwaway call through the
+ * experimental H3_ATTENTION_BACKEND=ccv_dense path, to isolate whether a
+ * failure seen from a real generation reproduces purely from being called
+ * inside a Swift process (vs a plain C/ObjC++ test binary). Returns 1 on
+ * success, 0 on failure (message left in `error`). */
+int h3_debug_ccv_warmup(const char *shader_source_path, char *error,
+                        size_t error_size);
+
 #ifdef __cplusplus
 }
 #endif

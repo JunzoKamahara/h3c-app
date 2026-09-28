@@ -1,5 +1,6 @@
 #include "h3_internal.h"
 #include "h3_audio_vae.h"
+#include "h3_gpu.h"
 #include "h3_host.h"
 #include "h3_av_reader.h"
 #include "h3_av_writer.h"
@@ -1909,4 +1910,37 @@ cleanup:
 
 void h3_result_free(h3_result *result) {
     free(result);
+}
+
+int h3_debug_ccv_warmup(const char *shader_source_path, char *error,
+                        size_t error_size) {
+    h3_gpu *gpu = h3_gpu_create(shader_source_path, error, error_size);
+    if (!gpu) return 0;
+    uint32_t rows = 3211, heads = 56, head_dim = 128;
+    size_t count = (size_t)rows * heads * head_dim;
+    h3_gpu_tensor *q = h3_gpu_tensor_new_bf16(gpu, count);
+    h3_gpu_tensor *k = h3_gpu_tensor_new_bf16(gpu, count);
+    h3_gpu_tensor *v = h3_gpu_tensor_new_bf16(gpu, count);
+    h3_gpu_tensor *o = h3_gpu_tensor_new_bf16(gpu, count);
+    uint16_t *zeros = calloc(count, sizeof(uint16_t));
+    if (!q || !k || !v || !o || !zeros) {
+        free(zeros);
+        h3_gpu_free(gpu);
+        snprintf(error, error_size, "h3_debug_ccv_warmup: allocation failed");
+        return 0;
+    }
+    h3_gpu_tensor_write_bf16(q, zeros, count);
+    h3_gpu_tensor_write_bf16(k, zeros, count);
+    h3_gpu_tensor_write_bf16(v, zeros, count);
+    free(zeros);
+    if (!h3_gpu_begin(gpu)) {
+        snprintf(error, error_size, "h3_debug_ccv_warmup: h3_gpu_begin failed");
+        h3_gpu_free(gpu);
+        return 0;
+    }
+    int ok = h3_gpu_ccv_dense_attention_bf16(
+        gpu, o, q, k, v, rows, heads, head_dim, 1.0f / sqrtf((float)head_dim));
+    if (!ok) snprintf(error, error_size, "h3_debug_ccv_warmup: ccv call failed");
+    h3_gpu_free(gpu);
+    return ok;
 }

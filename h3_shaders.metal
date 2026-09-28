@@ -199,6 +199,36 @@ kernel void h3_cast_bf16_to_f32(device const ushort *input [[buffer(0)]],
     if (gid < count) output[gid] = h3_bf16_to_f32(input[gid]);
 }
 
+/* Q/K/V for an experimental, opt-in attention backend (h3_gpu_ccv_attention)
+ * that expects FP16 in [rows, heads, head_dim] regardless of this engine's
+ * own [heads, rows, head_dim] producer/consumer optimization for the
+ * default SDPA path - head_major selects which layout `input` is really
+ * in, `output` is always written [rows, heads, head_dim]. */
+struct cast_qkv_layout_args { uint rows; uint heads; uint head_dim; uint head_major; };
+
+kernel void h3_cast_bf16_to_f16_qkv(device const ushort *input [[buffer(0)]],
+                                    device half *output [[buffer(1)]],
+                                    constant cast_qkv_layout_args &args [[buffer(2)]],
+                                    uint gid [[thread_position_in_grid]]) {
+    uint total = args.rows * args.heads * args.head_dim;
+    if (gid >= total) return;
+    uint d = gid % args.head_dim;
+    uint row_head = gid / args.head_dim;
+    uint head = row_head % args.heads;
+    uint row = row_head / args.heads;
+    uint src_index = args.head_major
+        ? (head * args.rows + row) * args.head_dim + d
+        : gid;
+    output[gid] = half(h3_bf16_to_f32(input[src_index]));
+}
+
+kernel void h3_cast_f16_to_bf16_flat(device const half *input [[buffer(0)]],
+                                     device ushort *output [[buffer(1)]],
+                                     constant uint &count [[buffer(2)]],
+                                     uint gid [[thread_position_in_grid]]) {
+    if (gid < count) output[gid] = h3_f32_to_bf16(float(input[gid]));
+}
+
 struct cast_bias_args { uint rows; uint width; };
 
 kernel void h3_cast_bf16_to_f32_bias(device const ushort *input [[buffer(0)]],

@@ -18,16 +18,46 @@ LIB_C += h3_video_vae.c h3_video_encoder.c h3_audio_vae.c \
 LIB_M := h3_metal.m h3_gpu.m h3_tokenizer.m h3_av_writer.m h3_av_reader.m
 LIB_OBJ := $(LIB_C:.c=.o) $(LIB_M:.m=.o)
 
+# Optional, opt-in: set CCV_DIR to a built liuliu/ccv checkout (see
+# tools/ccv_eval/README.md) to make the experimental H3_ATTENTION_BACKEND=
+# ccv_dense path (h3_gpu_ccv_attention.mm) available. Every build is
+# completely unaffected when CCV_DIR is unset (the default).
+#
+# h3_gpu_ccv_attention.o is deliberately kept OUT of libh3.a: a static
+# archive only links in a member that resolves some other object's
+# undefined symbol, and nothing references this file's symbols directly
+# (it self-registers via a constructor) - archived, it would just be
+# silently dropped by any consumer linking libh3.a as `-lh3`. Instead it is
+# linked as a loose object file wherever the backend should be available
+# (h3_generate_cli below; native/H3Spike/Package.swift does the same for
+# Swift, reading this same CCV_DIR variable at `swift build` time), which
+# always gets included, and libh3.a still picks it up as an order-only
+# prerequisite so `make libh3.a CCV_DIR=...` leaves it built and ready for
+# Package.swift to reference without a separate build step.
+ifneq ($(strip $(CCV_DIR)),)
+CCV_EXTRA_OBJ := h3_gpu_ccv_attention.o
+LDLIBS += $(CCV_DIR)/lib/libccv.a -lblas -lc++ \
+	-framework CoreML -framework IOSurface -framework QuartzCore
+endif
+
 .PHONY: all test parity real-parity clean
 
 all: libh3.a
 
-libh3.a: $(LIB_OBJ)
-	$(AR) rcs $@ $^
+libh3.a: $(LIB_OBJ) $(CCV_EXTRA_OBJ)
+	$(AR) rcs $@ $(LIB_OBJ)
 
 # One-time tool: quantizes QKV/attention-output to int8 and writes the cache
 # that H3_ATTENTION_CACHE points the runtime at. See h3_build_attention_cache.c.
 build_attention_cache: h3_build_attention_cache.o $(LIB_OBJ)
+	$(CC) -o $@ $^ $(LDLIBS)
+
+# Plain-C generation driver (see tools/ccv_eval/h3_generate_cli.c) - a
+# Swift-free equivalent of native/H3Spike, built to validate
+# H3_ATTENTION_BACKEND=ccv_dense end-to-end without hitting a still-
+# unexplained Swift-runtime/ccv interaction documented there and in
+# SPEEDUP_ROADMAP.md item 5.
+h3_generate_cli: tools/ccv_eval/h3_generate_cli.o $(LIB_OBJ) $(CCV_EXTRA_OBJ)
 	$(CC) -o $@ $^ $(LDLIBS)
 
 h3_tests: tests/test_h3.o $(LIB_OBJ)
@@ -186,6 +216,11 @@ real-parity: h3_real_prompt_test h3_real_dit_block_test
 
 %.o: %.m
 	$(CC) $(OBJCFLAGS) -I. -c $< -o $@
+
+h3_gpu_ccv_attention.o: h3_gpu_ccv_attention.mm
+	$(CC) -std=c++17 -O3 -fobjc-arc -fblocks -I. -I$(CCV_DIR) -I$(CCV_DIR)/lib \
+		-D HAVE_CBLAS -D HAVE_PTHREAD -D HAVE_ACCELERATE_FRAMEWORK \
+		-D USE_DISPATCH -D HAVE_MPS -c $< -o $@
 
 tests/%.o: tests/%.c
 	$(CC) $(CFLAGS) -I. -c $< -o $@
