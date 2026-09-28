@@ -544,17 +544,105 @@ exists and gives a clear, honest answer — **dense int8 alone is a safe
 pushes that to 1.7–2.8x but at a quality cost that is not yet validated
 end-to-end and must not be treated as free.**
 
+### Correction: the "12.7% error" above was measured against the wrong reference — real ground-truth comparison now done, numbers revised
+
+**The `sparse_relative_l2`/`exact_relative_l2` figures quoted just above are
+ccv's own internal self-consistency check (its Sol-exact-mode output vs.
+its own plain dense-kernel output, both computed by ccv from the same
+input) — not a comparison against this app's actual real SDPA output.**
+That distinction turned out to matter a lot once a direct comparison was
+attempted, because it surfaced a real bug in how the input was captured.
+
+Building the direct comparison (a new small tool,
+`h3_real_attention_compare.cpp`, calling `ccv_nnc_mfa_encode_attention`
+and `ccv_nnc_mfa_encode_sol_attention` directly on this app's captured
+real Q/K/V, then diffing the result against this app's own captured real
+SDPA output) surfaced two real bugs, both now fixed:
+
+1. **The QKV capture itself was wrong.** This app's default (M5, int8
+   QKV projection) path leaves `query`/`key`/`value` in `[heads, rows,
+   head_dim]` layout for the immediately-following SDPA call to consume
+   as a producer/consumer optimization (`h3_gpu.m`'s
+   `headMajorSDPAInputs` flag) — but `debug_dump_attention_qkv()` assumed
+   plain `[rows, heads, head_dim]` and wrote the head-major buffer out
+   unpermuted. Every earlier "real capture" result in this document (the
+   1.85x/0.1274 figures above) was computed on this silently-transposed,
+   effectively-scrambled data. Fixed by adding a small accessor,
+   `h3_gpu_head_major_sdpa_inputs()`, and having the dump function
+   transpose to row-major before writing whenever it reports true. The
+   first symptom, run through the (also newly fixed) real-vs-real
+   comparison tool below, was unmistakable: `relative_l2=1.37` against
+   this app's real output — worse than uncorrelated noise, an immediate
+   sign of a layout bug rather than a genuine quality problem.
+2. **The attention-cache used for capture had a stale weight fingerprint**
+   (`h3: warning: attention cache ... model fingerprint does not match
+   the loaded checkpoint`) - H3Spike auto-points at
+   `~/models/cache/dit_int8_v2.cache` by default, and it was quietly out
+   of sync with the currently-loaded checkpoint. The warning doesn't
+   block generation (it's non-fatal), so this could have kept silently
+   giving wrong int8-quantized weights without a hard failure. Fixed by
+   rebuilding the cache (`./build_attention_cache
+   ~/models/MiniMax-H3/FL2VA/transformer ~/models/cache/dit_int8_v2.cache`)
+   before recapturing.
+
+With both fixed, and also dumping this app's own real SDPA output
+alongside the Q/K/V (a new sibling hook, `debug_dump_attention_output()`,
+gated behind the same env vars, only meaningful with
+`H3_DISABLE_HEAD_MAJOR_ATTENTION_OUTPUT=1` since the attention-output
+tensor has its own, independent head-major toggle), three real
+block/step captures from an actual 512²/39fr/4-step generation (seed 7)
+were compared directly - ccv's kernel output vs. this app's own real
+production SDPA output, not against any reference ccv computes
+internally:
+
+| block, step | ccv dense int8 vs. real SDPA | ccv Sol sparse vs. real SDPA |
+|---|---|---|
+| 0, step 0 | relative L2 1.56%, PSNR 62.0 dB | relative L2 9.97%, PSNR 45.8 dB |
+| 25, step 2 | relative L2 1.77%, PSNR 57.7 dB | relative L2 10.18%, PSNR 41.5 dB |
+| 49, step 3 | relative L2 4.57%, PSNR 52.9 dB | relative L2 6.14%, PSNR 50.3 dB |
+
+**This is a much stronger and more trustworthy result than the earlier
+one, in both directions.** Dense int8 is confirmed, against real
+ground truth (not a self-consistency check), to closely reproduce this
+app's actual attention output across early/mid/late blocks - 52-62 dB
+PSNR is generally in the range other quality-affecting approximations in
+this codebase are judged acceptable at (compare the VAE int8 work's 44.9
+dB worst-frame PSNR, judged visually identical). Sol sparse is real but
+consistently worse - 42-50 dB PSNR, a genuine, non-trivial quality cost
+that is smaller than the earlier (buggy-data) 12.7%/41.5 dB estimate
+suggested at one point and larger at another, but now backed by a real
+reference instead of an internal check. Whether 42-50 dB per-block PSNR
+survives 50 blocks + VAE decode without becoming visible is still the
+open question - this correction sharpens the number that question is
+about, it doesn't answer it.
+
+**Lesson for any future real-data validation in this codebase**: this
+engine has several independent, opt-in "head-major" layout optimizations
+(SDPA inputs via QKV projection, SDPA's own output via
+`h3_gpu_sdpa_bf16_head_major_output`) that silently change which axis is
+contiguous, purely as GPU producer/consumer optimizations invisible to
+the math - a raw tensor dump is only meaningful if it explicitly checks
+and corrects for these, and a wildly-uncorrelated (`relative_l2 > 1`)
+comparison against a real reference is a strong, checkable signal that a
+layout assumption is wrong before concluding anything about quality.
+
 ### What's left
 
 - **End-to-end quality validation is now the actual blocker, not the Metal
-  compile error (fixed above).** Need a full generation run comparing
-  production SDPA vs. dense-int8-only vs. dense-int8+Sol-sparse outputs
-  (PSNR + visual, not just one block's relative-L2), to see whether the
-  12.7% per-block sparse error is invisible after 50 blocks + VAE decode
-  or actually degrades output.
-- If sparse quality doesn't hold up end-to-end, the plain dense int8 path
-  (1.2–1.6x, ~6e-6 error, no approximation at all) is still a clean,
-  low-risk win on its own and doesn't depend on Sol's routing logic.
+  compile error (fixed above) or capture correctness (fixed above).**
+  Three real block/step spot-checks now confirm both kernels' per-block
+  behavior against real ground truth (dense: 52-62 dB PSNR; sparse: 42-50
+  dB PSNR). What's still missing is a full generation run actually
+  substituting one of these kernels for every block's SDPA call (not an
+  offline per-block comparison against the untouched trajectory - once
+  block N's output changes, block N+1 sees a different input, so error
+  can compound or cancel in ways a per-block check can't show) and
+  comparing the final decoded video against the real baseline (PSNR +
+  visual).
+- Dense int8's per-block numbers are strong enough that it's likely a safe
+  default-quality win; if sparse's end-to-end quality doesn't hold up,
+  dense int8 alone is still a clean win on its own, independent of Sol's
+  routing logic.
 - Zeroth-order approximation for skipped blocks (v2–v6 hard-exclude them,
   like padding; `ccv`'s design keeps a pooled-block summary contribution
   instead) — and re-verify the actual arXiv 2607.24027 algorithm details

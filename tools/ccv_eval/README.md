@@ -1,0 +1,122 @@
+# ccv attention kernel evaluation tools
+
+Reproducible tooling for comparing [liuliu/ccv](https://github.com/liuliu/ccv)'s
+Metal (MFA) int8 attention kernels against this engine's own real production
+attention output. Built while investigating item 5 (Sol-Attn-style block-sparse
+attention) in [`SPEEDUP_ROADMAP.md`](../../SPEEDUP_ROADMAP.md) — read that file
+for the full narrative, the numbers these tools produced, and an important
+correction (a real capture-layout bug that invalidated an earlier round of
+results before these tools existed).
+
+Not built by this repo's own `Makefile` — ccv is a separate, large (MIT
+licensed) project, not vendored here. These are standalone tools you build
+against your own `ccv` checkout.
+
+## 1. Get a patched, MPS-enabled ccv checkout
+
+```bash
+git clone https://github.com/liuliu/ccv.git
+cd ccv
+git checkout unstable
+# Tools here were built and validated against this exact commit:
+git checkout 6a611be1aab6470ae279115ae4eaf7e01bc87135
+git apply /path/to/h3c-app/tools/ccv_eval/ccv-sol-metal27-addrspace.patch
+```
+
+The patch fixes a real Metal shader compile failure
+(`no matching member function for call to 'get_destination_cooperative_tensor'`)
+seen on this machine's SDK (27.0) — a Metal address-space qualifier surviving
+into a `decltype(...)` used as a template argument in
+`NAInt8SolAttentionKernel.cpp`'s runtime-generated shader source, matching a
+reported [MLX issue](https://github.com/ml-explore/mlx/issues/4533) with the
+same symptom. Fixed with `metal::remove_addrspace_t<...>` at 7 call sites —
+no change to math, precision, or data layout. This patch is *only* needed for
+the Sol (sparse) kernel; the plain dense `NAInt8AttentionKernel` this
+repo currently uses in production evaluation doesn't hit it.
+
+```bash
+brew install wget   # the default `make libccv.a` fetches an unrelated sample model
+cd lib
+./configure --enable-mps   # opt-in flag - NOT auto-detected, easy to miss
+cd ..
+make libccv.a
+```
+
+## 2. Capture real Q/K/V and the real production output from this app
+
+Build `H3Spike` (`native/H3Spike`) against this repo's `libh3.a` as usual, then:
+
+```bash
+# Rebuild the attention cache first - a stale cache fingerprint only warns
+# by default and can silently feed wrong int8-quantized weights into the
+# very generation you're trying to capture from. Use the strict flag so a
+# validation run refuses to proceed on a mismatch instead of warning:
+./build_attention_cache ~/models/MiniMax-H3/FL2VA/transformer \
+    ~/models/cache/dit_int8_v2.cache
+export H3_ATTENTION_CACHE_STRICT=1
+
+H3SPIKE_SIZE=512 H3SPIKE_FRAMES=39 H3SPIKE_STEPS=4 H3SPIKE_SEED=7 \
+H3_DUMP_ATTENTION_QKV=/path/to/capture/block25 \
+H3_DUMP_ATTENTION_BLOCK=25 H3_DUMP_ATTENTION_STEP=2 \
+H3_DISABLE_HEAD_MAJOR_ATTENTION_OUTPUT=1 \
+./native/H3Spike/.build/release/H3Spike ~/models/MiniMax-H3 /tmp/out.mp4 "prompt text"
+```
+
+This writes `block25.{q,k,v,out}.bin` (contiguous FP16, `[1, rows, HEADS,
+HEAD_DIM]`, already transposed to row-major regardless of which internal
+layout the engine used — see `block25.meta.txt`, which records the true
+source layout and the written layout *separately* for every tensor) plus
+`block25.meta.txt` itself.
+
+`H3_DISABLE_HEAD_MAJOR_ATTENTION_OUTPUT=1` is required to get a *comparable*
+row-major output capture — production runs normally use the head-major output
+layout for the following projection's efficiency, which this capture
+intentionally does not exercise. Don't confuse this forced-row-major capture
+path with the production-optimized path when interpreting timing.
+
+## 3. Run ccv's kernels on the captured Q/K/V, diff against the real output
+
+```bash
+cd ccv/bin/mfa
+clang h3_real_attention_compare.cpp -o h3_real_attention_compare.o -c \
+  -std=c++17 -O3 -I"../.." -I"../../lib" -fblocks -D HAVE_CBLAS -D HAVE_PTHREAD \
+  -D HAVE_ACCELERATE_FRAMEWORK -D USE_DISPATCH -D HAVE_MPS -I/usr/local/include
+clang -o h3_real_attention_compare h3_real_attention_compare.o ../../lib/libccv.a \
+  -L/usr/local/lib -lm -lblas -lpthread -framework Accelerate \
+  -framework MetalPerformanceShaders -framework MetalPerformanceShadersGraph \
+  -framework Foundation -framework CoreVideo -framework CoreML -framework IOSurface \
+  -framework Metal -lc++ -framework QuartzCore
+
+./h3_real_attention_compare <T> 56 /path/to/capture/block25 470 0.08838834765
+# writes block25.{ccv_dense,ccv_sparse}.bin - <T> must match rows in block25.meta.txt
+
+clang -O2 -o compare_fp16 /path/to/h3c-app/tools/ccv_eval/compare_fp16.c -lm
+./compare_fp16 block25.ccv_dense.bin  block25.out.bin   # dense int8 vs. real production output
+./compare_fp16 block25.ccv_sparse.bin block25.out.bin   # Sol sparse vs. real production output
+```
+
+`compare_fp16` reports relative L2, max abs diff, RMSE, and PSNR between two
+same-length contiguous-FP16 files.
+
+## What this caught, and why it matters
+
+An earlier round of "real data" validation compared ccv's kernels against
+**ccv's own internal reference** (its Sol-exact-mode output vs. its own dense
+kernel's output), not against this app's real production SDPA output. That
+self-check reported a plausible-looking `sparse_relative_l2 = 0.1274` — but it
+was measured on Q/K/V that had been captured with the wrong axis layout
+(this app's default int8 QKV path produces `[heads, rows, head_dim]`, not
+`[rows, heads, head_dim]`), silently scrambling the data before it ever
+reached ccv's kernel.
+
+Building the direct real-vs-real comparison in `h3_real_attention_compare.cpp`
+surfaced this immediately: the first result was `relative_l2 = 1.37` — worse
+than uncorrelated noise, an unmistakable layout-bug signature. **A
+`relative_l2` above roughly 1.0 against a real reference means check your
+layout assumptions before concluding anything about kernel quality.** After
+fixing the capture (see `h3_gpu_head_major_sdpa_inputs()` in `h3_gpu.m`/`.h`)
+and rebuilding the stale attention cache, the same comparison gave sane,
+trustworthy numbers — see `SPEEDUP_ROADMAP.md` for the current results table
+and what they do and don't establish (per-block PSNR is not directly
+comparable to final decoded-frame PSNR; end-to-end generation validation is
+still the open item).
