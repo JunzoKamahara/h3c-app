@@ -1143,6 +1143,61 @@ at 20 steps (where the speed gain is and where the P-rounding hypothesis
 predicts more loss — a single-block replay with Q/K/V captured at 15s
 length would test that cheaply).
 
+**Stage ⑥ (production-length at 20 steps: 768²/362fr ≈ 15s, seed 7, A
+vs. C).** Same `h3_generate_cli` params as stage ④ except
+`H3SPIKE_STEPS=20`; pre-encode RGB dumped via `H3SPIKE_DUMP`.
+
+| | A (production SDPA) | C (`ccv_dense`) |
+|---|---|---|
+| total (internal monotonic timer) | 13727s (3.81 h)* | 10703s (2.97 h) |
+| median time per denoise step | 671.2s | 520.2s |
+| decode + encode tail | 273.9s | 274.0s |
+| peak memory footprint | 21.09 GiB | 25.70 GiB (+4.6 GiB) |
+| peak RSS | 11.09 GiB | 10.40 GiB |
+| dispatch count | — | 1000/1000 (50 blocks × 20 steps) |
+| RGB PSNR vs. A (pre-encode, 362 frames) | — | 14.0 dB |
+| mean pixel value | 79.8 | 68.8 |
+
+\* A was paused (SIGSTOP) for ~56.6 min at the user's request between
+steps 2 and 3. The raw total was 17120.9s; the step 2→3 interval was
+4065.0s against a 671.2s median, so 3393.8s was subtracted. `/usr/bin/time
+-l` reported an implausible 1524s wall clock for this stopped-and-resumed
+process and is ignored; the engine's own monotonic timestamps are used.
+
+**Speed: 1.28x overall, 50.4 min saved (22.0%)**; per denoise step
+1.29x. The decode/encode tail is identical, so essentially all of the
+gain is in the DiT, as expected. At 20 steps the DiT is a bigger share of
+the total than at 4 steps, so the whole-run gain is larger than stage
+④'s ~19%.
+
+**Memory**: same +4.6 GiB footprint cost as stage ④ (it scales with
+sequence length, not step count).
+
+**Quality (full-size pre-encode frames at 0/120/240/361 plus zoomed face
+crops)**: both outputs are sharp and detailed — fur, whiskers, and in C
+clear blue eyes. The two are **different videos**: A is a tabby cat on a
+floor with a light-blue yarn ball against a bright window; C is a
+colorpoint (Siamese/Ragdoll-like) cat lying on a patterned bedspread with
+a dark-blue yarn ball, under lower-key lighting. The lower mean pixel
+value in C (68.8 vs. 79.8) matches that dimmer scene, so it is not by
+itself evidence of degradation, and the 14 dB PSNR reflects different
+content, not a quality score. **Neither shows the foreground net or the
+detail loss seen in the 4-step stage-④ runs**, which supports the reading
+that those came from the under-denoised 4-step setting. One thing to
+watch: in C around frame 120 the paws near the yarn (a gray foreleg with
+a white paw, a white paw with pink pads, and a black-and-white paw at the
+edge) are hard to read and may be anatomically odd; that can't be judged
+from stills and needs viewing in motion. Only one seed so far.
+
+**Net (20 steps, 15s, seed 7)**: 1.28x faster (22% time reduction) at
++4.6 GiB peak footprint, with a different but comparably sharp video and
+no visible systematic degradation in this sample. The block-level int8
+error (1.6% relative L2) is real, but at this setting it shows up as a
+different sample rather than a visibly worse one. Before any adoption:
+more seeds and prompts (people/faces, fast motion), the paw region
+checked in motion, and memory headroom on 24 GB machines
+(compression/swap), since the footprint exceeds 24 GiB.
+
 Scratch sources, **not committed** (existed only under a session scratchpad
 directory — rewrite from this description if resuming):
 
