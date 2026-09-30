@@ -682,7 +682,24 @@ regression, caught by testing an actual executable link (`build_
 attention_cache`) after the change, not just `ar`-based `libh3.a`
 creation, which doesn't check for unresolved symbols at all.
 
-**An unexplained shader-compile failure that reproduces only from
+**Resolved (Stage ⑨, 2026-09-30).** In this environment, the SDK version
+recorded in the executable decided whether compiling without explicit
+options succeeded; stating the required Metal Shading Language 4.0 in the
+compile options fixed it for the normal Swift build. Details: ccv compiles its generated shaders with `nil` options, so the
+runtime picks the default language version from the SDK version recorded
+in the executable's `LC_BUILD_VERSION`. SwiftPM links H3Spike with
+`minos 13.0 / sdk 13.0`; the `clang`-built tools record `sdk 27.0`. The
+shader needs Metal 4.0 (`MetalPerformancePrimitives`), hence `use of
+undeclared identifier 'mpp'` only from Swift. Confirmed both ways: a plain
+C binary linked with `-Wl,-platform_version,macos,13.0,13.0` fails the
+same way, and H3Spike linked with SDK 27.0 recorded succeeds. Fixed in
+ccv by `tools/ccv_eval/ccv-na-attention-msl4-options.patch` (explicit
+Metal 4.0 in `NAInt8AttentionKernel`/`NAAttentionKernel`, the same thing
+`h3_gpu.m` already does for h3's shaders); with it, H3Spike as normally
+built (sdk 13.0) runs the direct path. The earlier notes below are kept as
+history — the "not Swift/XPC as such" caution turned out to be right.
+
+**(History) An unexplained shader-compile failure that reproduces only from
 H3Spike — root cause not identified, do not over-attribute it.** The
 exact same `ccv_nnc_mfa_encode_attention` call, with the exact same shape
 and params validated above, fails deterministically with a garbled-
@@ -1527,6 +1544,57 @@ scratch re-allocation, cache reuse; (3) one person-motion prompt and one
 fast-object prompt, short, 20 steps, same seed, A vs direct — prompt
 adherence, shapes, temporal stability. Default-backend change only after
 real use.
+
+**Swift app checks** (2026-09-30):
+
+- *Swift-only shader failure — root cause found* (see the Resolved note
+  in item 5 above): Metal's default language version follows the SDK
+  recorded in the executable (`sdk 13.0` for SwiftPM builds), which
+  predates `MetalPerformancePrimitives`. Fixed by
+  `tools/ccv_eval/ccv-na-attention-msl4-options.patch` (explicit Metal
+  4.0 in ccv's two attention kernels). Not Swift- or XPC-specific.
+- *Minimal run*: `H3_CCV_WARMUP_DIAG=1` passes from H3Spike as normally
+  built. *Short clip from Swift* (direct, seed 7, 20 steps): decoded video
+  md5-identical to the CLI's direct output.
+- *Back to back in one process* (`H3SPIKE_REPEAT=2`, new): uncached (the
+  app's default — `cache_enabled` is off unless set) and with
+  `H3SPIKE_CACHE=1` (prepared DiT reused via `h3_dit_reset_run`): all four
+  outputs md5-identical to the single CLI run; the post-DiT release and
+  the next run's scratch re-allocation both happen (0.125 GiB each time).
+  Peak footprint 13.4 GiB uncached, 18.7 GiB cached (conditioning and VAE
+  decoder retained).
+- *Unrelated to ccv, found on the way*: without a per-run
+  `autoreleasepool`, H3Spike's top-level loop kept run 1's Metal objects
+  alive — device allocation 14.4 → 26.2 GiB at run 2 (footprint unchanged,
+  consistent with the mmap-backed no-copy weight buffers). With
+  `autoreleasepool` per run it stays at 14.4 GiB. H3Engine calls
+  `h3_generate` from `DispatchQueue.global().async`; system global queues
+  default to `AutoreleaseFrequency.never` and set up no per-item pool, so
+  nothing guarantees the app releases these per generation either (an
+  earlier note here assumed it would — withdrawn). Fix: an
+  `autoreleasepool` for one generation inside the background closure,
+  covering `h3_generate` and the result handling/cleanup, exited on
+  success, error and cancel alike; the pool is not a substitute for the
+  existing GPU-completion waits. Whether the app actually grew by the same
+  amount is to be checked after applying it.
+
+**Person and fast-object prompts** (short, 20 steps, seed 7, A vs
+direct; frame strips 0/8/16/24/31/38, native-size upper-body crops, and
+the video):
+
+- *Person* ("A woman dancing in a sunlit studio, spinning around and
+  raising both arms above her head."): both give the same studio and
+  composition; the dancer turns back → front → back with both arms raised
+  and hair flying in both. Differences are wardrobe colour (grey vs beige
+  trousers) and pose details. Faces are motion-blurred mid-turn in both;
+  hands are small with little finger detail in both. Nothing seen that
+  is worse in direct. Mean |ΔF| 6.12 (A) / 5.11 (direct).
+- *Fast object* ("A red rubber ball bouncing quickly across a wooden floor
+  and hitting a wall."): both show the ball travelling with a following
+  camera to a wall corner; neither shows a clear bounce, so "bouncing"
+  adherence is weak in both alike. Mean |ΔF| 6.87 / 8.23.
+
+One seed per prompt; no difference that would block an opt-in fast mode.
 
 Earlier plan (kept for the record): (1) done — Makefile relinks `h3_generate_cli` when `libccv.a`
 changes; (2) done — replay above; (3) done for seed 7 — direct at 20
