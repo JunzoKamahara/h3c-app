@@ -145,3 +145,19 @@ trustworthy numbers — see `SPEEDUP_ROADMAP.md` for the current results table
 and what they do and don't establish (per-block PSNR is not directly
 comparable to final decoded-frame PSNR; end-to-end generation validation is
 still the open item).
+
+## Fast mode in the engine and app
+
+`h3_params.fast_attention = 1` (the app's "高速モード（試験的）" checkbox,
+`"fast_attention": true` in its HTTP API, `H3SPIKE_FAST_ATTENTION=1` in
+H3Spike / `h3_generate_cli`) selects the direct path for one generation;
+`h3_fast_attention_available()` says whether it can run.
+
+**Diagnostic override:** when `fast_attention` is 0, the environment
+variables used throughout this directory still select a ccv path —
+`H3_ATTENTION_BACKEND=ccv_dense` (FP16 bridge, or direct with
+`H3_CCV_DIRECT=1`) or `ccv_fp16`. So ccv can run even with the checkbox
+off if one of these is set in the app's environment. `h3_result`'s
+`ccv_attention_calls` / `ccv_attention_direct_calls` report what actually
+ran; the app keys its history and timing calibration on those, not on the
+checkbox.

@@ -350,9 +350,14 @@ struct CreationFormView: View {
                 Toggle("高速モード（試験的）", isOn: $viewModel.fastAttention)
                     .toggleStyle(.checkbox)
                     .padding(.top, 6)
-                Text("M5のニューラルアクセラレータでAttentionをint8計算します。長い動画ほど効果が大きく（15秒・20ステップで約1.4倍速、メモリ約1.3GB増）、数秒の動画ではほとんど速くなりません。同じシードでも標準とは映像が変わります。上の速度設定との組み合わせは未検証です。")
+                Text("M5のニューラルアクセラレータでAttentionをint8計算します。長い動画ほど効果が大きく（15秒・20ステップで約1.4倍速、メモリ約1.3GB増）、短い動画では効果が小さく、条件によっては遅くなることがあります。同じシードでも標準とは映像が変わります。上の速度設定との組み合わせは未検証です。")
                     .font(.caption)
                     .foregroundStyle(palette.textSecondary)
+                if viewModel.isGenerating {
+                    Text("生成中の変更は次の生成から適用されます。")
+                        .font(.caption)
+                        .foregroundStyle(palette.textSecondary)
+                }
             }
         }
     }

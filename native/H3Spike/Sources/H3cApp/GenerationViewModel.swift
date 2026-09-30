@@ -582,8 +582,11 @@ final class GenerationViewModel: ObservableObject {
                     case .finished(let result):
                         self.phase = "できあがりました"
                         self.estimator?.finishedCalibration(now: Date())
+                            // Keyed by the path that actually ran, not the
+                            // checkbox: a diagnostic H3_ATTENTION_BACKEND can
+                            // route through ccv even with it off.
                             .save(for: capturedComputeMode, speed: capturedSpeedMode,
-                                  fastAttention: capturedFastAttention)
+                                  fastAttention: result.ccvAttentionCalls > 0)
                         let url = URL(fileURLWithPath: result.outputPath)
                         self.resultURL = url
                         self.resultAspectRatio = CGFloat(dimensions.width) / CGFloat(dimensions.height)
@@ -602,7 +605,8 @@ final class GenerationViewModel: ObservableObject {
                             computeMode: capturedComputeMode,
                             speedMode: capturedSpeedMode,
                             fastAttention: capturedFastAttention,
-                            fastAttentionUsed: result.ccvAttentionDirectCalls > 0,
+                            ccvAttentionCalls: result.ccvAttentionCalls,
+                            ccvAttentionDirectCalls: result.ccvAttentionDirectCalls,
                             seed: result.seed,
                             seedWasRandom: seedWasRandom,
                             loras: capturedLoRAs,

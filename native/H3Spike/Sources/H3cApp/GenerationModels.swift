@@ -190,9 +190,10 @@ struct ResolvedResult {
     let denoiseReuse: Int
     let computeMode: ComputeMode
     let speedMode: SpeedMode
-    // Requested, and whether the engine reports the fast path actually ran.
+    // Requested (the checkbox), and what the engine reports actually ran.
     let fastAttention: Bool
-    let fastAttentionUsed: Bool
+    let ccvAttentionCalls: Int
+    let ccvAttentionDirectCalls: Int
     let seed: UInt64
     let seedWasRandom: Bool
     let loras: [ResolvedLoRA]
@@ -200,6 +201,14 @@ struct ResolvedResult {
     let completedAt: Date
 
     var seedDecimalString: String { String(seed) }
+
+    /// From the path that actually ran; a diagnostic environment override
+    /// can route through ccv even with the checkbox off.
+    var fastAttentionSummary: String {
+        if ccvAttentionCalls == 0 { return fastAttention ? "指定したが未使用" : "使用しない" }
+        let path = ccvAttentionDirectCalls == ccvAttentionCalls ? "使用" : "一部使用（ccv経路）"
+        return fastAttention ? path : path + "（診断用の環境変数による）"
+    }
 
     var settingsSummaryText: String {
         var lines = [
@@ -211,7 +220,7 @@ struct ResolvedResult {
             "ノイズ除去の再利用（reuse）: \(denoiseReuse)",
             "計算方式: \(computeMode.label)",
             "速度: \(speedMode.label)",
-            "高速モード（試験的）: " + (fastAttention ? (fastAttentionUsed ? "使用" : "指定したが未使用") : "使用しない"),
+            "高速モード（試験的）: " + fastAttentionSummary,
             "シード: \(seedDecimalString)" + (seedWasRandom ? "（毎回変える設定で決定）" : "（固定）"),
         ]
         for lora in loras {
