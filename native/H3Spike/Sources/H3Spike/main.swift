@@ -125,6 +125,8 @@ params.ssd_streaming = useSSD ? 1 : 0
 params.denoise_reuse = envInt("H3SPIKE_REUSE", 1)
 params.core_reuse = envInt("H3SPIKE_CORE_REUSE", 1)
 params.token_reduction = envInt("H3SPIKE_TOKEN_REDUCTION", 0)
+params.fast_attention = envInt("H3SPIKE_FAST_ATTENTION", 0)
+print("Fast attention available: \(h3_fast_attention_available() != 0)")
 params.use_int8_row_fc2 = envInt("H3SPIKE_INT8_ROW_FC2", 0)
 params.reference_image_size = H3_REFERENCE_IMAGE_MATCH
 params.on_progress = progressCallback
@@ -184,6 +186,7 @@ guard let result else {
 let elapsed = Date().timeIntervalSince(start)
 print(String(format: "Done in %.1fs", elapsed))
 print("Result: \(result.pointee.frames) frames @ \(result.pointee.fps)fps, seed=\(result.pointee.seed)")
+print("Attention: \(result.pointee.ccv_attention_calls) ccv calls (\(result.pointee.ccv_attention_direct_calls) direct)")
 print("Frames delivered via on_frame: \(context.framesReceived), previews: \(context.previewsReceived)")
 print("Output written to: \(runOutputPath)")
 h3_result_free(result)

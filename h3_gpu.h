@@ -693,7 +693,8 @@ void *h3_gpu_raw_device(h3_gpu *gpu);
 void *h3_gpu_raw_command_buffer(h3_gpu *gpu);
 void *h3_gpu_raw_buffer(const h3_gpu_tensor *tensor);
 void h3_gpu_set_head_major_sdpa_inputs(h3_gpu *gpu, int value);
-void h3_gpu_note_ccv_attention_dispatch(h3_gpu *gpu);
+/* `direct`: the call used the BF16 head-major direct path. */
+void h3_gpu_note_ccv_attention_dispatch(h3_gpu *gpu, int direct);
 void h3_gpu_report_error(h3_gpu *gpu, const char *message);
 
 /* Cast + (for Q/K/V only) layout-fix helpers, dispatched into the current
@@ -739,11 +740,19 @@ int h3_gpu_ccv_release_scratch(h3_gpu *gpu);
 typedef void (*h3_gpu_ccv_release_scratch_fn)(h3_gpu *gpu);
 void h3_gpu_register_ccv_release_scratch(h3_gpu_ccv_release_scratch_fn fn);
 int h3_gpu_ccv_dense_attention_available(void);
+/* 1 when the backend is linked in and this machine can run it (ccv
+ * supports the device and it has neural matrix accelerators). */
+int h3_gpu_ccv_attention_supported(void);
+typedef int (*h3_gpu_ccv_attention_supported_fn)(void);
+void h3_gpu_register_ccv_attention_supported(
+    h3_gpu_ccv_attention_supported_fn fn);
 /* Process-wide count of successful h3_gpu_ccv_dense_attention_bf16 calls -
  * use this after a run to confirm the backend was really used for every
- * block expected, not silently skipped. Defined in h3_gpu.m so it links in
- * every build, with or without CCV_DIR. */
+ * block expected, not silently skipped - and how many of them took the
+ * direct path. Defined in h3_gpu.m so they link in every build, with or
+ * without CCV_DIR. */
 uint64_t h3_gpu_ccv_attention_dispatch_count(void);
+uint64_t h3_gpu_ccv_attention_direct_count(void);
 
 #ifdef __cplusplus
 } // extern "C"

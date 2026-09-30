@@ -122,6 +122,7 @@ int main(int argc, char **argv) {
     params.denoise_reuse = env_int("H3SPIKE_REUSE", 1);
     params.core_reuse = env_int("H3SPIKE_CORE_REUSE", 1);
     params.token_reduction = env_int("H3SPIKE_TOKEN_REDUCTION", 0);
+    params.fast_attention = env_int("H3SPIKE_FAST_ATTENTION", 0);
     params.use_int8_row_fc2 = env_int("H3SPIKE_INT8_ROW_FC2", 0);
     params.reference_image_size = H3_REFERENCE_IMAGE_MATCH;
     params.on_progress = on_progress;
@@ -139,6 +140,9 @@ int main(int argc, char **argv) {
     printf("Done in %.1fs\n", now() - g_start);
     printf("Result: %d frames @ %dfps, seed=%llu\n", result->frames, result->fps,
            (unsigned long long)result->seed);
+    printf("Attention: %llu ccv calls (%llu direct)\n",
+           (unsigned long long)result->ccv_attention_calls,
+           (unsigned long long)result->ccv_attention_direct_calls);
     printf("Frames delivered via on_frame: %d, previews: %d\n", g_frames_received,
            g_previews_received);
     if (getenv("H3_ATTENTION_BACKEND"))

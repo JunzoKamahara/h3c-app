@@ -132,6 +132,18 @@ extension GenerationViewModel {
             speedMode = .quality
         }
 
+        if let fast = json["fast_attention"] {
+            guard let fast = fast as? Bool else {
+                return .error(400, "\"fast_attention\" must be true or false")
+            }
+            if fast && !fastAttentionAvailable {
+                return .error(400, "fast_attention is not available on this build/device")
+            }
+            fastAttention = fast
+        } else {
+            fastAttention = false
+        }
+
         if let seed = json["seed"] {
             seedText = "\(seed)".filter(\.isNumber)
         } else {

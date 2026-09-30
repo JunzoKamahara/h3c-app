@@ -99,10 +99,13 @@ struct TimingCalibration: Codable {
     // Faster speed modes also get their own history - their per-step times
     // would otherwise drag the standard mode's estimates down. The standard
     // mode keeps the original key so existing calibration carries over.
-    private static func defaultsKey(_ mode: ComputeMode, _ speed: SpeedMode) -> String {
+    // Fast mode (ccv attention) likewise keeps separate history.
+    private static func defaultsKey(_ mode: ComputeMode, _ speed: SpeedMode,
+                                    _ fastAttention: Bool) -> String {
         let base = mode == .attentionCache ? "h3c-app.timingCalibration.v2"
                                            : "h3c-app.timingCalibration.v2.\(mode.rawValue)"
-        return speed == .quality ? base : base + ".speed.\(speed.rawValue)"
+        let key = speed == .quality ? base : base + ".speed.\(speed.rawValue)"
+        return fastAttention ? key + ".fastAttention" : key
     }
     private static let keep = 12
 
@@ -123,17 +126,18 @@ struct TimingCalibration: Codable {
         return value
     }
 
-    static func load(for mode: ComputeMode, speed: SpeedMode = .quality) -> TimingCalibration {
-        guard let data = UserDefaults.standard.data(forKey: defaultsKey(mode, speed)),
+    static func load(for mode: ComputeMode, speed: SpeedMode = .quality,
+                     fastAttention: Bool = false) -> TimingCalibration {
+        guard let data = UserDefaults.standard.data(forKey: defaultsKey(mode, speed, fastAttention)),
               let value = try? JSONDecoder().decode(TimingCalibration.self, from: data) else {
             return initial(for: mode)
         }
         return value
     }
 
-    func save(for mode: ComputeMode, speed: SpeedMode = .quality) {
+    func save(for mode: ComputeMode, speed: SpeedMode = .quality, fastAttention: Bool = false) {
         if let data = try? JSONEncoder().encode(self) {
-            UserDefaults.standard.set(data, forKey: Self.defaultsKey(mode, speed))
+            UserDefaults.standard.set(data, forKey: Self.defaultsKey(mode, speed, fastAttention))
         }
     }
 

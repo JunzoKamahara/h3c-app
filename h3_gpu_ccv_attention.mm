@@ -110,18 +110,20 @@ void memlog_after_encode(id<MTLDevice> device, uint32_t rows,
     }
 }
 
-/* H3_CCV_DIRECT=1: when Q/K/V arrive head-major ([heads, rows, dim] BF16,
- * the default int8 QKV path's layout) and the caller can take head-major
- * output, hand them to ccv's int8 kernel as-is - BF16 I/O, described as
- * batch = heads with Hq = Hk = 1 - instead of casting/reordering into the
- * FP16 row-major scratch. No bridge scratch is allocated on this path. */
-bool direct_enabled() {
-    static int enabled = -1;
-    if (enabled < 0) {
-        const char *value = getenv("H3_CCV_DIRECT");
-        enabled = value && *value == '1';
+/* Whether this machine can run the backend at all: ccv's context must
+ * support the device and it must have neural matrix accelerators (M5). */
+int ccv_attention_supported(void) {
+    static int supported = -1;
+    if (supported < 0) {
+        id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+        ccv_nnc_mfa_context_t *context = device ?
+            ccv_nnc_init_mfa_context((mtl_device_t *)(__bridge void *)device) :
+            nullptr;
+        supported = context && ccv_nnc_mfa_context_supported(context) &&
+                    ccv_nnc_mfa_has_neural_accelerators(context);
+        if (context) ccv_nnc_deinit_mfa_context(context);
     }
-    return enabled;
+    return supported;
 }
 
 int ccv_dense_attention_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
@@ -162,8 +164,12 @@ int ccv_dense_attention_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
         return 0;
     }
 
-    if (quantized && head_major && want_head_major_output &&
-        direct_enabled()) {
+    /* Direct path: when Q/K/V arrive head-major ([heads, rows, dim] BF16,
+     * the default int8 QKV path's layout) and the caller asked for
+     * head-major output, hand them to ccv's int8 kernel as-is - BF16 I/O,
+     * described as batch = heads with Hq = Hk = 1 - instead of casting and
+     * reordering into the FP16 row-major scratch. */
+    if (quantized && head_major && want_head_major_output) {
         ccv_nnc_mfa_attention_params_t params = {};
         params.data_type = MTL::DataTypeBFloat;
         params.R = rows; params.C = rows; params.Hq = 1; params.Hk = 1;
@@ -189,7 +195,7 @@ int ccv_dense_attention_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
         memlog_after_encode(device, rows, heads, head_dim, head_major, 1, 1);
         *head_major_output = 1;
         h3_gpu_set_head_major_sdpa_inputs(gpu, 0);
-        h3_gpu_note_ccv_attention_dispatch(gpu);
+        h3_gpu_note_ccv_attention_dispatch(gpu, 1);
         return 1;
     }
 
@@ -262,7 +268,7 @@ int ccv_dense_attention_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
         return 0;
 
     h3_gpu_set_head_major_sdpa_inputs(gpu, 0);
-    h3_gpu_note_ccv_attention_dispatch(gpu);
+    h3_gpu_note_ccv_attention_dispatch(gpu, 0);
     return 1;
 }
 
@@ -301,4 +307,5 @@ __attribute__((constructor))
 static void h3_gpu_ccv_attention_register(void) {
     h3_gpu_register_ccv_dense_attention(&ccv_dense_attention_bf16);
     h3_gpu_register_ccv_release_scratch(&ccv_release_scratch);
+    h3_gpu_register_ccv_attention_supported(&ccv_attention_supported);
 }

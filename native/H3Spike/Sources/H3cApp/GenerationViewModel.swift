@@ -81,6 +81,11 @@ final class GenerationViewModel: ObservableObject {
     @Published private(set) var supportsInt8Cache = true
     var defaultComputeMode: ComputeMode { supportsInt8Cache ? .attentionCache : .ssdStreaming }
     @Published var speedMode: SpeedMode = .quality
+    // Opt-in fast mode (experimental): ccv's int8 attention, M5 only. Off by
+    // default, offered only where the engine reports it can run, and kept
+    // separate from speedMode - no speed preset turns it on.
+    @Published var fastAttention = false
+    let fastAttentionAvailable = H3Engine.fastAttentionAvailable
 
     struct SpeedSettings {
         var ditLayers: Int32 = 50
@@ -165,9 +170,13 @@ final class GenerationViewModel: ObservableObject {
         !FileManager.default.fileExists(atPath: currentAttentionCachePath)
     }
 
+    /// What a generation started now would actually request.
+    var useFastAttention: Bool { fastAttention && fastAttentionAvailable }
+
     var hasAdvancedChanges: Bool {
         sizeProfile != defaultSizeProfile || steps != defaultSteps || denoiseReuse != defaultReuse
-            || computeMode != defaultComputeMode || speedMode != .quality || !seedText.isEmpty
+            || computeMode != defaultComputeMode || speedMode != .quality || fastAttention
+            || !seedText.isEmpty
             || !library.enabledLoRAs.isEmpty
     }
 
@@ -410,6 +419,7 @@ final class GenerationViewModel: ObservableObject {
         denoiseReuse = defaultReuse
         computeMode = defaultComputeMode
         speedMode = .quality
+        fastAttention = false
         seedText = ""
         library.setEnabledLoRAs([])
     }
@@ -470,6 +480,7 @@ final class GenerationViewModel: ObservableObject {
             if denoiseReuse != defaultReuse { parts.append("reuse \(denoiseReuse)") }
             if computeMode != defaultComputeMode { parts.append(computeMode.summaryLabel) }
             if speedMode != .quality { parts.append(speedMode.summaryLabel) }
+            if fastAttention { parts.append("高速モード（試験的）") }
             if !seedText.isEmpty { parts.append("シード固定") }
             let loras = library.enabledLoRAs
             if !loras.isEmpty { parts.append("追加モデル: " + loras.map(\.name).joined(separator: " + ")) }
@@ -507,7 +518,8 @@ final class GenerationViewModel: ObservableObject {
                 totalFrames: requestedFrames,
                 ditUnits: Double(requestedFrames) * ditPixels,
                 decodeUnits: Double(requestedFrames) * Double(dimensions.width) * Double(dimensions.height)),
-            calibration: TimingCalibration.load(for: computeMode, speed: speedMode),
+            calibration: TimingCalibration.load(for: computeMode, speed: speedMode,
+                                                fastAttention: useFastAttention),
             start: Date())
         publishTiming()
         startElapsedTimer()
@@ -540,6 +552,9 @@ final class GenerationViewModel: ObservableObject {
         params.ditLayers = speed.ditLayers
         params.coreReuse = speed.coreReuse
         params.tokenReduction = speed.tokenReduction
+        // Decided here, once, for this generation: the value is copied into
+        // params, so later toggles in the form can't affect a running job.
+        params.fastAttention = useFastAttention
 
         let promptCopy = prompt
         let capturedMode = creationMethod
@@ -549,6 +564,7 @@ final class GenerationViewModel: ObservableObject {
         let capturedReuse = denoiseReuse.clamped(to: reuseRange)
         let capturedComputeMode = computeMode
         let capturedSpeedMode = speedMode
+        let capturedFastAttention = params.fastAttention
         let capturedDeviceLine = deviceLine
 
         generationTask = Task {
@@ -566,7 +582,8 @@ final class GenerationViewModel: ObservableObject {
                     case .finished(let result):
                         self.phase = "できあがりました"
                         self.estimator?.finishedCalibration(now: Date())
-                            .save(for: capturedComputeMode, speed: capturedSpeedMode)
+                            .save(for: capturedComputeMode, speed: capturedSpeedMode,
+                                  fastAttention: capturedFastAttention)
                         let url = URL(fileURLWithPath: result.outputPath)
                         self.resultURL = url
                         self.resultAspectRatio = CGFloat(dimensions.width) / CGFloat(dimensions.height)
@@ -584,6 +601,8 @@ final class GenerationViewModel: ObservableObject {
                             denoiseReuse: capturedReuse,
                             computeMode: capturedComputeMode,
                             speedMode: capturedSpeedMode,
+                            fastAttention: capturedFastAttention,
+                            fastAttentionUsed: result.ccvAttentionDirectCalls > 0,
                             seed: result.seed,
                             seedWasRandom: seedWasRandom,
                             loras: capturedLoRAs,
@@ -681,6 +700,7 @@ final class GenerationViewModel: ObservableObject {
         denoiseReuse = result.denoiseReuse
         computeMode = result.computeMode
         speedMode = result.speedMode
+        fastAttention = result.fastAttention && fastAttentionAvailable
         seedText = result.seedWasRandom ? "" : result.seedDecimalString
         // The result only kept the paths/strengths actually used, not
         // library entry ids (which may since have been renamed or removed) -

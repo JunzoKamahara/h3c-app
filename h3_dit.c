@@ -149,6 +149,7 @@ struct h3_dit {
     int ssd_streaming;
     int keep_bf16_mlp;
     int activation_aliases;
+    h3_dit_attention_mode attention_mode;
     int fused_patch_projection;
     int fused_patch_pack;
     int token_reduction;
@@ -2731,23 +2732,25 @@ static int run_block(h3_dit *dit, unsigned index, int step,
      * silently falls back to the default path, so a run that requests this
      * backend either really used it or aborted. Produces row-major output
      * (and so forces the following projection down the row-major path)
-     * unless H3_CCV_DIRECT=1 lets it write the head-major layout directly.
+     * except in direct mode, which writes the head-major layout itself.
+     * The mode is dit->attention_mode, fixed per generation by h3_generate
+     * (h3_params.fast_attention, or H3_ATTENTION_BACKEND for diagnostics).
      * "ccv_fp16" is the same bridge with ccv's non-quantized FP16 kernel,
      * so the two differ only in int8 quantization of Q/K/V/P. */
-    const char *attention_backend = getenv("H3_ATTENTION_BACKEND");
-    int ccv_int8 = attention_backend && !strcmp(attention_backend, "ccv_dense");
-    int ccv_fp16 = attention_backend && !strcmp(attention_backend, "ccv_fp16");
+    int ccv_direct = dit->attention_mode == H3_DIT_ATTENTION_CCV_INT8_DIRECT;
+    int ccv_int8 = ccv_direct ||
+                   dit->attention_mode == H3_DIT_ATTENTION_CCV_INT8;
+    int ccv_fp16 = dit->attention_mode == H3_DIT_ATTENTION_CCV_FP16;
     if (ccv_int8 || ccv_fp16) {
-        /* In: whether the projection below can take head-major output.
-         * Out: what the bridge actually wrote (row-major unless the
-         * H3_CCV_DIRECT head-major path ran). */
-        int ccv_head_major = head_major_attention_output;
+        /* In: whether head-major output may be written (direct mode only,
+         * and only when the projection below can take it). Out: what the
+         * bridge actually wrote. */
+        int ccv_head_major = ccv_direct && head_major_attention_output;
         OP(h3_gpu_ccv_dense_attention_bf16(
             dit->gpu, dit->attention_heads, dit->query, dit->key, dit->value,
             rows, HEADS, HEAD_DIM, 1.0f / sqrtf((float)HEAD_DIM), ccv_int8,
             &ccv_head_major),
-           ccv_int8 ? "DiT ccv dense int8 attention (H3_ATTENTION_BACKEND=ccv_dense)"
-                    : "DiT ccv fp16 attention (H3_ATTENTION_BACKEND=ccv_fp16)");
+           ccv_int8 ? "DiT ccv int8 attention" : "DiT ccv fp16 attention");
         head_major_attention_output = ccv_head_major;
     } else if (head_major_attention_output)
         OP(h3_gpu_sdpa_bf16_head_major_output(
@@ -3895,6 +3898,10 @@ int h3_dit_denoise_euler(h3_dit *dit, float *video_latent,
     return h3_dit_denoise_euler_preview(
         dit, video_latent, audio_latent, reuse_interval,
         progress, progress_opaque, NULL, NULL, error, error_size);
+}
+
+void h3_dit_set_attention_mode(h3_dit *dit, h3_dit_attention_mode mode) {
+    if (dit) dit->attention_mode = mode;
 }
 
 void h3_dit_release_backend_scratch(h3_dit *dit) {

@@ -598,6 +598,16 @@ static int h3_valid_params(h3_ctx *ctx, const h3_params *params) {
         h3_set_error(ctx, "core reuse and denoiser reuse cannot be combined");
         return 0;
     }
+    if (params->fast_attention != 0 && params->fast_attention != 1) {
+        h3_set_error(ctx, "fast attention must be zero or one");
+        return 0;
+    }
+    if (params->fast_attention && !h3_fast_attention_available()) {
+        h3_set_error(ctx, "fast attention mode is not available: this build "
+                     "lacks the ccv backend or this GPU lacks neural "
+                     "matrix accelerators");
+        return 0;
+    }
     if (params->lora_count && !params->loras) {
         h3_set_error(ctx, "lora_count is nonzero but loras is NULL");
         return 0;
@@ -958,6 +968,26 @@ static int h3_stream_encode_chunk(void *opaque, const float *rgb,
         return 0;
     }
     return 1;
+}
+
+int h3_fast_attention_available(void) {
+    return h3_gpu_ccv_dense_attention_available() &&
+           h3_gpu_ccv_attention_supported();
+}
+
+/* The attention path for one generation, decided once up front: the
+ * caller's fast_attention flag; otherwise, for diagnostics only, the
+ * H3_ATTENTION_BACKEND / H3_CCV_DIRECT environment (never set by the app). */
+static h3_dit_attention_mode h3_resolve_attention_mode(const h3_params *params) {
+    if (params->fast_attention) return H3_DIT_ATTENTION_CCV_INT8_DIRECT;
+    const char *backend = getenv("H3_ATTENTION_BACKEND");
+    if (backend && !strcmp(backend, "ccv_dense")) {
+        const char *direct = getenv("H3_CCV_DIRECT");
+        return direct && *direct == '1' ? H3_DIT_ATTENTION_CCV_INT8_DIRECT
+                                        : H3_DIT_ATTENTION_CCV_INT8;
+    }
+    if (backend && !strcmp(backend, "ccv_fp16")) return H3_DIT_ATTENTION_CCV_FP16;
+    return H3_DIT_ATTENTION_MPS;
 }
 
 h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
@@ -1694,6 +1724,9 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
     h3_rng_seed(&audio_rng, params->seed);
     h3_rng_fill_normal(&video_rng, video, video_count);
     h3_rng_fill_normal(&audio_rng, audio, audio_count);
+    h3_dit_set_attention_mode(dit, h3_resolve_attention_mode(params));
+    uint64_t ccv_calls_before = h3_gpu_ccv_attention_dispatch_count();
+    uint64_t ccv_direct_before = h3_gpu_ccv_attention_direct_count();
     if (!h3_dit_denoise_euler_preview(
             dit, video, audio, params->denoise_reuse,
             h3_dit_progress_bridge, &progress,
@@ -1701,6 +1734,7 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
             preview_decoder ? &live_preview : NULL,
             detail, sizeof(detail))) {
         if (!live_preview.failed) h3_set_error(ctx, "%s", detail);
+        h3_dit_release_backend_scratch(dit);
         if (dit_is_cached) {
             ctx->dit = NULL;
             free(ctx->dit_key);
@@ -1710,6 +1744,10 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
         goto cleanup;
     }
     h3_dit_release_backend_scratch(dit);
+    uint64_t ccv_calls = h3_gpu_ccv_attention_dispatch_count() -
+                         ccv_calls_before;
+    uint64_t ccv_direct_calls = h3_gpu_ccv_attention_direct_count() -
+                                ccv_direct_before;
     if (!dit_is_cached) h3_dit_free(dit);
     dit = NULL;
     if (progress.cancelled) goto cleanup;
@@ -1798,6 +1836,8 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
         result->fps = H3_FPS;
         result->sample_rate = waveform.sample_rate;
         result->seed = params->seed;
+        result->ccv_attention_calls = ccv_calls;
+        result->ccv_attention_direct_calls = ccv_direct_calls;
     } else {
         /* No resident decoder (video VAE caching disabled): fall back to
          * the original monolithic decode-then-mux path. */
@@ -1870,6 +1910,8 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
         result->fps = H3_FPS;
         result->sample_rate = waveform.sample_rate;
         result->seed = params->seed;
+        result->ccv_attention_calls = ccv_calls;
+        result->ccv_attention_direct_calls = ccv_direct_calls;
     }
 
 cleanup:

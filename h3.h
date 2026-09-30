@@ -156,13 +156,19 @@ typedef struct {
      * the GPU as they are loaded or streamed - no fused cache files. */
     const h3_lora *loras;
     size_t lora_count;
+    /* Opt-in fast mode (experimental): run the DiT's full attention with
+     * ccv's int8 kernel directly on the BF16 head-major Q/K/V. Faster on
+     * M5-class GPUs; the same seed gives a different video than the
+     * default. Requires h3_fast_attention_available(); fixed for the whole
+     * generation. Independent of the other speed settings above. */
+    int fast_attention;
 } h3_params;
 
 #define H3_PARAMS_DEFAULT { \
     H3_DEFAULT_WIDTH, H3_DEFAULT_HEIGHT, H3_DEFAULT_FRAMES, H3_DEFAULT_STEPS, \
     UINT64_C(42), NULL, NULL, NULL, NULL, 0, H3_REFERENCE_IMAGE_MATCH, \
     1, H3_DEFAULT_DIT_LAYERS, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, NULL, \
-    NULL, 0 \
+    NULL, 0, 0 \
 }
 
 typedef struct {
@@ -198,6 +204,11 @@ struct h3_result {
     int fps;
     int sample_rate;
     uint64_t seed;
+    /* Full-attention calls this generation served by ccv, and how many of
+     * those took the direct path (both 0 on the default MPS path) - the
+     * attention path that actually ran, not just the one requested. */
+    uint64_t ccv_attention_calls;
+    uint64_t ccv_attention_direct_calls;
 };
 
 /* Load model metadata and initialize the Metal device. Weights remain unmapped. */
@@ -213,6 +224,11 @@ const h3_model_info *h3_model(const h3_ctx *ctx);
 void h3_cache_set_enabled(h3_ctx *ctx, int enabled);
 void h3_cache_clear(h3_ctx *ctx);
 void h3_cache_get_info(const h3_ctx *ctx, h3_cache_info *info);
+
+/* 1 when h3_params.fast_attention can be used: the engine was built with
+ * the ccv backend (CCV_DIR) and this Mac's GPU has the neural matrix
+ * accelerators it needs (M5 class). */
+int h3_fast_attention_available(void);
 
 /* Generate media, delivering decoded frames incrementally through on_frame. */
 h3_result *h3_generate(h3_ctx *ctx, const char *prompt,

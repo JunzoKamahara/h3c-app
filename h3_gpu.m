@@ -1703,17 +1703,23 @@ void h3_gpu_set_head_major_sdpa_inputs(h3_gpu *opaque, int value) {
 }
 
 static uint64_t h3_ccv_attention_dispatch_total = 0;
+static uint64_t h3_ccv_attention_direct_total = 0;
 
-void h3_gpu_note_ccv_attention_dispatch(h3_gpu *opaque) {
+void h3_gpu_note_ccv_attention_dispatch(h3_gpu *opaque, int direct) {
     H3GPU *gpu = GPU(opaque);
     h3_gpu_stats stats = gpu.stats;
     stats.ccv_attention_dispatches++;
     gpu.stats = stats;
     h3_ccv_attention_dispatch_total++;
+    if (direct) h3_ccv_attention_direct_total++;
 }
 
 uint64_t h3_gpu_ccv_attention_dispatch_count(void) {
     return h3_ccv_attention_dispatch_total;
+}
+
+uint64_t h3_gpu_ccv_attention_direct_count(void) {
+    return h3_ccv_attention_direct_total;
 }
 
 void h3_gpu_report_error(h3_gpu *opaque, const char *message) {
@@ -1790,6 +1796,19 @@ int h3_gpu_ccv_release_scratch(h3_gpu *opaque) {
     if (!gpu || gpu.command || gpu.inflightCommands.count) return 0;
     h3_gpu_ccv_release_scratch_impl(opaque);
     return 1;
+}
+
+static h3_gpu_ccv_attention_supported_fn h3_gpu_ccv_attention_supported_impl =
+    NULL;
+
+void h3_gpu_register_ccv_attention_supported(
+    h3_gpu_ccv_attention_supported_fn fn) {
+    h3_gpu_ccv_attention_supported_impl = fn;
+}
+
+int h3_gpu_ccv_attention_supported(void) {
+    return h3_gpu_ccv_attention_supported_impl &&
+           h3_gpu_ccv_attention_supported_impl();
 }
 
 int h3_gpu_ccv_dense_attention_available(void) {
