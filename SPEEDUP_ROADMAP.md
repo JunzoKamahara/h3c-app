@@ -1414,10 +1414,122 @@ dispatch shape, and less compression work could each contribute). The
 baseline itself still swaps heavily on 24 GiB. Single run each, machine
 not quiesced.
 
-Status: main candidate for the ccv integration, still opt-in. Next, in
-order: (1) done — Makefile relinks `h3_generate_cli` when `libccv.a`
-changes; (2) replay saved deep-block Q/K/V through the FP16 bridge and
-direct on identical inputs (per-head and tail rows too); (3) direct at 20
+**Replay on identical inputs** (`tools/ccv_eval/h3_direct_replay.cpp`:
+runs one captured call through the FP16 bridge setup and the direct setup,
+diffs both against the captured MPS production output; the BF16 inputs
+rebuilt from the FP16 captures were exact in every case):
+
+| capture | bridge vs prod | direct vs prod | worst head (both) | last 128 rows (bridge / direct) | direct vs bridge |
+|---|---|---|---|---|---|
+| short, block 0 step 0 | 1.565% | 1.573% | #49: 3.67% / 3.68% | 1.35% / 1.35% | 0.169% |
+| short, block 30 step 1 | 2.767% | 2.772% | #42: 9.62% / 9.63% | 2.55% / 2.56% | 0.169% |
+| short, block 49 step 1 | 3.531% | 3.534% | #3: 12.80% / 12.80% | 3.25% / 3.25% | 0.168% |
+| 15s (rows 62,847), block 0 step 0 | 1.673% | 1.680% | #49: 4.83% / 4.83% | 1.29% / 1.30% | 0.169% |
+
+Direct tracks the bridge everywhere (≈0.17%, same worst head, no tail
+effect), so the direct layout adds little of its own. Separately, for
+**both** ccv int8 paths, the error against MPS was larger in the later
+captures taken here (1.6% at block 0 step 0, 2.8% at block 30 step 1,
+3.5% at block 49 step 1) — the block and the diffusion step both differ
+between these captures, so this is not a clean depth trend. The 12.8% is
+the worst single head's relative error (block total 3.53%); a head with a
+small reference norm inflates relative error, so it does not by itself
+show that head matters for image or motion. The shared difference from
+MPS is not shown to be int8 quantization alone: ccv's other arithmetic is
+common to both paths too, and isolating quantization would need the same
+Q/K/V through ccv's non-int8 path.
+
+**Short clip, 20 steps, seed 7** (512x512, 39 frames): direct's video is
+very close to ccv_dense's (24.4 dB RGB PSNR between them, same
+composition, very similar pose changes); both differ in composition from
+A (15 dB), as before. No foreground net, lattice, or shape breakage seen
+in any of the three. All three lift the head; A ends with a large turn of
+the face to the right that the int8 runs lack, while they show the yarn
+pulled taut to the mouth. Mean frame-to-frame difference 10.1 (A) vs 8.3
+(both int8 paths), but that also depends on composition, texture and
+brightness. In a ~1.6 s clip this cannot separate "a different action was
+chosen" from "less ability to produce motion"; more seeds needed. DiT time here: A 182 s,
+ccv_dense 182 s, direct 172 s (short sequences gain little).
+
+**Three more seeds, short clip, 20 steps** (seeds 11, 23, 42 fixed in
+advance; A vs direct; same prompt/model/sampler). Judged blind: each
+seed's pair was shown as X/Y in random order (frames 0/8/16/24/31/38),
+the assessment was written to a file before the key was opened. It turned
+out Y = direct for all three seeds (a 1-in-4 outcome of the per-seed
+shuffle; noted since a fixed position could have been learned, though the
+key was not known while judging).
+
+| seed | blind judgement (Y = direct) | mean \|ΔF\| A / direct | RGB PSNR A vs direct |
+|---|---|---|---|
+| 11 | both nuzzle the yarn, lift the head, turn to the camera; Y's turn slightly fuller | 8.41 / 8.83 | 17.4 dB |
+| 23 | both nose-on-yarn, lift the head, thread pulled; Y ends with the thread at the mouth, slightly larger lift | 7.55 / 7.69 | 15.4 dB |
+| 42 | both low-motion (head down on the yarn, sniffing); Y a little more mouth action | 6.95 / 6.40 | 17.5 dB |
+
+No consistently weaker side over these three seeds (plus seed 7, where A
+had the larger final head turn); no net/lattice or shape breakage visible
+in either at half size. Frame-difference means point both ways. So: no
+sign that direct systematically weakens the prompted action; proceeding
+to the 15s, 20-step direct run.
+
+**15s, 20 steps, seed 7, direct** (same settings as Stage ⑥; A and
+ccv_dense from Stage ⑥ as references; engine monotonic timestamps, A
+corrected for its 56.6 min pause as in Stage ⑥):
+
+| | A | ccv_dense | direct |
+|---|---|---|---|
+| total | 13727 s (3.81 h) | 10703 s (2.97 h) | **9506 s (2.64 h)** |
+| median per denoise step | 671.2 s | 520.2 s | **459.9 s** |
+| decode + encode tail | 273.9 s | 274.0 s | 273.0 s |
+| speed-up vs A (total / per step) | — | 1.28x / 1.29x | **1.44x / 1.46x** |
+| time saved vs A | — | 50.4 min (22.0%) | **70.4 min (30.7%)** |
+| peak footprint (`time -l`) | 21.09 GiB | 25.70 GiB | 22.35 GiB |
+| RGB PSNR vs A / vs ccv_dense | — | 14.0 dB / — | 14.1 dB / 19.5 dB |
+| mean \|ΔF\| | 5.21 | 3.48 | 4.01 |
+
+The whole run was on this 24 GiB machine with other apps running; the
+free disk space was low (16–19 GiB before the run, 8.2 GiB after), which
+matters because swap lives on the same volume.
+
+Quality, from full-size frames 0/120/240/361, crops of the paws at 120
+and 240, and the video: direct is the same scene as ccv_dense (colorpoint
+cat lying on a patterned bedspread with a dark-blue yarn ball, biting the
+yarn, lifting its head at the end with clear blue eyes), with very similar
+pose changes; A is a different scene (tabby on a floor, walks away at the
+end). Direct is sharp (fur, whiskers, eyes); no foreground net or lattice
+seen. Paws, after viewing the video (around 4–6 s and 9–11 s): a paw
+showing its pads in the foreground overlaps a white paw reaching past the
+yarn; no clearly extra limb, but the white toes split like thick fingers
+and look somewhat artificial in places, especially in direct around 10 s
+— ccv_dense has similar depictions. Recorded as: **the paw shapes are
+suspected unnatural, but not confirmed to be made worse by the change to
+direct**; A has a different pose and scene, so this comparison cannot
+attribute them to int8 either. Direct also shows head movement, paw
+movement, mouth to the yarn and the final head lift — motion is not lost.
+This is not a reason to hold direct back. The lower mean frame difference of the int8 runs goes with
+a lying cat versus A's walking cat; it is not a like-for-like motion
+measure.
+
+**Assessment so far**: no consistent degradation that would block
+adoption was found in these comparisons (not a proof of equal quality).
+No need at this point to route later blocks back to MPS or to change the
+quantization. Direct vs A, 15s/20 steps (single run, pause-corrected):
+1.44x, 70.4 min (30.7%) saved, +1.26 GiB footprint; vs ccv_dense: 11.2%
+(~20 min) faster, 3.35 GiB less footprint. Seed-count checks on the cat
+prompt stop here.
+
+**Next** (toward an opt-in "fast mode (experimental)" on M5, telling the
+user that the same seed gives a different video than standard mode):
+(1) minimal direct run from H3Spike / the Swift app — kernel build and
+dispatch first, then a short clip; re-reproduce the earlier Swift-only
+problem on the current direct path if it is still there; (2) two short
+generations back to back in the same app process — post-DiT release,
+scratch re-allocation, cache reuse; (3) one person-motion prompt and one
+fast-object prompt, short, 20 steps, same seed, A vs direct — prompt
+adherence, shapes, temporal stability. Default-backend change only after
+real use.
+
+Earlier plan (kept for the record): (1) done — Makefile relinks `h3_generate_cli` when `libccv.a`
+changes; (2) done — replay above; (3) done for seed 7 — direct at 20
 steps on the short clip — detail, the foreground net, temporal flicker,
 pattern stability, limb shapes, prompt adherence, judged on video, not
 PSNR; (4) if clean, 15s at 20 steps (existing A / ccv_dense 20-step videos
