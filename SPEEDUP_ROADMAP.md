@@ -1198,6 +1198,99 @@ more seeds and prompts (people/faces, fast motion), the paw region
 checked in motion, and memory headroom on 24 GB machines
 (compression/swap), since the footprint exceeds 24 GiB.
 
+### Stage ⑦ — 24 GiB machine: compression/swap during a 15s-length run
+
+Setup: 768x768, 362 frames (the 15s configuration), **2 steps** (the DiT
+memory peak, not the full 20-step run), seed 7, 50 layers, on the 24 GiB
+M5. `vm_stat`, `vm.swapusage` and `memory_pressure` sampled every 5 s
+(321 / 268 samples). Other desktop apps were running; the machine was not
+quiesced, and swap already held 1.70 GiB (baseline run) / 2.70 GiB
+(ccv_dense run) at start, so the swap figures below are **increases from
+each run's own start**. All values are system-wide, not per-process. Page
+size 16 KiB; every "GiB" below is a page-counter delta × 16 KiB.
+
+| | baseline (A) | ccv_dense |
+|---|---|---|
+| wall time (2 steps) | 1613 s | 1345 s (1.20x) |
+| DiT time (2 steps) | 1314 s | 1047 s (1.25x) |
+| per step (step 1 / step 2) | 653 s / 660 s | 522 s / 525 s |
+| peak memory footprint (`time -l`) | 20.74 GiB | 25.35 GiB (+4.62 GiB) |
+| peak RSS | 10.69 GiB | 10.35 GiB |
+| swap used: max increase over run start (DiT) | +6.43 GiB | +9.42 GiB |
+| swap used at end | 2.71 GiB | 2.76 GiB |
+| compressor, pages occupied (max) | 10.80 GiB | 11.36 GiB |
+| compressor, pages stored / uncompressed-equivalent (max) | 12.18 GiB | 11.87 GiB |
+| free-memory % (min) | 17% | 2% |
+| swap-out, whole run | 30.7 GiB | 32.5 GiB (+6%) |
+| swap-out, DiT phase only | 29.7 GiB | 29.7 GiB |
+| swap-in, whole run | 25.2 GiB | 25.2 GiB |
+| compression volume, DiT phase | 41.6 GiB | 60.8 GiB (+46%) |
+| decompression volume, DiT phase | 39.6 GiB | 59.8 GiB (+51%) |
+| `Pageouts` counter | 0.010 GiB | 0.015 GiB |
+
+Reading the counters: compression/decompression/swap-out/swap-in are
+cumulative counters of *pages processed*, converted to GiB, not event
+counts and not SSD bytes written; recompressing the same page counts again.
+`Pageouts` is a separate (file-backed) counter and says nothing about
+whether swap traffic reached the SSD. "Occupied" is the compressor's real
+footprint; "stored" is the uncompressed-equivalent of what it holds.
+
+What this shows:
+
+- The 20-step run finished earlier (stage ⑥) and this 2-step run finished
+  under the same conditions on a machine with other apps running, with both
+  backends already swapping heavily: the **baseline itself** moves ~8 GiB
+  per step through swap and has 17–19% free memory during the DiT.
+- ccv_dense's speed-up holds under that pressure: 1.25x on the DiT phase
+ , overall 1.20x on this short run
+  because load and VAE (~270 s, unchanged) weigh more at 2 steps. Neither
+  backend's step time worsened from step 1 to step 2.
+- Swap use at peak is higher with ccv_dense (+9.4 vs +6.4 GiB over start,
+  a 3.0 GiB difference — not 4.6), the free-memory low is much lower (2%,
+  hit within the first ~3 minutes, i.e. load through the start of the DiT, then ~11% for the rest), and
+  compression work in the DiT phase is ~46% higher. Total swap-out volume
+  is similar (DiT phase identical at 29.7 GiB), so the extra footprint did
+  not (measurably) multiply swap traffic; it cost extra compression work.
+- **Not shown**: *which* data got pushed out to make room. The system-wide
+  counters cannot tell whether ccv's buffers displaced this generation's
+  weights or another app's memory. An earlier reading of this as "the extra
+  ~4 GiB sits in swap as cold data" was a guess and is withdrawn.
+- **Not shown**: how close to unusable the machine was. Free % alone is not
+  a pressure measure (Apple weighs swap rate, wired/committed memory and
+  file cache); no UI-responsiveness check was made and `memory_pressure`
+  was only sampled for its free percentage.
+- **Not shown**: behaviour with other apps closed (not measured), or over
+  20 steps (only 2 steps were run; the step cadence was flat), or on 16 GB
+  machines.
+
+Where the +4.62 GiB comes from (from the code, not yet instrumented):
+`h3_gpu_ccv_attention.mm` `ensure_scratch` allocates **four** private FP16
+buffers (q, k, v, out) of `rows × 56 heads × 128 dim × 2 B` each, once, at
+the first attention call, and never releases them until the device changes
+or the process exits — so they are also resident during the VAE phase.
+Four buffers of ~1.15 GiB each ⇒ ~4.6 GiB matches the measured footprint
+delta if `rows` ≈ 86.4k; the `rows` value itself was not printed, so this
+match is by back-calculation, not confirmed. The bf16→fp16 cast copies
+have the same element count as `dit->query/key/value`, and by grep those
+three are only read by the attention call sites (and the QKV dump), which
+makes an **in-place cast** (or a cast that reuses buffers the attention
+call has already consumed) a candidate to cut ~3.5 of the 4.6 GiB. That
+needs verifying against the activation-alias mode (`dit->qkv` aliasing)
+and the dump hooks before any code change.
+
+Status: **experimental opt-in only** (`H3_ATTENTION_BACKEND=ccv_dense`).
+Not a default: image-quality validation (more seeds/prompts, paws in
+motion) and memory reduction should both land first. Recorded conclusion:
+"on the 24 GiB machine this configuration ran to completion under
+swap/compression with other apps running and kept a 1.20x (2-step) /
+1.28x (20-step) speed-up; where the extra memory is evicted from and
+longer-run memory behaviour are not identified."
+
+Next, in order: (1) instrument `rows` and the scratch sizes/lifetimes
+(print at allocation); (2) test the in-place / shared-buffer variant for
+the +4.6 GiB and free the scratch after the DiT; (3) re-measure with a
+quiesced machine and with the per-phase (load/DiT/VAE) sampling above.
+
 Scratch sources, **not committed** (existed only under a session scratchpad
 directory — rewrite from this description if resuming):
 
