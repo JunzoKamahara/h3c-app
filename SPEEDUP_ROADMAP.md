@@ -1650,7 +1650,16 @@ writing):
   note and the draft summary's 高速モード（試験的） show, and the log
   reports 150/150 direct calls, 0.002 GiB after. Speed-preset independence
   is by construction (nothing in `speedMode` touches `fastAttention`), not
-  by clicking.
+  by clicking. **Scope of this UI check**: the controls' rendering only —
+  reaching them in the real layout (open 詳細設定, scroll) and switching
+  presets by hand are not yet checked; do that on the next manual use of a
+  normal build.
+- Call count vs steps: the API asked for 2 steps, but the app clamps
+  steps to `stepsRange = 3 ... 20` (`GenerationViewModel.swift`) before
+  building the params, so the engine ran 3 steps — 3 × 50 blocks = 150,
+  matching the counter (the 20-step runs: 20 × 50 = 1000). Pre-existing
+  and unrelated to fast mode: the API accepts steps below the range
+  without an error and the draft summary shows the unclamped "Steps 2".
 
 Earlier plan (kept for the record): (1) done — Makefile relinks `h3_generate_cli` when `libccv.a`
 changes; (2) done — replay above; (3) done for seed 7 — direct at 20
