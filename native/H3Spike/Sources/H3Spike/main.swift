@@ -142,10 +142,29 @@ defer { loraPaths.forEach { free($0) } }
 var loras = zip(loraPaths, loraSpecs).map { h3_lora(path: $0.0, strength: $0.1.1) }
 for (path, strength) in loraSpecs { print("LoRA: \(path) @ \(strength)") }
 
-print("Generating \(params.width)x\(params.height), \(params.frames) frames, \(params.steps) steps...")
+// H3SPIKE_REPEAT=<n>: run the same generation n times in this process
+// (outputs <name>_run<k>.<ext> after the first), to exercise state that
+// survives between generations - e.g. attention-backend scratch released
+// after one DiT and reallocated by the next. H3SPIKE_CACHE=1 also enables
+// the in-process model cache, so later runs reuse the prepared DiT.
+let repeatCount = max(1, envInt("H3SPIKE_REPEAT", 1))
+if ProcessInfo.processInfo.environment["H3SPIKE_CACHE"] == "1" {
+    h3_cache_set_enabled(ctx, 1)
+}
+for run in 1...repeatCount {
+// Without a per-run pool, Objective-C objects autoreleased inside
+// h3_generate (e.g. per-run Metal buffers) live until process exit here.
+autoreleasepool {
+let runOutputPath = run == 1 ? outputPath : {
+    let url = URL(fileURLWithPath: outputPath)
+    let ext = url.pathExtension
+    let base = url.deletingPathExtension().path
+    return ext.isEmpty ? "\(base)_run\(run)" : "\(base)_run\(run).\(ext)"
+}()
+print("Generating \(params.width)x\(params.height), \(params.frames) frames, \(params.steps) steps... (run \(run)/\(repeatCount))")
 let start = Date()
 
-let result: UnsafeMutablePointer<h3_result>? = outputPath.withCString { outputPathC in
+let result: UnsafeMutablePointer<h3_result>? = runOutputPath.withCString { outputPathC in
     prompt.withCString { promptC in
         loras.withUnsafeBufferPointer { loraBuffer in
             params.output_path = outputPathC
@@ -161,10 +180,12 @@ guard let result else {
     print("h3_generate failed: \(error)")
     exit(1)
 }
-defer { h3_result_free(result) }
 
 let elapsed = Date().timeIntervalSince(start)
 print(String(format: "Done in %.1fs", elapsed))
 print("Result: \(result.pointee.frames) frames @ \(result.pointee.fps)fps, seed=\(result.pointee.seed)")
 print("Frames delivered via on_frame: \(context.framesReceived), previews: \(context.previewsReceived)")
-print("Output written to: \(outputPath)")
+print("Output written to: \(runOutputPath)")
+h3_result_free(result)
+}
+}

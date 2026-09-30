@@ -1,0 +1,47 @@
+diff -ru a/lib/nnc/mfa/kernels/NAAttentionKernel.cpp b/lib/nnc/mfa/kernels/NAAttentionKernel.cpp
+--- a/lib/nnc/mfa/kernels/NAAttentionKernel.cpp	2026-09-30 17:46:08
++++ b/lib/nnc/mfa/kernels/NAAttentionKernel.cpp	2026-09-30 17:46:08
+@@ -49,15 +49,21 @@
+   source = createSource();
+ 
+   // Compile the shader source.
++  // Metal 4.0 APIs (metal_tensor, MetalPerformancePrimitives) are used;
++  // don't rely on the runtime's default language version, which follows
++  // the SDK the host executable was linked against (e.g. an app built for
++  // an older deployment target) and can predate them.
++  auto compileOptions = NS::TransferPtr(MTL::CompileOptions::alloc()->init());
++  compileOptions->setLanguageVersion((MTL::LanguageVersion)(4 << 16));
+   auto string = NS::String::string(source.c_str(), NS::UTF8StringEncoding);
+   NS::Error* error = nil;
+-  library = NS::TransferPtr(device->newLibrary(string, nil, &error));
++  library = NS::TransferPtr(device->newLibrary(string, compileOptions.get(), &error));
+   if (!library) {
+     bypassThreadgroupMemory = false;
+     source = createSource();
+     string = NS::String::string(source.c_str(), NS::UTF8StringEncoding);
+     error = nil;
+-    library = NS::TransferPtr(device->newLibrary(string, nil, &error));
++    library = NS::TransferPtr(device->newLibrary(string, compileOptions.get(), &error));
+   }
+   CCV_NNC_MFA_CHECK_ERROR(error);
+ }
+diff -ru a/lib/nnc/mfa/kernels/NAInt8AttentionKernel.cpp b/lib/nnc/mfa/kernels/NAInt8AttentionKernel.cpp
+--- a/lib/nnc/mfa/kernels/NAInt8AttentionKernel.cpp	2026-09-30 17:46:08
++++ b/lib/nnc/mfa/kernels/NAInt8AttentionKernel.cpp	2026-09-30 17:46:08
+@@ -71,9 +71,15 @@
+ 
+   source = createSource();
+ 
++  // Metal 4.0 APIs (metal_tensor, MetalPerformancePrimitives) are used;
++  // don't rely on the runtime's default language version, which follows
++  // the SDK the host executable was linked against (e.g. an app built for
++  // an older deployment target) and can predate them.
++  auto compileOptions = NS::TransferPtr(MTL::CompileOptions::alloc()->init());
++  compileOptions->setLanguageVersion((MTL::LanguageVersion)(4 << 16));
+   auto string = NS::String::string(source.c_str(), NS::UTF8StringEncoding);
+   NS::Error* error = nil;
+-  library = NS::TransferPtr(device->newLibrary(string, nil, &error));
++  library = NS::TransferPtr(device->newLibrary(string, compileOptions.get(), &error));
+   CCV_NNC_MFA_CHECK_ERROR(error);
+ }
+ 

@@ -22,7 +22,21 @@ git checkout unstable
 git checkout 6a611be1aab6470ae279115ae4eaf7e01bc87135
 git apply /path/to/h3c-app/tools/ccv_eval/ccv-sol-metal27-addrspace.patch
 git apply /path/to/h3c-app/tools/ccv_eval/ccv-na-int8-bf16-lse-store.patch
+git apply /path/to/h3c-app/tools/ccv_eval/ccv-na-attention-msl4-options.patch
 ```
+
+The third patch makes `NAInt8AttentionKernel` and `NAAttentionKernel`
+compile their generated shaders with an explicit Metal 4.0 language
+version instead of `nil` options. With `nil`, the runtime's default
+language version follows the SDK version recorded in the host
+executable's `LC_BUILD_VERSION`; SwiftPM links `native/H3Spike` (and the
+app) with `sdk 13.0` for its macOS 13 deployment target, which predates
+`MetalPerformancePrimitives`, so the shader failed with `use of undeclared
+identifier 'mpp'` from Swift but not from `clang`-built tools (`sdk 27.0`).
+This was the "Swift-only" failure; it reproduces from plain C linked with
+`-Wl,-platform_version,macos,13.0,13.0` and disappears from Swift when
+linked with SDK 27.0 recorded. h3's own shaders already set
+`MTLLanguageVersion4_0` explicitly (`h3_gpu.m`).
 
 The second patch is needed only for `H3_CCV_DIRECT=1` (BF16 I/O into the
 dense `NAInt8AttentionKernel`): with BF16 I/O the kernel stores its
