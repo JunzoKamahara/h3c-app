@@ -1596,6 +1596,45 @@ the video):
 
 One seed per prompt; no difference that would block an opt-in fast mode.
 
+**Opt-in fast mode in the app** (2026-09-30, uncommitted at the time of
+writing):
+
+- Engine: `h3_params.fast_attention` (appended last; default 0) and
+  `h3_fast_attention_available()` (ccv backend linked in *and* the GPU has
+  neural matrix accelerators). `h3_generate` resolves the attention path
+  once per generation and sets it on the DiT (`h3_dit_set_attention_mode`,
+  also on a reused prepared DiT); `run_block` no longer reads the
+  environment. `H3_ATTENTION_BACKEND` / `H3_CCV_DIRECT` still work, only as
+  a diagnostic override when `fast_attention` is 0. Requesting fast mode
+  where it isn't available fails with an explicit error, never a silent
+  fallback. `h3_result` reports `ccv_attention_calls` /
+  `ccv_attention_direct_calls` — the path that actually ran.
+- H3Engine: one `autoreleasepool` per generation inside the background
+  closure (call + result handling, left on every exit path);
+  `H3GenerationParams.fastAttention`; `H3Engine.fastAttentionAvailable`;
+  an `NSLog` line per generation with the requested/actual path and the
+  device allocation after the pool drains.
+- H3cApp: "高速モード（試験的）" checkbox under the speed picker, shown only
+  when available, off by default, separate from the speed presets (none of
+  them turns it on), with a note that the same seed gives a different video
+  and that combinations with the speed presets are unverified. The value is
+  copied into the params at start, so toggling during a run has no effect.
+  History shows requested/used; timing calibration keeps a separate
+  history for fast mode; HTTP API takes `"fast_attention": true|false`
+  (default false; 400 if unavailable).
+- Checks: CLI with the parameter — `fast_attention=1` → 1000/1000 direct
+  calls, video md5-identical to the earlier env-selected direct run;
+  `fast_attention=0` → 0 ccv calls, md5-identical to the earlier standard
+  run. Build without `CCV_DIR`: available = false, and a fast request
+  errors. **Real app, one process, via the HTTP API, standard → fast →
+  standard** (512x512, 56 frames, 20 steps, seed 7): logged paths standard
+  (0 ccv) / fast (1000/1000 direct) / standard (0 ccv); runs 1 and 3
+  md5-identical (nothing carried over from the fast run); device
+  allocation after each generation 0.002 GiB. Times 238 / 244 / 242 s —
+  at this short length fast mode gives no gain (consistent with the
+  earlier short-clip measurements), so the UI note says the gain grows
+  with clip length. The checkbox itself was not inspected on screen.
+
 Earlier plan (kept for the record): (1) done — Makefile relinks `h3_generate_cli` when `libccv.a`
 changes; (2) done — replay above; (3) done for seed 7 — direct at 20
 steps on the short clip — detail, the foreground net, temporal flicker,
