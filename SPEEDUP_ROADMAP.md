@@ -1263,7 +1263,7 @@ What this shows:
   20 steps (only 2 steps were run; the step cadence was flat), or on 16 GB
   machines.
 
-Where the +4.62 GiB comes from (from the code, not yet instrumented):
+Where the +4.62 GiB comes from (from the code, not yet instrumented — **superseded by Stage ⑧**: rows is 62,847, not ~86.4k, and ccv's internal int8 scratch is part of the total):
 `h3_gpu_ccv_attention.mm` `ensure_scratch` allocates **four** private FP16
 buffers (q, k, v, out) of `rows × 56 heads × 128 dim × 2 B` each, once, at
 the first attention call, and never releases them until the device changes
@@ -1290,6 +1290,140 @@ Next, in order: (1) instrument `rows` and the scratch sizes/lifetimes
 (print at allocation); (2) test the in-place / shared-buffer variant for
 the +4.6 GiB and free the scratch after the DiT; (3) re-measure with a
 quiesced machine and with the per-phase (load/DiT/VAE) sampling above.
+
+### Stage ⑧ — ccv memory breakdown (measured) and post-DiT release
+
+`H3_CCV_MEMLOG=1` (diagnostic, in `h3_gpu_ccv_attention.mm`) prints the
+bridge's and ccv's scratch sizes and `MTLDevice.currentAllocatedSize`
+whenever either grows. 15s configuration (768x768, 362 frames), first
+attention call:
+
+| item | size |
+|---|---|
+| rows / heads / head_dim | 62,847 / 56 / 128 |
+| input layout | BF16, head-major `[heads, rows, dim]` (int8 QKV path always emits head-major) |
+| bridge FP16 Q/K/V/out (4 × 900,974,592 B) | 3.356 GiB |
+| ccv context scratch, int8 path (`request_scratch`) | 1.266 GiB (int8 Q/K/V alone 1.259 GiB; rest scales, V means, L) |
+| ccv context scratch, fp16 path | 0.016 GiB |
+| sum, int8 path | **4.622 GiB** |
+
+The sum matches the measured footprint delta (+4.62 GiB), consistent but
+not proof that nothing else differs. The earlier Stage ⑦ back-calculation
+(4 outer buffers, rows ≈ 86.4k) was wrong on both counts.
+
+Lifetimes (from ccv `6a611be`, the commit in use): the bridge buffers are
+allocated at the first attention call and were kept until process exit;
+ccv's `request_scratch` only ever grows (sizes ≥ 512 MiB are allocated
+exactly, smaller ones rounded up to a power of two) and is held by the
+context until it is destroyed. Both therefore stayed resident through the
+VAE.
+
+Also from reading that commit: the int8 path's `data_type` switch accepts
+`MTL::DataTypeBFloat`, and `batched` + `batch_dims_q` can describe the
+head-major layout as batch = 56, Hq = Hk = 1, which would make the ccv
+output head-major too, the layout the default int8 head-major output
+projection consumes. That would remove all four bridge buffers (and the
+two casts). **Not tried yet**: correctness/speed of the int8 kernel with
+BF16 I/O and that shape are unverified.
+
+In-place casting is not a drop-in: the bridge cast is a head-major →
+row-major reorder as well as BF16 → FP16, so input and output cannot share
+a buffer with the current kernel.
+
+**Post-DiT release** (implemented): `h3_dit_release_backend_scratch()`
+right after denoising returns in `h3.c` (cached or not) →
+`h3_gpu_ccv_release_scratch()`, which acts only when the DiT's `h3_gpu`
+has no open or in-flight command buffer (`h3_gpu_submit` waits for and
+clears them), i.e. on GPU completion rather than on the CPU call
+returning. It drops the four bridge buffers and shrinks ccv's scratch
+back to its initial 64 KiB (`request_scratch` dereferences the current
+buffer, so it cannot be null); the context and compiled pipelines stay.
+
+Checks:
+
+- Short clip (512x512, 39 frames, 20 steps, seed 7): RGB dump
+  byte-identical to the pre-change ccv_dense run; release freed 0.297 GiB.
+- 15s configuration, 2 steps: decoded video frames and audio samples
+  identical (md5) to Stage ⑦'s ccv_dense run; device allocation
+  27.590 → 22.967 GiB at release (−4.62 GiB). Wall 1340 s (was 1345 s).
+- VAE phase (270 s, system-wide, other apps running): compressor
+  occupied max 2.51 → 0.52 GiB, stored max 3.05 → 1.08 GiB, free-memory %
+  median 68 → 76. Swap-used barely moved in either run during the VAE.
+- As expected, the DiT is unchanged: peak footprint 25.35 GiB, swap max
+  over start +9.46 GiB (was +9.42). This change does nothing for the DiT
+  peak or the early low free-memory reading.
+
+Next: the BF16 / batch = 56 head-major path above (removes up to 3.36 GiB
+from the DiT itself), validated at block level against the current int8
+path before any generation run; then the quiesced-machine 2-step
+re-measurement.
+
+### Stage ⑨ — BF16 head-major direct path (`H3_CCV_DIRECT=1`)
+
+`H3_ATTENTION_BACKEND=ccv_dense H3_CCV_DIRECT=1`: when Q/K/V arrive
+head-major (the default int8 QKV path) and the following projection can
+take head-major output, the bridge passes the BF16 buffers straight to
+ccv's int8 kernel as batch = 56, Hq = Hk = 1, writing BF16 head-major
+output into `attention_heads`; the default int8 head-major output
+projection then runs as in production. No bridge FP16 buffers and no
+cast/reorder kernels. Requires the ccv patch
+`tools/ccv_eval/ccv-na-int8-bf16-lse-store.patch` (BF16 `L` store failed
+to compile). The attention output dump (`H3_DUMP_ATTENTION_QKV`) now
+reorders head-major output on the CPU instead of skipping it, so path A
+no longer needs `H3_DISABLE_HEAD_MAJOR_ATTENTION_OUTPUT=1` to be compared.
+
+Block-level (512x512, 39 frames, block 0 step 0; Q/K/V byte-identical
+across the three runs, so this is per-call error):
+
+| vs | relative L2 | PSNR |
+|---|---|---|
+| ccv_dense (FP16 bridge) vs A | 1.5730% | 61.94 dB |
+| direct vs A | 1.5725% | 61.94 dB |
+| direct vs ccv_dense | 0.144% | 82.71 dB |
+
+Direct keeps the same error against production as the existing int8 path
+at this block; the 0.144% between the two is measured at block 0 step 0
+only (not yet a per-call figure for every block) and is presumably BF16 vs
+FP16→BF16 output rounding (not verified). Block 30 step 1 was also dumped, but its inputs already
+differ between runs (Q differs 12%), so it only shows accumulated
+divergence (18.0% direct, 18.5% ccv_dense vs A) and cannot be used to
+compare kernel accuracy; a per-call check at a deep block needs a replay
+on identical inputs.
+
+15s configuration, 2 steps, same sampling as Stage ⑦ (other apps running,
+system-wide counters, swap as increase over each run's start):
+
+| | A | ccv_dense (Stage ⑧) | direct |
+|---|---|---|---|
+| DiT time (2 steps) | 1314 s | 1042 s | **954 s** |
+| per step | 653 / 660 s | 522 / 525 s | 479 / 474 s |
+| DiT speed-up vs A | 1.00x | 1.26x | **1.38x** |
+| wall time | 1613 s | 1340 s | 1253 s (1.29x) |
+| peak footprint (`time -l`) | 20.74 GiB | 25.35 GiB | **22.00 GiB** (+1.26) |
+| device allocated, DiT | — | 27.59 GiB | 24.23 GiB |
+| swap used, max increase (DiT) | +6.43 GiB | +9.46 GiB | +6.42 GiB |
+| compressor occupied, max (DiT) | 10.80 GiB | 10.41 GiB | 6.66 GiB |
+| free-memory %, min / median (DiT) | 17 / 20 | 8 / 13 | 17 / 19 |
+| swap-out / compression volume, DiT | 29.3 / 41.4 GiB | 30.8 / 55.9 GiB | 26.6 / 39.2 GiB |
+
+The remaining +1.26 GiB is ccv's int8 scratch (int8 Q/K/V 1.259 GiB),
+released after the DiT (Stage ⑧). The change as a whole made the DiT ~9%
+faster than the FP16 bridge; the cause is not isolated (dropped cast
+passes, head-major instead of row-major output projection, the batched
+dispatch shape, and less compression work could each contribute). The
+baseline itself still swaps heavily on 24 GiB. Single run each, machine
+not quiesced.
+
+Status: main candidate for the ccv integration, still opt-in. Next, in
+order: (1) done — Makefile relinks `h3_generate_cli` when `libccv.a`
+changes; (2) replay saved deep-block Q/K/V through the FP16 bridge and
+direct on identical inputs (per-head and tail rows too); (3) direct at 20
+steps on the short clip — detail, the foreground net, temporal flicker,
+pattern stability, limb shapes, prompt adherence, judged on video, not
+PSNR; (4) if clean, 15s at 20 steps (existing A / ccv_dense 20-step videos
+are valid references with the same model, sampler and settings). Before
+app adoption, direct must also be run from H3Spike/the Swift app: the
+earlier Swift-runtime/ccv problem is a separate, unexplained issue.
 
 Scratch sources, **not committed** (existed only under a session scratchpad
 directory — rewrite from this description if resuming):
