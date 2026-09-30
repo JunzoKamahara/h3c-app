@@ -44,6 +44,20 @@ struct ccv_attention_state {
  * one h3_gpu at a time - not safe to share across concurrent generations. */
 ccv_attention_state g_state;
 
+/* H3_CCV_MEMLOG=1: report the bridge's own FP16 scratch and ccv's internal
+ * context scratch (int8 Q/K/V, scales, V means, L) whenever either grows,
+ * with the device's total allocation for context. Diagnostics only. */
+bool memlog_enabled() {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *value = getenv("H3_CCV_MEMLOG");
+        enabled = value && *value == '1';
+    }
+    return enabled;
+}
+
+double gib(size_t bytes) { return (double)bytes / (1024.0 * 1024.0 * 1024.0); }
+
 bool ensure_scratch(id<MTLDevice> device, size_t elements) {
     if (elements <= g_state.capacity_elements && g_state.q_f16) return true;
     size_t bytes = elements * sizeof(uint16_t);
@@ -57,6 +71,10 @@ bool ensure_scratch(id<MTLDevice> device, size_t elements) {
         return false;
     }
     g_state.capacity_elements = elements;
+    if (memlog_enabled())
+        fprintf(stderr, "[ccv-mem] bridge fp16 scratch: 4 x %zu B = %.3f GiB "
+                "(elements=%zu), device allocated %.3f GiB\n", bytes,
+                gib(4 * bytes), elements, gib([device currentAllocatedSize]));
     return true;
 }
 
@@ -156,6 +174,29 @@ int ccv_dense_attention_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                                 offsets);
     ccv_nnc_finish_command_batch(batch);
 
+    if (memlog_enabled()) {
+        static int logged_shape = 0;
+        static size_t logged_ccv_scratch = 0;
+        if (!logged_shape) {
+            fprintf(stderr, "[ccv-mem] rows=%u heads=%u head_dim=%u "
+                    "input=bf16 %s-major -> fp16 row-major, %s\n", rows,
+                    heads, head_dim, head_major ? "head" : "row",
+                    quantized ? "int8 path" : "fp16 path");
+            logged_shape = 1;
+        }
+        auto *context = (ccv::nnc::mfa::context *)g_state.context;
+        size_t ccv_scratch = context->scratch ? context->scratch->length() : 0;
+        if (ccv_scratch != logged_ccv_scratch) {
+            size_t int8_qkv = 3 * count;
+            fprintf(stderr, "[ccv-mem] ccv context scratch: %zu B = %.3f GiB "
+                    "(int8 Q/K/V alone %.3f GiB), device allocated %.3f GiB\n",
+                    ccv_scratch, gib(ccv_scratch),
+                    quantized ? gib(int8_qkv) : 0.0,
+                    gib([device currentAllocatedSize]));
+            logged_ccv_scratch = ccv_scratch;
+        }
+    }
+
     if (!h3_gpu_ccv_cast_f16_to_bf16(gpu, output,
                                     (__bridge void *)g_state.out_f16,
                                     (uint32_t)count))
@@ -164,6 +205,28 @@ int ccv_dense_attention_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
     h3_gpu_set_head_major_sdpa_inputs(gpu, 0);
     h3_gpu_note_ccv_attention_dispatch(gpu);
     return 1;
+}
+
+void ccv_release_scratch(h3_gpu *gpu) {
+    if (!g_state.q_f16 && !g_state.context) return;
+    id<MTLDevice> device = (__bridge id<MTLDevice>)h3_gpu_raw_device(gpu);
+    size_t before = device ? [device currentAllocatedSize] : 0;
+    g_state.q_f16 = g_state.k_f16 = g_state.v_f16 = g_state.out_f16 = nil;
+    g_state.capacity_elements = 0;
+    if (g_state.context) {
+        /* request_scratch() dereferences the current buffer, so shrink it
+         * back to the 64 KiB ccv's context starts with instead of dropping
+         * it; the context and its compiled kernels stay. */
+        auto *context = (ccv::nnc::mfa::context *)g_state.context;
+        if (context->scratch && context->scratch->length() > 65536) {
+            auto *small = context->device->newBuffer(65536, MTL::ResourceStorageModePrivate);
+            if (small) context->scratch = NS::TransferPtr(small);
+        }
+    }
+    if (memlog_enabled() && device)
+        fprintf(stderr, "[ccv-mem] released scratch after DiT: device "
+                "allocated %.3f -> %.3f GiB\n", gib(before),
+                gib([device currentAllocatedSize]));
 }
 
 } // namespace
@@ -178,4 +241,5 @@ int ccv_dense_attention_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
 __attribute__((constructor))
 static void h3_gpu_ccv_attention_register(void) {
     h3_gpu_register_ccv_dense_attention(&ccv_dense_attention_bf16);
+    h3_gpu_register_ccv_release_scratch(&ccv_release_scratch);
 }

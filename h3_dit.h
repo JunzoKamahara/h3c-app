@@ -79,6 +79,9 @@ h3_dit *h3_dit_load_conditioned(
                          h3_dit_progress progress, void *progress_opaque,
                          char *error, size_t error_size);
 void h3_dit_free(h3_dit *dit);
+/* Releases attention-backend scratch that only the denoise loop uses (see
+ * h3_gpu_ccv_release_scratch); call once denoising has finished. */
+void h3_dit_release_backend_scratch(h3_dit *dit);
 
 /* Reset mutable sampler state and replace seed-dependent condition rows before
  * reusing an otherwise identical prepared transformer. */

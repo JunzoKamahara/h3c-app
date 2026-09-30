@@ -3889,6 +3889,11 @@ int h3_dit_denoise_euler(h3_dit *dit, float *video_latent,
         progress, progress_opaque, NULL, NULL, error, error_size);
 }
 
+void h3_dit_release_backend_scratch(h3_dit *dit) {
+    if (dit && !h3_gpu_ccv_release_scratch(dit->gpu))
+        fprintf(stderr, "h3: warning: ccv scratch kept, GPU work pending\n");
+}
+
 void h3_dit_free(h3_dit *dit) {
     if (!dit) return;
     h3_lora_set_free(dit->loras);

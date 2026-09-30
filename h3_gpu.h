@@ -726,6 +726,14 @@ typedef int (*h3_gpu_ccv_dense_attention_fn)(
     const h3_gpu_tensor *key, const h3_gpu_tensor *value, uint32_t rows,
     uint32_t heads, uint32_t head_dim, float scale, int quantized);
 void h3_gpu_register_ccv_dense_attention(h3_gpu_ccv_dense_attention_fn fn);
+/* Drops the ccv bridge's per-process scratch (its FP16 Q/K/V/out copies and
+ * ccv's own int8 scratch; compiled pipelines are kept) once no command on
+ * `gpu` is open or in flight. Returns 1 when released or nothing was held,
+ * 0 (and changes nothing) while work that may use it is still pending. The
+ * next ccv attention call reallocates. A no-op in builds without CCV_DIR. */
+int h3_gpu_ccv_release_scratch(h3_gpu *gpu);
+typedef void (*h3_gpu_ccv_release_scratch_fn)(h3_gpu *gpu);
+void h3_gpu_register_ccv_release_scratch(h3_gpu_ccv_release_scratch_fn fn);
 int h3_gpu_ccv_dense_attention_available(void);
 /* Process-wide count of successful h3_gpu_ccv_dense_attention_bf16 calls -
  * use this after a run to confirm the backend was really used for every

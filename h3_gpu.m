@@ -1775,6 +1775,23 @@ void h3_gpu_register_ccv_dense_attention(h3_gpu_ccv_dense_attention_fn fn) {
     h3_gpu_ccv_dense_attention_impl = fn;
 }
 
+static h3_gpu_ccv_release_scratch_fn h3_gpu_ccv_release_scratch_impl = NULL;
+
+void h3_gpu_register_ccv_release_scratch(h3_gpu_ccv_release_scratch_fn fn) {
+    h3_gpu_ccv_release_scratch_impl = fn;
+}
+
+int h3_gpu_ccv_release_scratch(h3_gpu *opaque) {
+    H3GPU *gpu = GPU(opaque);
+    if (!h3_gpu_ccv_release_scratch_impl) return 1;
+    /* Completion, not the CPU call returning, is what makes the buffers
+     * free to go: h3_gpu_submit waits for and clears inflightCommands, so
+     * an empty list with no open command means the GPU is done with them. */
+    if (!gpu || gpu.command || gpu.inflightCommands.count) return 0;
+    h3_gpu_ccv_release_scratch_impl(opaque);
+    return 1;
+}
+
 int h3_gpu_ccv_dense_attention_available(void) {
     return h3_gpu_ccv_dense_attention_impl != NULL;
 }
