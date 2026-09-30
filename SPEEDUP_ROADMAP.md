@@ -1633,7 +1633,24 @@ writing):
   allocation after each generation 0.002 GiB. Times 238 / 244 / 242 s —
   at this short length fast mode gives no gain (consistent with the
   earlier short-clip measurements), so the UI note says the gain grows
-  with clip length. The checkbox itself was not inspected on screen.
+  with clip length.
+- Follow-ups: UI note now says short clips gain little and can be slower
+  under some conditions (one short measurement, not "always slower");
+  while generating it also says changes apply from the next generation
+  (the other settings behave the same way). History and timing
+  calibration are keyed on the path that actually ran
+  (`ccv_attention_calls`), since the diagnostic environment override can
+  route through ccv with the checkbox off (documented in
+  `tools/ccv_eval/README.md`).
+- UI checked on screen (window-only captures; a capture-only build moved
+  the speed section to the top of the form, since the real one sits below
+  the fold under 詳細設定 and scroll events could not be sent): checkbox
+  visible with its full note wrapped, off initially; during a run (fast
+  mode on via the API, speed preset left at 標準) the "next generation"
+  note and the draft summary's 高速モード（試験的） show, and the log
+  reports 150/150 direct calls, 0.002 GiB after. Speed-preset independence
+  is by construction (nothing in `speedMode` touches `fastAttention`), not
+  by clicking.
 
 Earlier plan (kept for the record): (1) done — Makefile relinks `h3_generate_cli` when `libccv.a`
 changes; (2) done — replay above; (3) done for seed 7 — direct at 20
