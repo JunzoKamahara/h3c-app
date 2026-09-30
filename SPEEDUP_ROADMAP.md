@@ -1661,6 +1661,31 @@ writing):
   and unrelated to fast mode: the API accepts steps below the range
   without an error and the draft summary shows the unclamped "Steps 2".
 
+**Fast mode combined with the other speed-ups** (short, 20 steps, seed
+7, CLI): the engine and app do not forbid any combination, and both tried
+ran through the direct path end to end — reuse 2 (the app's new default)
+550/550 direct calls (11 model evaluations × 50 blocks), and the 最速
+preset (45 layers, core reuse 4, token reduction) 270/270 (6 core
+evaluations × 45 blocks; token reduction's shorter row count still took
+the direct path). All four clips coherent, no breakage seen; composition
+of each fast clip close to its standard counterpart. DiT time at this
+short length: 103.5 / 105.0 s (reuse 2) and 35.4 / 36.9 s (最速) —
+no gain, as expected when the other settings already cut the attention
+work; gains for long clips in combination are not measured.
+
+**App defaults changed**: denoise reuse now defaults to 2 (also the HTTP
+API's default); compute mode was already int8 attention cache on
+tensor-capable GPUs and SSD streaming otherwise. Selecting the 高速/最速
+preset puts reuse back to 1, so the presets keep their core reuse (which
+the engine won't combine with reuse > 1) and their measured 2.8x/3.2x
+figures; reuse can still be raised by hand afterwards. Restoring a past
+result sets the preset before its saved reuse, and the HTTP API applies
+an explicit "reuse" after "speed_mode" (a preset without "reuse" gets 1).
+Not runtime-tested beyond the build. Shape and length moved into a
+toolbar along the bottom edge of the prompt box (menus); their
+standalone sections are gone. Rendering checked on screen; opening the
+menus by click not checked.
+
 Earlier plan (kept for the record): (1) done — Makefile relinks `h3_generate_cli` when `libccv.a`
 changes; (2) done — replay above; (3) done for seed 7 — direct at 20
 steps on the short clip — detail, the foreground net, temporal flicker,
