@@ -2607,9 +2607,9 @@ static void debug_dump_attention_qkv(h3_dit *dit, unsigned index, int step,
  * (dit->attention_heads) in the same [1, rows, HEADS, HEAD_DIM] FP16
  * format - lets an external kernel's output on the matching captured Q/K/V
  * be diffed directly against what this engine actually produced, not just
- * against that kernel's own internal reference. Only meaningful in the
- * row-major output layout; skipped with a warning when the head-major
- * fast path is active (set H3_DISABLE_HEAD_MAJOR_ATTENTION_OUTPUT=1 for a
+ * against that kernel's own internal reference. A head-major output is
+ * reordered to row-major on the CPU, like the Q/K/V capture (previously
+ * skipped here; H3_DISABLE_HEAD_MAJOR_ATTENTION_OUTPUT=1 still gives a
  * comparable capture). Gated behind the same env vars as the QKV dump. */
 static void debug_dump_attention_output(h3_dit *dit, unsigned index, int step,
                                         uint32_t rows, int head_major) {
@@ -2620,13 +2620,6 @@ static void debug_dump_attention_output(h3_dit *dit, unsigned index, int step,
     unsigned want_block = block_text ? (unsigned)atoi(block_text) : 0;
     int want_step = step_text ? atoi(step_text) : 0;
     if (index != want_block || step != want_step) return;
-    if (head_major) {
-        fprintf(stderr, "h3: warning: H3_DUMP_ATTENTION_QKV output capture "
-                "skipped - head-major output layout active (set "
-                "H3_DISABLE_HEAD_MAJOR_ATTENTION_OUTPUT=1 for a row-major "
-                "dump comparable to the Q/K/V capture)\n");
-        return;
-    }
     if (!gpu_op(dit, h3_gpu_submit(dit->gpu), NULL, 0,
                 "flush for attention output dump") ||
         !gpu_op(dit, h3_gpu_begin(dit->gpu), NULL, 0,
@@ -2650,14 +2643,24 @@ static void debug_dump_attention_output(h3_dit *dit, unsigned index, int step,
         free(bf16); free(f16);
         return;
     }
-    for (size_t i = 0; i < count; i++) f16[i] = debug_bf16_to_f16(bf16[i]);
+    for (size_t row = 0; row < rows; row++) {
+        for (int head = 0; head < HEADS; head++) {
+            size_t dst_base = (row * HEADS + (size_t)head) * HEAD_DIM;
+            size_t src_base = head_major
+                ? ((size_t)head * rows + row) * HEAD_DIM : dst_base;
+            for (int d = 0; d < HEAD_DIM; d++)
+                f16[dst_base + (size_t)d] =
+                    debug_bf16_to_f16(bf16[src_base + (size_t)d]);
+        }
+    }
     char path[1024];
     snprintf(path, sizeof(path), "%s.out.bin", prefix);
     FILE *file = fopen(path, "wb");
     if (file) {
         fwrite(f16, sizeof(*f16), count, file);
         fclose(file);
-        debug_append_attention_meta(prefix, 0, "out", rows, "row_major",
+        debug_append_attention_meta(prefix, 0, "out", rows,
+                                    head_major ? "head_major" : "row_major",
                                     "row_major", index, step);
         fprintf(stderr, "h3: dumped attention block %u step %d production "
                 "output (rows=%u heads=%d head_dim=%d) to %s.out.bin\n",
@@ -2726,21 +2729,26 @@ static int run_block(h3_dit *dit, unsigned index, int step,
      * available in builds made with CCV_DIR set - h3_gpu_ccv_dense_
      * attention_bf16 fails cleanly with a clear error otherwise, it never
      * silently falls back to the default path, so a run that requests this
-     * backend either really used it or aborted. Always produces row-major
-     * output, so force the following projection down the row-major path
-     * regardless of what the int8 fast path would otherwise have picked.
+     * backend either really used it or aborted. Produces row-major output
+     * (and so forces the following projection down the row-major path)
+     * unless H3_CCV_DIRECT=1 lets it write the head-major layout directly.
      * "ccv_fp16" is the same bridge with ccv's non-quantized FP16 kernel,
      * so the two differ only in int8 quantization of Q/K/V/P. */
     const char *attention_backend = getenv("H3_ATTENTION_BACKEND");
     int ccv_int8 = attention_backend && !strcmp(attention_backend, "ccv_dense");
     int ccv_fp16 = attention_backend && !strcmp(attention_backend, "ccv_fp16");
     if (ccv_int8 || ccv_fp16) {
-        head_major_attention_output = 0;
+        /* In: whether the projection below can take head-major output.
+         * Out: what the bridge actually wrote (row-major unless the
+         * H3_CCV_DIRECT head-major path ran). */
+        int ccv_head_major = head_major_attention_output;
         OP(h3_gpu_ccv_dense_attention_bf16(
             dit->gpu, dit->attention_heads, dit->query, dit->key, dit->value,
-            rows, HEADS, HEAD_DIM, 1.0f / sqrtf((float)HEAD_DIM), ccv_int8),
+            rows, HEADS, HEAD_DIM, 1.0f / sqrtf((float)HEAD_DIM), ccv_int8,
+            &ccv_head_major),
            ccv_int8 ? "DiT ccv dense int8 attention (H3_ATTENTION_BACKEND=ccv_dense)"
                     : "DiT ccv fp16 attention (H3_ATTENTION_BACKEND=ccv_fp16)");
+        head_major_attention_output = ccv_head_major;
     } else if (head_major_attention_output)
         OP(h3_gpu_sdpa_bf16_head_major_output(
             dit->gpu, dit->attention_heads, dit->query, dit->key, dit->value,

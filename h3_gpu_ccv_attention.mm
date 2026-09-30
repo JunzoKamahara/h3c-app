@@ -78,12 +78,60 @@ bool ensure_scratch(id<MTLDevice> device, size_t elements) {
     return true;
 }
 
+void memlog_after_encode(id<MTLDevice> device, uint32_t rows,
+                         uint32_t heads, uint32_t head_dim, int head_major,
+                         int quantized, int direct) {
+    if (!memlog_enabled()) return;
+    static int logged_shape = 0;
+    static size_t logged_ccv_scratch = 0;
+    if (!logged_shape) {
+        if (direct)
+            fprintf(stderr, "[ccv-mem] rows=%u heads=%u head_dim=%u "
+                    "input=bf16 head-major passed directly (batch=%u, "
+                    "Hq=Hk=1), output bf16 head-major, int8 path\n", rows,
+                    heads, head_dim, heads);
+        else
+            fprintf(stderr, "[ccv-mem] rows=%u heads=%u head_dim=%u "
+                    "input=bf16 %s-major -> fp16 row-major, %s\n", rows,
+                    heads, head_dim, head_major ? "head" : "row",
+                    quantized ? "int8 path" : "fp16 path");
+        logged_shape = 1;
+    }
+    auto *context = (ccv::nnc::mfa::context *)g_state.context;
+    size_t ccv_scratch = context->scratch ? context->scratch->length() : 0;
+    if (ccv_scratch != logged_ccv_scratch) {
+        size_t int8_qkv = 3 * (size_t)rows * heads * head_dim;
+        fprintf(stderr, "[ccv-mem] ccv context scratch: %zu B = %.3f GiB "
+                "(int8 Q/K/V alone %.3f GiB), device allocated %.3f GiB\n",
+                ccv_scratch, gib(ccv_scratch),
+                quantized ? gib(int8_qkv) : 0.0,
+                gib([device currentAllocatedSize]));
+        logged_ccv_scratch = ccv_scratch;
+    }
+}
+
+/* H3_CCV_DIRECT=1: when Q/K/V arrive head-major ([heads, rows, dim] BF16,
+ * the default int8 QKV path's layout) and the caller can take head-major
+ * output, hand them to ccv's int8 kernel as-is - BF16 I/O, described as
+ * batch = heads with Hq = Hk = 1 - instead of casting/reordering into the
+ * FP16 row-major scratch. No bridge scratch is allocated on this path. */
+bool direct_enabled() {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *value = getenv("H3_CCV_DIRECT");
+        enabled = value && *value == '1';
+    }
+    return enabled;
+}
+
 int ccv_dense_attention_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                              const h3_gpu_tensor *query,
                              const h3_gpu_tensor *key,
                              const h3_gpu_tensor *value, uint32_t rows,
                              uint32_t heads, uint32_t head_dim, float scale,
-                             int quantized) {
+                             int quantized, int *head_major_output) {
+    int want_head_major_output = head_major_output && *head_major_output;
+    if (head_major_output) *head_major_output = 0;
     id<MTLDevice> device = (__bridge id<MTLDevice>)h3_gpu_raw_device(gpu);
     if (!device) {
         h3_gpu_report_error(gpu, "ccv backend: no Metal device");
@@ -112,6 +160,37 @@ int ccv_dense_attention_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
         h3_gpu_report_error(gpu, "ccv backend: context unsupported or this "
                             "device lacks neural matrix accelerators");
         return 0;
+    }
+
+    if (quantized && head_major && want_head_major_output &&
+        direct_enabled()) {
+        ccv_nnc_mfa_attention_params_t params = {};
+        params.data_type = MTL::DataTypeBFloat;
+        params.R = rows; params.C = rows; params.Hq = 1; params.Hk = 1;
+        params.D = head_dim; params.output_rows = rows;
+        params.K_trans = 1; // same as the validated row-major path below
+        params.alpha = scale;
+        params.use_neural_accelerators = 1;
+        params.use_quantized_attention = 1;
+        params.batched = 1;
+        params.batch_dims_q[0] = heads;
+        auto batch = ccv_nnc_start_command_batch_from_command_buffer(
+            (mtl_command_buffer_t *)raw_command_buffer, /*commit_on_finish=*/0);
+        mtl_buffer_t *tensors[10] = { // 10 slots: see the note below
+            (mtl_buffer_t *)h3_gpu_raw_buffer(query),
+            (mtl_buffer_t *)h3_gpu_raw_buffer(key),
+            (mtl_buffer_t *)h3_gpu_raw_buffer(value),
+            (mtl_buffer_t *)h3_gpu_raw_buffer(output),
+        };
+        size_t offsets[10] = {};
+        ccv_nnc_mfa_encode_attention(g_state.context, params, batch, tensors,
+                                    offsets);
+        ccv_nnc_finish_command_batch(batch);
+        memlog_after_encode(device, rows, heads, head_dim, head_major, 1, 1);
+        *head_major_output = 1;
+        h3_gpu_set_head_major_sdpa_inputs(gpu, 0);
+        h3_gpu_note_ccv_attention_dispatch(gpu);
+        return 1;
     }
 
     size_t count = (size_t)rows * heads * head_dim;
@@ -174,28 +253,8 @@ int ccv_dense_attention_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                                 offsets);
     ccv_nnc_finish_command_batch(batch);
 
-    if (memlog_enabled()) {
-        static int logged_shape = 0;
-        static size_t logged_ccv_scratch = 0;
-        if (!logged_shape) {
-            fprintf(stderr, "[ccv-mem] rows=%u heads=%u head_dim=%u "
-                    "input=bf16 %s-major -> fp16 row-major, %s\n", rows,
-                    heads, head_dim, head_major ? "head" : "row",
-                    quantized ? "int8 path" : "fp16 path");
-            logged_shape = 1;
-        }
-        auto *context = (ccv::nnc::mfa::context *)g_state.context;
-        size_t ccv_scratch = context->scratch ? context->scratch->length() : 0;
-        if (ccv_scratch != logged_ccv_scratch) {
-            size_t int8_qkv = 3 * count;
-            fprintf(stderr, "[ccv-mem] ccv context scratch: %zu B = %.3f GiB "
-                    "(int8 Q/K/V alone %.3f GiB), device allocated %.3f GiB\n",
-                    ccv_scratch, gib(ccv_scratch),
-                    quantized ? gib(int8_qkv) : 0.0,
-                    gib([device currentAllocatedSize]));
-            logged_ccv_scratch = ccv_scratch;
-        }
-    }
+    memlog_after_encode(device, rows, heads, head_dim, head_major, quantized,
+                        0);
 
     if (!h3_gpu_ccv_cast_f16_to_bf16(gpu, output,
                                     (__bridge void *)g_state.out_f16,

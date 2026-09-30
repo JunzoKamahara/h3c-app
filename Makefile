@@ -36,7 +36,10 @@ LIB_OBJ := $(LIB_C:.c=.o) $(LIB_M:.m=.o)
 # Package.swift to reference without a separate build step.
 ifneq ($(strip $(CCV_DIR)),)
 CCV_EXTRA_OBJ := h3_gpu_ccv_attention.o
-LDLIBS += $(CCV_DIR)/lib/libccv.a -lblas -lc++ \
+# Also a prerequisite of h3_generate_cli, so rebuilding (e.g. re-patching)
+# ccv relinks it instead of leaving a stale binary.
+CCV_LIB := $(CCV_DIR)/lib/libccv.a
+LDLIBS += $(CCV_LIB) -lblas -lc++ \
 	-framework CoreML -framework IOSurface -framework QuartzCore
 endif
 
@@ -57,8 +60,9 @@ build_attention_cache: h3_build_attention_cache.o $(LIB_OBJ)
 # H3_ATTENTION_BACKEND=ccv_dense end-to-end without hitting a still-
 # unexplained Swift-runtime/ccv interaction documented there and in
 # SPEEDUP_ROADMAP.md item 5.
-h3_generate_cli: tools/ccv_eval/h3_generate_cli.o $(LIB_OBJ) $(CCV_EXTRA_OBJ)
-	$(CC) -o $@ $^ $(LDLIBS)
+h3_generate_cli: tools/ccv_eval/h3_generate_cli.o $(LIB_OBJ) $(CCV_EXTRA_OBJ) \
+		$(CCV_LIB)
+	$(CC) -o $@ $(filter-out $(CCV_LIB),$^) $(LDLIBS)
 
 h3_tests: tests/test_h3.o $(LIB_OBJ)
 	$(CC) -o $@ $^ $(LDLIBS)

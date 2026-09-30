@@ -713,18 +713,22 @@ int h3_gpu_ccv_cast_f16_to_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
  * h3_gpu_register_ccv_dense_attention() registered (see
  * h3_gpu_ccv_attention.mm), or fails cleanly if nothing did. `quantized`
  * selects ccv's int8 kernel (Q/K/V and the softmax weights P all int8);
- * zero selects its non-quantized FP16 kernel through the same bridge. */
+ * zero selects its non-quantized FP16 kernel through the same bridge.
+ * `head_major_output` may be NULL (row-major output required); otherwise
+ * set it to 1 if a head-major [heads, rows, dim] output is acceptable, and
+ * on return it says which layout `output` was actually written in. */
 int h3_gpu_ccv_dense_attention_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                                     const h3_gpu_tensor *query,
                                     const h3_gpu_tensor *key,
                                     const h3_gpu_tensor *value,
                                     uint32_t rows, uint32_t heads,
                                     uint32_t head_dim, float scale,
-                                    int quantized);
+                                    int quantized, int *head_major_output);
 typedef int (*h3_gpu_ccv_dense_attention_fn)(
     h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *query,
     const h3_gpu_tensor *key, const h3_gpu_tensor *value, uint32_t rows,
-    uint32_t heads, uint32_t head_dim, float scale, int quantized);
+    uint32_t heads, uint32_t head_dim, float scale, int quantized,
+    int *head_major_output);
 void h3_gpu_register_ccv_dense_attention(h3_gpu_ccv_dense_attention_fn fn);
 /* Drops the ccv bridge's per-process scratch (its FP16 Q/K/V/out copies and
  * ccv's own int8 scratch; compiled pipelines are kept) once no command on

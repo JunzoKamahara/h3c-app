@@ -21,7 +21,18 @@ git checkout unstable
 # Tools here were built and validated against this exact commit:
 git checkout 6a611be1aab6470ae279115ae4eaf7e01bc87135
 git apply /path/to/h3c-app/tools/ccv_eval/ccv-sol-metal27-addrspace.patch
+git apply /path/to/h3c-app/tools/ccv_eval/ccv-na-int8-bf16-lse-store.patch
 ```
+
+The second patch is needed only for `H3_CCV_DIRECT=1` (BF16 I/O into the
+dense `NAInt8AttentionKernel`): with BF16 I/O the kernel stores its
+log-sum-exp `L` as `bfloat`, and the generated
+`L[idx[0]] = cM[k] + fast::log2(cL[k]);` fails to compile (`assigning to
+'bfloat' from incompatible type 'float'`). It adds an explicit
+`({{L_MEMORY_NAME}})(...)` conversion at those two stores. `L` is only
+written in the forward pass (it feeds the backward kernels), so the forward
+output is unaffected. `h3_generate_cli` depends on `$(CCV_DIR)/lib/libccv.a`,
+so rebuilding ccv relinks it.
 
 The patch fixes a real Metal shader compile failure
 (`no matching member function for call to 'get_destination_cooperative_tensor'`)

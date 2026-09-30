@@ -1802,7 +1802,7 @@ int h3_gpu_ccv_dense_attention_bf16(h3_gpu *opaque, h3_gpu_tensor *output,
                                     const h3_gpu_tensor *value,
                                     uint32_t rows, uint32_t heads,
                                     uint32_t head_dim, float scale,
-                                    int quantized) {
+                                    int quantized, int *head_major_output) {
     if (!h3_gpu_ccv_dense_attention_impl) {
         h3_gpu_set_error(GPU(opaque), @"ccv backend not compiled into this "
                          "binary (build with CCV_DIR set - see "
@@ -1811,7 +1811,7 @@ int h3_gpu_ccv_dense_attention_bf16(h3_gpu *opaque, h3_gpu_tensor *output,
     }
     return h3_gpu_ccv_dense_attention_impl(opaque, output, query, key, value,
                                            rows, heads, head_dim, scale,
-                                           quantized);
+                                           quantized, head_major_output);
 }
 
 int h3_gpu_sdpa_bf16_head_major_output(

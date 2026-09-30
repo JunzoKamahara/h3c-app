@@ -1,0 +1,22 @@
+diff --git a/lib/nnc/mfa/kernels/NAInt8AttentionKernel.cpp b/lib/nnc/mfa/kernels/NAInt8AttentionKernel.cpp
+index 134df93..bc20f7f 100644
+--- a/lib/nnc/mfa/kernels/NAInt8AttentionKernel.cpp
++++ b/lib/nnc/mfa/kernels/NAInt8AttentionKernel.cpp
+@@ -2736,7 +2736,7 @@ void NAInt8AttentionKernel::loopForward(CodeWriter& source) const noexcept {
+       if (cM.is_valid_element(k)) {
+         auto idx = cM.get_multidimensional_index(k);
+         if (idx[0] < (int){{R_REMAINDER}}) {
+-          L[idx[0]] = cM[k] + fast::log2(cL[k]);
++          L[idx[0]] = ({{L_MEMORY_NAME}})(cM[k] + fast::log2(cL[k]));
+         }
+       }
+     }
+@@ -2814,7 +2814,7 @@ void NAInt8AttentionKernel::loopForward(CodeWriter& source) const noexcept {
+     for (unsigned short k = 0; k < cM.get_capacity(); ++k) {
+       if (cM.is_valid_element(k)) {
+         auto idx = cM.get_multidimensional_index(k);
+-        L[idx[0]] = cM[k] + fast::log2(cL[k]);
++        L[idx[0]] = ({{L_MEMORY_NAME}})(cM[k] + fast::log2(cL[k]));
+       }
+     }
+   }
