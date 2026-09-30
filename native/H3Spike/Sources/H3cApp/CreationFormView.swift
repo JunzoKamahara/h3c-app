@@ -29,8 +29,6 @@ struct CreationFormView: View {
                         imageInputSection
                     }
                     promptSection
-                    aspectSection
-                    durationSection
                     advancedSection
                 }
                 .padding(H3Spacing.xl)
@@ -131,27 +129,38 @@ struct CreationFormView: View {
     private var promptSection: some View {
         VStack(alignment: .leading, spacing: H3Spacing.sm) {
             sectionHeading("動画の内容")
-            ZStack(alignment: .topLeading) {
-                TextEditor(text: $viewModel.prompt)
-                    .font(.body)
-                    .scrollContentBackground(.hidden)
-                    .padding(6)
-                    .frame(minHeight: 132, maxHeight: 200)
-                    .background(palette.surface)
-                    .clipShape(RoundedRectangle(cornerRadius: H3Radius.editor))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: H3Radius.editor)
-                            .stroke(palette.border, lineWidth: 1)
-                    )
-                if viewModel.prompt.isEmpty {
-                    Text("猫が毛糸玉を追いかける。窓からやわらかな光が差し込む。")
+            // Composer layout: the basic shape/length choices live in a
+            // toolbar along the bottom edge of the prompt box.
+            VStack(spacing: 0) {
+                ZStack(alignment: .topLeading) {
+                    TextEditor(text: $viewModel.prompt)
                         .font(.body)
-                        .foregroundStyle(palette.textSecondary)
-                        .padding(.horizontal, 11)
-                        .padding(.vertical, 14)
-                        .allowsHitTesting(false)
+                        .scrollContentBackground(.hidden)
+                        .padding(6)
+                        .frame(minHeight: 112, maxHeight: 180)
+                    if viewModel.prompt.isEmpty {
+                        Text("猫が毛糸玉を追いかける。窓からやわらかな光が差し込む。")
+                            .font(.body)
+                            .foregroundStyle(palette.textSecondary)
+                            .padding(.horizontal, 11)
+                            .padding(.vertical, 14)
+                            .allowsHitTesting(false)
+                    }
                 }
+                HStack(spacing: H3Spacing.sm) {
+                    aspectMenu
+                    durationMenu
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 8)
+                .padding(.bottom, 8)
             }
+            .background(palette.surface)
+            .clipShape(RoundedRectangle(cornerRadius: H3Radius.editor))
+            .overlay(
+                RoundedRectangle(cornerRadius: H3Radius.editor)
+                    .stroke(palette.border, lineWidth: 1)
+            )
 
             HStack(spacing: H3Spacing.sm) {
                 Text("例を入れる:").font(.caption).foregroundStyle(palette.textSecondary)
@@ -188,53 +197,64 @@ struct CreationFormView: View {
         }
     }
 
-    // MARK: 画面の形
+    // MARK: 画面の形・長さ (プロンプト欄の下端)
 
-    private var aspectSection: some View {
-        VStack(alignment: .leading, spacing: H3Spacing.sm) {
-            sectionHeading("画面の形")
-            HStack(spacing: H3Spacing.sm) {
+    private var aspectMenu: some View {
+        Menu {
+            Picker("画面の形", selection: Binding(
+                get: { viewModel.sizeProfile.shape },
+                set: { shape in
+                    if let first = SizeProfile.profiles(for: shape).first {
+                        viewModel.sizeProfile = first
+                    }
+                }
+            )) {
                 ForEach(AspectShape.allCases) { shape in
-                    shapeButton(shape)
+                    Label(shape.label, systemImage: shape.systemImage).tag(shape)
                 }
             }
-        }
-    }
-
-    private func shapeButton(_ shape: AspectShape) -> some View {
-        let isSelected = viewModel.sizeProfile.shape == shape
-        return Button {
-            if let first = SizeProfile.profiles(for: shape).first {
-                viewModel.sizeProfile = first
-            }
+            .pickerStyle(.inline)
         } label: {
-            VStack(spacing: 4) {
-                Image(systemName: shape.systemImage).font(.system(size: 18))
-                Text(shape.label).font(.caption)
-            }
-            .frame(width: 72, height: 56)
-            .background(isSelected ? palette.accentSoft : palette.surfaceMuted)
-            .foregroundStyle(isSelected ? palette.accent : palette.textPrimary)
-            .clipShape(RoundedRectangle(cornerRadius: H3Radius.control))
+            composerChip(systemImage: viewModel.sizeProfile.shape.systemImage,
+                         text: viewModel.sizeProfile.shape.label)
         }
+        .menuStyle(.button)
         .buttonStyle(.plain)
-        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("画面の形")
     }
 
-    // MARK: 長さ
-
-    private var durationSection: some View {
-        VStack(alignment: .leading, spacing: H3Spacing.sm) {
-            sectionHeading("長さ")
+    private var durationMenu: some View {
+        Menu {
             Picker("長さ", selection: $viewModel.seconds) {
                 ForEach(secondsRange, id: \.self) { value in
                     Text("\(value) 秒").tag(value)
                 }
             }
-            .pickerStyle(.menu)
-            .labelsHidden()
-            .frame(maxWidth: 160)
+            .pickerStyle(.inline)
+        } label: {
+            composerChip(systemImage: "clock", text: "\(viewModel.seconds)秒")
         }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("長さ")
+    }
+
+    private func composerChip(systemImage: String, text: String) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: systemImage)
+            Text(text)
+            Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold))
+        }
+        .font(.callout)
+        .foregroundStyle(palette.textPrimary)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(palette.surfaceMuted)
+        .clipShape(Capsule())
     }
 
     // MARK: 詳細設定
@@ -350,7 +370,7 @@ struct CreationFormView: View {
                 Toggle("高速モード（試験的）", isOn: $viewModel.fastAttention)
                     .toggleStyle(.checkbox)
                     .padding(.top, 6)
-                Text("M5のニューラルアクセラレータでAttentionをint8計算します。長い動画ほど効果が大きく（15秒・20ステップで約1.4倍速、メモリ約1.3GB増）、短い動画では効果が小さく、条件によっては遅くなることがあります。同じシードでも標準とは映像が変わります。上の速度設定との組み合わせは未検証です。")
+                Text("M5のニューラルアクセラレータでAttentionをint8計算します。長い動画ほど効果が大きく（15秒・20ステップで約1.4倍速、メモリ約1.3GB増）、短い動画では効果が小さく、条件によっては遅くなることがあります。同じシードでも標準とは映像が変わります。上の速度設定やreuseとも併用できますが、その組み合わせでの効果と画質は十分に検証していません。")
                     .font(.caption)
                     .foregroundStyle(palette.textSecondary)
                 if viewModel.isGenerating {

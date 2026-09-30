@@ -13,9 +13,10 @@ let reuseRange = 1 ... 3
 // - used only to detect whether "詳細設定" has been changed from them, not
 // as a claim that these are the only valid values.
 private let defaultSteps = 20
-// 1 = the close-reference path (h3.h); the old web GUI defaulted to 2 (the
-// validated fast path) - kept at 1 here so output doesn't silently change.
-private let defaultReuse = 1
+// 2 = the validated fast path (h3.h), as the old web GUI defaulted to; 1 is
+// the close-reference path. Also the HTTP API's default when "reuse" is
+// omitted.
+let defaultReuse = 2
 private let defaultSizeProfile: SizeProfile = .square
 
 extension Comparable {
@@ -80,7 +81,15 @@ final class GenerationViewModel: ObservableObject {
     // not its marketing name. Set from the real device in loadModel().
     @Published private(set) var supportsInt8Cache = true
     var defaultComputeMode: ComputeMode { supportsInt8Cache ? .attentionCache : .ssdStreaming }
-    @Published var speedMode: SpeedMode = .quality
+    // Picking the 高速/最速 preset puts reuse back to 1: their core reuse
+    // can't be combined with denoiser reuse (the engine rejects it), and
+    // their measured speed-ups were taken at reuse 1. Reuse can still be
+    // raised again by hand afterwards.
+    @Published var speedMode: SpeedMode = .quality {
+        didSet {
+            if speedMode != oldValue && speedMode != .quality { denoiseReuse = 1 }
+        }
+    }
     // Opt-in fast mode (experimental): ccv's int8 attention, M5 only. Off by
     // default, offered only where the engine reports it can run, and kept
     // separate from speedMode - no speed preset turns it on.
@@ -476,7 +485,8 @@ final class GenerationViewModel: ObservableObject {
     var draftSummaryText: String {
         var parts = ["\(sizeProfile.label)", "\(seconds)秒"]
         if hasAdvancedChanges {
-            parts.append("Steps \(steps)")
+            // Clamped like the engine params, so this shows what will run.
+            parts.append("Steps \(steps.clamped(to: stepsRange))")
             if denoiseReuse != defaultReuse { parts.append("reuse \(denoiseReuse)") }
             if computeMode != defaultComputeMode { parts.append(computeMode.summaryLabel) }
             if speedMode != .quality { parts.append(speedMode.summaryLabel) }
@@ -701,9 +711,9 @@ final class GenerationViewModel: ObservableObject {
         if let imageInputMode = result.imageInputMode { self.imageInputMode = imageInputMode }
         sizeProfile = result.sizeProfile
         seconds = result.requestedSeconds
+        speedMode = result.speedMode  // before reuse: its didSet resets reuse
         denoiseReuse = result.denoiseReuse
         computeMode = result.computeMode
-        speedMode = result.speedMode
         fastAttention = result.fastAttention && fastAttentionAvailable
         seedText = result.seedWasRandom ? "" : result.seedDecimalString
         // The result only kept the paths/strengths actually used, not

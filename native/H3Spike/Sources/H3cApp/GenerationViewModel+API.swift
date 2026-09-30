@@ -94,6 +94,16 @@ extension GenerationViewModel {
               !requestedPrompt.isEmpty else {
             return .error(400, "\"prompt\" is required")
         }
+        // Checked before anything below touches the draft/LoRA state. The
+        // engine params clamp to stepsRange, so an out-of-range value would
+        // otherwise be accepted and silently run a different step count.
+        var requestedSteps: Int?
+        if let stepsValue = json["steps"] {
+            guard let value = stepsValue as? Int, stepsRange.contains(value) else {
+                return .error(400, "\"steps\" must be an integer from \(stepsRange.lowerBound) to \(stepsRange.upperBound)")
+            }
+            requestedSteps = value
+        }
 
         // Every field below is set from this request (defaulting when
         // omitted), not merged onto whatever the UI's form last held - a
@@ -112,7 +122,6 @@ extension GenerationViewModel {
         }
 
         seconds = (json["seconds"] as? Int) ?? 5
-        denoiseReuse = (json["reuse"] as? Int) ?? 1
 
         if let modeRaw = json["compute_mode"] as? String {
             guard let mode = ComputeMode(rawValue: modeRaw) else {
@@ -131,6 +140,10 @@ extension GenerationViewModel {
         } else {
             speedMode = .quality
         }
+        // After speed_mode (whose didSet resets reuse for a preset): an
+        // explicit "reuse" wins, otherwise a preset gets 1 and the standard
+        // speed the app default.
+        denoiseReuse = (json["reuse"] as? Int) ?? (speedMode == .quality ? defaultReuse : 1)
 
         if let fast = json["fast_attention"] {
             guard let fast = fast as? Bool else {
@@ -213,7 +226,7 @@ extension GenerationViewModel {
         // to its recommended steps (followTurboLoRASteps), which an explicit
         // "steps" in the request still overrides.
         let turboSteps = library.enabledLoRAs.first { $0.recommendedSteps != nil }?.recommendedSteps
-        steps = (json["steps"] as? Int) ?? turboSteps ?? defaultStepsForAPI
+        steps = requestedSteps ?? turboSteps ?? defaultStepsForAPI
 
         guard canGenerate else {
             return .error(409, validationMessage ?? "a generation is already running")
