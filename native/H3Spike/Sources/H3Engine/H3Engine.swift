@@ -403,6 +403,13 @@ public final class H3Engine: @unchecked Sendable {
                 cParams.token_reduction = params.tokenReduction ? 1 : 0
                 cParams.ssd_streaming = params.ssdStreaming ? 1 : 0
                 cParams.fast_attention = params.fastAttention ? 1 : 0
+                // The values actually handed to the engine (not the form's
+                // labels), for checking presets and defaults end to end.
+                NSLog("h3: generation params - %dx%d, %d frames, %d steps, dit_layers %d, denoise_reuse %d, core_reuse %d, token_reduction %d, fast_attention %d, ssd_streaming %d, seed %llu",
+                      cParams.width, cParams.height, cParams.frames, cParams.steps,
+                      cParams.dit_layers, cParams.denoise_reuse, cParams.core_reuse,
+                      cParams.token_reduction, cParams.fast_attention, cParams.ssd_streaming,
+                      cParams.seed)
                 cParams.on_progress = h3ProgressTrampoline
                 cParams.on_frame = h3FrameTrampoline
                 cParams.callback_opaque = bridgeHandle.toOpaque()
