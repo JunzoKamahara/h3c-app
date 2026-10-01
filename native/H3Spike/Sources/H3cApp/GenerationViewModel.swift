@@ -102,12 +102,16 @@ final class GenerationViewModel: ObservableObject {
         var tokenReduction = false
     }
 
-    /// The engine options behind speedMode for the current draft. Measured on
-    /// an M5 (512x512, 39 frames, 20 steps, int8 cache): 232.6s exact, 82.3s
-    /// fast (2.8x), 73.7s fastest (3.2x), both still sharp and coherent.
-    /// Stacking the engine's most aggressive values instead (40 layers, core
-    /// reuse 6, token reduction, int8 row FC2) reached 61.0s but visibly
-    /// smeared the subject, and int8 row FC2 alone bought nothing.
+    /// The engine options behind speedMode for the current draft. The
+    /// presets keep all 50 DiT blocks: dropping to 45 (the earlier preset,
+    /// judged on video only) turned the audio into loud broadband noise with
+    /// tonal bands - on 2026-10-01 (5 s, seed 7) 45 layers alone reproduced
+    /// it, while core reuse, token reduction and denoiser reuse 2 didn't add
+    /// such noise. DiT-phase time there (512x512, 124 frames, 20 steps, not
+    /// the whole generation): 557 s standard, 204 s with core reuse 4 (高速,
+    /// ~2.7x), 189 s adding token reduction (最速, ~2.9x).
+    /// Stacking the engine's most aggressive values (40 layers, core reuse
+    /// 6, token reduction, int8 row FC2) visibly smeared the subject.
     ///
     /// Core reuse refreshes the transformer core only every N steps, so it's
     /// scaled to the step count (a 4-step Turbo run has nothing to reuse
@@ -116,7 +120,6 @@ final class GenerationViewModel: ObservableObject {
     var speedSettings: SpeedSettings {
         var settings = SpeedSettings()
         guard speedMode != .quality else { return settings }
-        settings.ditLayers = 45
         settings.coreReuse = denoiseReuse > 1 ? 1 :
             Int32(max(1, min(4, steps.clamped(to: stepsRange) / 5)))
         settings.tokenReduction = speedMode == .fastest
