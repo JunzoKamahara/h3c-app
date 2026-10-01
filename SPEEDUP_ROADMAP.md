@@ -1686,6 +1686,65 @@ toolbar along the bottom edge of the prompt box (menus); their
 standalone sections are gone. Rendering checked on screen; opening the
 menus by click not checked.
 
+**Audio — the 45-layer preset breaks it** (2026-10-01; none of the
+comparisons above had looked at audio). A user's 15 s generation with a
+speed preset + fast mode had loud broadband noise with tonal bands
+across the spectrum. Isolated at 5 s (512x512, 124 frames, 20 steps,
+seed 7, same prompt), judged from spectrograms and RMS / spectral
+flatness:
+
+| setting | audio |
+|---|---|
+| standard | quiet noise, -49 dB |
+| 45 layers only | broadband noise + tonal bands, -24 dB (the broken pattern) |
+| core reuse 4 only | like standard, -49 dB |
+| core reuse 4 + token reduction | like standard, -53 dB |
+| denoiser reuse 2 only | like standard, -44 dB |
+| core reuse 4 + fast attention | like standard, -52 dB |
+| 高速 / 最速 presets (45 layers) | broken pattern, -33 / -27 dB; with fast attention the same pattern 6–8 dB louder |
+
+So, under these conditions (5 s, seed 7, this prompt), the reduction to
+45 layers alone reproduced the problem — the gate-ranked removal of 5
+DiT blocks, earlier judged on video only. It occurs without fast
+attention; adding fast attention changed the broken audio by +6–8 dB, so
+"fast attention has no effect on audio" is not shown either. The ranking
+(`h3_dit_schedule_gate_score`) averages the absolute AdaLN gate values
+over all modalities (video and audio), so it is not video-only; but a
+small average gate does not prove a block is unneeded for audio. What can
+be said: gate-based ranking may not capture the effect on audio of
+dropping blocks.
+Fix in the app: the presets keep all 50 blocks; 高速 = core reuse 4
+(DiT-phase time 204 s vs 557 s standard, ~2.7x — DiT only, not the whole
+generation), 最速 = + token reduction (189 s, ~2.9x DiT). Also measured
+there: core reuse 4 + fast attention took 244 s DiT, ~20% slower than
+core reuse alone — so preset and fast-mode gains are not to be multiplied
+and stay independent choices. "Same as standard" audio here only means no
+added loud noise; whether wanted sounds (calls, speech) survive needs a
+prompt with explicit sound, listened to. The engine's own
+h3.h note "45 is the validated fast setting" was video-only. Audio of the
+standard path itself varies by seed (near-silent noise or clipped loud
+audio) — a separate, pre-existing matter.
+
+**Check in the packaged .app after the fix** (2026-10-01; prompt with
+explicit sound: "A golden retriever sits on a wooden porch and barks
+loudly three times, while a gentle acoustic guitar melody plays in the
+background.", 5 s, seed 7, via the HTTP API). H3Engine now logs the
+parameters actually handed to the engine:
+standard → `dit_layers 50, denoise_reuse 1, core_reuse 1,
+token_reduction 0`; 最速 (no "reuse" in the request) →
+`dit_layers 50, denoise_reuse 1, core_reuse 4, token_reduction 1` — the
+preset reset reuse to 1 and kept 50 layers. Whole-generation time 599 s
+vs 167 s. Spectrograms: both have broadband bark-like transients with
+tonal (harmonic) lines between them and no broadband-noise/tonal-band
+pattern; 4 barks in standard, 5 in 最速 (neither exactly the 3 asked);
+RMS -10.2 / -10.7 dB, ~2.8–2.9% clipped samples in both (the loud
+barks; clipping also occurs on the standard path). The user confirmed by
+ear that the fixed audio is fine, and that prompt input works in the
+packaged .app (the earlier "can't type" came from launching the bare
+executable). The 599 s vs 167 s is against the reuse 1 reference run, not
+a speed-up over the app's default standard setting (reuse 2).
+Denoiser reuse 2 stays the app default as the user's explicit choice.
+
 Earlier plan (kept for the record): (1) done — Makefile relinks `h3_generate_cli` when `libccv.a`
 changes; (2) done — replay above; (3) done for seed 7 — direct at 20
 steps on the short clip — detail, the foreground net, temporal flicker,
