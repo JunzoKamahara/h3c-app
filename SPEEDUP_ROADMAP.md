@@ -1745,6 +1745,27 @@ executable). The 599 s vs 167 s is against the reuse 1 reference run, not
 a speed-up over the app's default standard setting (reuse 2).
 Denoiser reuse 2 stays the app default as the user's explicit choice.
 
+**Layer count as its own setting; presets don't overwrite reuse**
+(2026-10-01): 詳細設定 gains 使用する層数 (35–50, default 50, red warning
+below 50 that 45 layers broke the audio); it applies independently of the
+speed presets, which no longer touch it. Selecting 高速/最速 no longer
+rewrites the stored reuse: the engine gets `effectiveDenoiseReuse` (1
+under a preset, the stored value under 標準), the reuse picker is
+disabled with a note while a preset is active, and going back to 標準
+uses the stored value (default 2) again. History records the form value,
+the effective reuse and the layer count; timing calibration also keys on
+a non-50 layer count; the HTTP API takes `"dit_layers"` (400 outside
+35–50) and stores `"reuse"` as given. Checked in the packaged .app via
+the API (logged engine params): 最速 → layers 50, reuse 1, core reuse 2
+(10 steps), token reduction 1; 標準 without reuse → layers 50, reuse 2;
+`dit_layers 45` → 45; `dit_layers 30` → 400. Not click-tested.
+
+| app setting | layers | effective reuse | core reuse | token reduction |
+|---|---:|---:|---:|---|
+| 標準 (default) | 50 | 2 | 1 | no |
+| 高速 | 50 | 1 | 4 (steps/5, max 4) | no |
+| 最速 | 50 | 1 | 4 (steps/5, max 4) | yes |
+
 Earlier plan (kept for the record): (1) done — Makefile relinks `h3_generate_cli` when `libccv.a`
 changes; (2) done — replay above; (3) done for seed 7 — direct at 20
 steps on the short clip — detail, the foreground net, temporal flicker,
