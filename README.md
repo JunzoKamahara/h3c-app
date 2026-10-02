@@ -105,10 +105,11 @@ to skip that step and stream the original BF16 weights instead.
   [Fast mode](#fast-mode-experimental).
 - **Window**: a full-window preview with the prompt in a floating panel over
   it (Enter generates, Shift+Enter adds a line, Tab takes the suggested
-  prompt; the panel collapses while generating), a 詳細設定 dialog (⌘,),
-  named settings presets (the last one used is restored at launch), zoom
-  by pinch or scroll wheel in the preview, and export that starts in
-  Downloads and remembers the last folder.
+  prompt; the panel collapses while generating, and clicking its prompt
+  line opens it again), an advanced settings dialog (⌘,), named settings
+  presets (the last one used is restored at launch), zoom by pinch or
+  scroll wheel in the preview, and export that starts in Downloads and
+  remembers the last folder.
 - **int8 video VAE on M5**: the video VAE decoder's transformer linears run
   on the int8 TensorOps kernels, about 3x faster decode than F32 at 46 dB
   PSNR against it (`H3_VAE_INT8=0` restores F32).
@@ -182,13 +183,14 @@ is kept and applies again under standard.
 All modes use all 50 DiT blocks. Up to 0.2.0 the faster presets also skipped
 5 gate-ranked blocks (45 of 50); that broke the audio (loud broadband noise
 with tonal bands), so 0.3.0 dropped it. The block count is still available
-on its own as 使用する層数 in 詳細設定 (35–50, default 50, the API's
-`dit_layers`), with a warning that fewer blocks can break the audio.
+on its own as the layer count in the advanced settings (35–50, default 50,
+the API's `dit_layers`), with a warning that fewer blocks can break the
+audio.
 
 ### Fast mode (experimental)
 
-A separate checkbox, 高速モード（試験的） in 詳細設定 (the API's
-`fast_attention`), runs the DiT's attention through
+A separate fast-mode checkbox in the advanced settings (the API's
+`fast_attention`) runs the DiT's attention through
 [ccv](https://github.com/liuliu/ccv)'s int8 attention kernel with BF16 input
 and output instead of the engine's own path. It is off by default and shown
 only when available: the app must be built with ccv linked in (the release
