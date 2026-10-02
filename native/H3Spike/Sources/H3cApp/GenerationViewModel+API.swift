@@ -10,7 +10,7 @@ import H3Engine
 ///
 /// POST /api/generate fully replaces the current draft from its JSON body
 /// (same fields the form itself edits) and, if valid, starts a job exactly
-/// as pressing "動画をつくる" would - there is only ever one job at a time,
+/// as pressing the window's generate button would - there is only ever one job at a time,
 /// shared with the UI, so a request while one is already running gets 409.
 /// GET /api/status polls progress. GET /api/result/video streams the
 /// current result until the next generate() call deletes it.

@@ -37,6 +37,14 @@ cp "$scratch_dir/release/H3cApp" "$app_bundle/Contents/MacOS/h3c-app"
 cp "$repo_root/h3_shaders.metal" "$app_bundle/Contents/Resources/h3_shaders.metal"
 cp "$script_dir/Packaging/AppIcon.icns" "$app_bundle/Contents/Resources/AppIcon.icns"
 cp "$script_dir/Packaging/Info.plist" "$app_bundle/Contents/Info.plist"
+# License texts travel with the binary (BSD/MIT/Apache require it for
+# binary redistribution). ccv's COPYING also carries the licenses of the
+# third-party code ccv bundles, so it's included whenever ccv is linked in.
+cp "$repo_root/LICENSE" "$app_bundle/Contents/Resources/LICENSE"
+cp "$repo_root/THIRD_PARTY_NOTICES.md" "$app_bundle/Contents/Resources/THIRD_PARTY_NOTICES.md"
+if [ -n "${CCV_DIR:-}" ]; then
+    cp "$CCV_DIR/COPYING" "$app_bundle/Contents/Resources/ccv-COPYING.txt"
+fi
 
 echo "Packaged $app_bundle"
 

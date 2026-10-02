@@ -51,21 +51,26 @@ struct CreationFormView: View {
             Capsule()
                 .fill(palette.textSecondary.opacity(0.45))
                 .frame(width: 44, height: 5)
-            HStack {
-                Spacer()
-                Button {
-                    withAnimation(.easeInOut(duration: 0.15)) { isCollapsed.toggle() }
-                } label: {
-                    Image(systemName: isCollapsed ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(palette.textSecondary)
-                        .frame(width: 24, height: 18)
+            // Collapsed, the bottom row is the (much larger) open target.
+            if !isCollapsed {
+                HStack {
+                    Spacer()
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.15)) { isCollapsed = true }
+                    } label: {
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(palette.textSecondary)
+                            .frame(width: 40, height: 22)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("パネルを折りたたむ")
                 }
-                .buttonStyle(.plain)
-                .help(isCollapsed ? "パネルを広げる" : "パネルを折りたたむ")
             }
         }
-        .frame(height: 18)
+        .frame(maxWidth: .infinity)
+        .frame(height: 22)
         .contentShape(Rectangle())
         .gesture(
             DragGesture(minimumDistance: 2)
@@ -360,24 +365,62 @@ struct CreationFormView: View {
 
     private var bottomBar: some View {
         HStack(spacing: H3Spacing.sm) {
-            Group {
-                // An empty prompt already shows its grey suggestion; no need
-                // for a red error line as well.
-                if let message = viewModel.validationMessage,
-                   !viewModel.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    || !message.contains("動画の内容") {
-                    Text(message).foregroundStyle(palette.errorColor)
-                } else {
-                    Text(viewModel.draftSummaryText).foregroundStyle(palette.textSecondary)
+            if isCollapsed {
+                // Collapsed, the whole row (all but the generate button)
+                // opens the panel - the chevron alone was too small a target.
+                Button(action: expand) {
+                    HStack(spacing: H3Spacing.sm) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(collapsedPromptLine)
+                                .font(.callout)
+                                .foregroundStyle(viewModel.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? palette.textSecondary : palette.textPrimary)
+                                .lineLimit(1)
+                            statusText.lineLimit(1)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        Image(systemName: "chevron.up")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(palette.textSecondary)
+                    }
+                    .contentShape(Rectangle())
                 }
-            }
-            .font(.caption)
-            .lineLimit(2)
-            .frame(maxWidth: .infinity, alignment: .leading)
+                .buttonStyle(.plain)
+                .help("クリックでパネルを広げる")
 
-            // Collapsed, the prompt box (and its button) is hidden.
-            if isCollapsed { generateButton }
+                // The prompt box (and its button) is hidden while collapsed.
+                generateButton
+            } else {
+                statusText
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
+    }
+
+    private var statusText: some View {
+        Group {
+            // An empty prompt already shows its grey suggestion; no need
+            // for a red error line as well.
+            if let message = viewModel.validationMessage,
+               !viewModel.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || !message.contains("動画の内容") {
+                Text(message).foregroundStyle(palette.errorColor)
+            } else {
+                Text(viewModel.draftSummaryText).foregroundStyle(palette.textSecondary)
+            }
+        }
+        .font(.caption)
+    }
+
+    private var collapsedPromptLine: String {
+        let firstLine = viewModel.prompt
+            .split(whereSeparator: \.isNewline)
+            .first { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        return firstLine.map(String.init) ?? "プロンプトを入力"
+    }
+
+    private func expand() {
+        withAnimation(.easeInOut(duration: 0.15)) { isCollapsed = false }
     }
 
     /// Round icon at the prompt's bottom-right: generate, or stop while a
