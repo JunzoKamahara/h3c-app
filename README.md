@@ -96,10 +96,19 @@ to skip that step and stream the original BF16 weights instead.
   attention cache, a resident mode for a Mac with memory to spare that
   needs no cache file, and a slow-but-low-memory SSD-streaming mode.
 - **Speed modes**: standard / fast / fastest, bundling the engine's own
-  approximations - gate-ranked DiT block skipping (`dit_layers`),
-  transformer-core reuse across steps (`core_reuse`, scaled to the step
-  count) and token reduction - up to ~3.2x faster at 20 steps; see
-  [Speed modes](#speed-modes).
+  approximations - transformer-core reuse across steps (`core_reuse`,
+  scaled to the step count) and token reduction - about 2.7x / 2.9x faster
+  in the DiT phase at 20 steps; see [Speed modes](#speed-modes).
+- **Fast mode (experimental, M5)**: runs the DiT's attention on ccv's int8
+  attention kernel - about 1.44x faster for a 15 s clip at 20 steps, little
+  or no gain for short clips; off by default. See
+  [Fast mode](#fast-mode-experimental).
+- **Window**: a full-window preview with the prompt in a floating panel over
+  it (Enter generates, Shift+Enter adds a line, Tab takes the suggested
+  prompt; the panel collapses while generating), a 詳細設定 dialog (⌘,),
+  named settings presets (the last one used is restored at launch), zoom
+  by pinch or scroll wheel in the preview, and export that starts in
+  Downloads and remembers the last folder.
 - **int8 video VAE on M5**: the video VAE decoder's transformer linears run
   on the int8 TensorOps kernels, about 3x faster decode than F32 at 46 dB
   PSNR against it (`H3_VAE_INT8=0` restores F32).
@@ -157,20 +166,44 @@ source (start from [h3_dit.c](h3_dit.c), [h3_gpu.m](h3_gpu.m), and
 Independent of the compute mode, the advanced settings (or the API's
 `speed_mode`) choose how much the engine approximates:
 
-| Mode | Engine settings | 512x512 / 39 frames / 20 steps on M5 |
+| Mode | Engine settings | DiT phase, 512x512 / 124 frames (5 s) / 20 steps on M5 |
 |---|---|---|
-| Standard (`quality`) | exact | 232.6 s |
-| Fast (`fast`) | 45 of 50 DiT blocks, transformer core reused over 4 steps | 82.3 s (2.8x) |
-| Fastest (`fastest`) | fast + token reduction | 73.7 s (3.2x) |
+| Standard (`quality`) | exact; whole-velocity `reuse` as set (default 2) | 557 s at reuse 1 |
+| Fast (`fast`) | transformer core reused over 4 steps, `reuse` 1 | 204 s (~2.7x) |
+| Fastest (`fastest`) | fast + token reduction | 189 s (~2.9x) |
 
-Both faster modes stayed sharp and coherent in side-by-side checks, but they
-change the sampling trajectory, so the same seed gives a different
-composition than standard. Stacking the engine's most aggressive values
-(40 blocks, core reuse 6, token reduction, int8 row FC2) reached 61.0 s but
-visibly smeared the subject, so the presets stop short of that. Core reuse
-scales with the step count (steps / 5, at most 4), so a 4-step Turbo LoRA run
-effectively keeps only the block skipping and token reduction, and it's
-turned off whenever the separate whole-velocity `reuse` is above 1.
+Both faster modes change the sampling trajectory, so the same seed gives a
+different composition than standard. Core reuse scales with the step count
+(steps / 5, at most 4), so a 4-step Turbo LoRA run effectively keeps only the
+token reduction. The engine won't combine core reuse with a whole-velocity
+`reuse` above 1, so the presets run at `reuse` 1; the stored `reuse` setting
+is kept and applies again under standard.
+
+All modes use all 50 DiT blocks. Up to 0.2.0 the faster presets also skipped
+5 gate-ranked blocks (45 of 50); that broke the audio (loud broadband noise
+with tonal bands), so 0.3.0 dropped it. The block count is still available
+on its own as 使用する層数 in 詳細設定 (35–50, default 50, the API's
+`dit_layers`), with a warning that fewer blocks can break the audio.
+
+### Fast mode (experimental)
+
+A separate checkbox, 高速モード（試験的） in 詳細設定 (the API's
+`fast_attention`), runs the DiT's attention through
+[ccv](https://github.com/liuliu/ccv)'s int8 attention kernel with BF16 input
+and output instead of the engine's own path. It is off by default and shown
+only when available: the app must be built with ccv linked in (the release
+`.dmg` is; see [Native app](#native-app)) and the GPU must have neural matrix
+accelerators (M5). Requesting it elsewhere is an error, never a silent
+fallback.
+
+Measured on an M5 with 24 GB at 512x512, 15 s, 20 steps, seed 7: 13727 s →
+9506 s (1.44x, 70 min saved), peak footprint 21.09 → 22.35 GiB. The gain
+grows with clip length: a 56-frame clip took 238 s standard vs 244 s fast, and
+combined with the fast preset it was slower (244 s vs 204 s DiT phase at
+5 s), so the two are independent choices whose gains don't multiply. The same
+seed gives a different video than standard. Side-by-side checks on several
+prompts and seeds found no consistent quality loss, which is not a proof of
+equal quality.
 
 ## LoRA
 
@@ -262,6 +295,18 @@ that daemon to hold locks on SwiftPM's `build.db`, intermittently failing
 the build with a spurious "disk I/O error" — if you see that, check whether
 your checkout is inside a synced directory before assuming it's flaky.
 
+Fast mode needs ccv: build a patched, MPS-enabled ccv checkout as described
+in [tools/ccv_eval/README.md](tools/ccv_eval/README.md), then pass its path to
+both steps (the release `.dmg` is built this way):
+
+```sh
+make -j8 libh3.a CCV_DIR=/path/to/ccv
+cd native/H3Spike
+CCV_DIR=/path/to/ccv ./package_app.sh
+```
+
+Without `CCV_DIR` the app builds as before, without fast mode.
+
 #### Code signing and notarization
 
 Signing and notarization are opt-in via two environment variables, so a
@@ -290,8 +335,8 @@ H3C_NOTARY_PROFILE="some-keychain-profile" \
 
 There are no nested frameworks or embedded dylibs to worry about here —
 `h3c-app`'s only linked libraries are Apple system frameworks and the
-statically-linked `libh3.a`, so a single `codesign --deep` on the bundle is
-sufficient.
+statically-linked `libh3.a` (plus `libccv.a` with `CCV_DIR`), so a single
+`codesign --deep` on the bundle is sufficient.
 
 #### Distributing as a .dmg
 
@@ -352,15 +397,21 @@ plain filesystem paths, not uploads.
 | `prompt` | — | Required. |
 | `size_profile` | `"square"` | One of `smallSquare`, `square`, `landscapeUpscaled`, `landscapeNative`, `portraitUpscaled`, `portraitNative` (see `SizeProfile` in [GenerationModels.swift](native/H3Spike/Sources/H3cApp/GenerationModels.swift)). |
 | `seconds` | `5` | 1–15. |
-| `steps` | `20`, or the first enabled Turbo LoRA's recommended steps | |
-| `reuse` | `1` | 1–3. |
+| `steps` | `20`, or the first enabled Turbo LoRA's recommended steps | 3–40. |
+| `reuse` | `2` | 1–3. The faster speed modes run at 1 whatever this is. |
 | `compute_mode` | the app's own default for this GPU | `attentionCache`, `resident`, or `ssdStreaming`. |
 | `speed_mode` | `"quality"` | `quality`, `fast`, or `fastest` (see [Speed modes](#speed-modes)). |
-| `seed` | random | |
+| `dit_layers` | `50` | 35–50. Fewer blocks can break the audio. |
+| `fast_attention` | `false` | `true` for [fast mode](#fast-mode-experimental); `400` where it isn't available. |
+| `seed` | random | 0–18446744073709551615, as a number or a decimal string (a string keeps a large seed exact for clients whose JSON numbers are doubles). |
 | `first_frame_path` / `last_frame_path` | none | FL2VA anchors; cannot combine with `reference_paths`. |
 | `reference_paths` | `[]` | Ordered Ref2VA references; image/video/audio is auto-detected per path. At least one image or video is required if any audio path is included. |
 | `loras` | `[]` | The LoRA stack for this job: names from `GET /api/loras`, or `{"name": ..., "strength": 0.8}` objects (strength multiplies the adapter's trained scale; omitted keeps the entry's saved strength). Omitting it means no LoRA, even if some are switched on in the window. |
 | `lora_name` / `lora_scale` | none | Older single-LoRA form of `loras`; ignored when `loras` is given. |
+
+A value outside its range, or of the wrong type (`true`, `"5"` or `2.5`
+where an integer is expected), is a `400` naming the allowed range; nothing
+is clamped or rounded silently.
 
 ```sh
 curl -X POST http://127.0.0.1:8420/api/generate -H "Content-Type: application/json" -d '{

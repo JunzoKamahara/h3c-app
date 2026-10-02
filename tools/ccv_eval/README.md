@@ -8,7 +8,7 @@ for the full narrative, the numbers these tools produced, and an important
 correction (a real capture-layout bug that invalidated an earlier round of
 results before these tools existed).
 
-Not built by this repo's own `Makefile` — ccv is a separate, large (MIT
+Not built by this repo's own `Makefile` — ccv is a separate, large (BSD-3-Clause
 licensed) project, not vendored here. These are standalone tools you build
 against your own `ccv` checkout.
 
