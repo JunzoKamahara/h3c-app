@@ -27,6 +27,7 @@ struct H3cApp: App {
         WindowGroup("h3c-app") {
             ContentView()
         }
+        .commands { AdvancedSettingsCommand() }
         // Design spec section 3: 1180x780 initial content area, 920x640
         // minimum. .automatic lets the window be resized by hand within
         // that range instead of being pinned to one exact size.
@@ -37,5 +38,19 @@ struct H3cApp: App {
         // development the window had drifted low enough to push its bottom
         // (Save As...) past the dock. Centering keeps it reachable.
         .defaultPosition(.center)
+    }
+}
+
+/// 詳細設定… in the app menu (where Settings… normally sits), acting on the
+/// frontmost window - each window has its own state.
+struct AdvancedSettingsCommand: Commands {
+    @FocusedObject private var viewModel: GenerationViewModel?
+
+    var body: some Commands {
+        CommandGroup(replacing: .appSettings) {
+            Button("詳細設定…") { viewModel?.showingAdvancedSettings = true }
+                .keyboardShortcut(",", modifiers: .command)
+                .disabled(viewModel == nil)
+        }
     }
 }

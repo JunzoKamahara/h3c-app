@@ -4,6 +4,7 @@
 // unlike gui/server.py's job model.
 import CH3
 import Foundation
+import Metal
 
 public enum H3GenerationEvent: Sendable {
     case progress(phase: String, completed: Int, total: Int)
@@ -40,6 +41,11 @@ public struct H3GenerationResult: Sendable {
     public let fps: Int
     public let seed: UInt64
     public let outputPath: String
+    // The attention path that actually ran (h3_result): full-attention
+    // calls served by ccv, and how many took the fast-mode direct path.
+    // Both 0 on the standard path.
+    public let ccvAttentionCalls: Int
+    public let ccvAttentionDirectCalls: Int
 }
 
 public enum H3ReferenceKind: Sendable, Equatable {
@@ -141,6 +147,11 @@ public struct H3GenerationParams: Sendable {
     // (and H3_INT8_STREAM_MLP) don't apply - generate() clears those
     // instead of passing along a combination the engine would ignore.
     public var ssdStreaming = false
+    // h3_params.fast_attention: opt-in fast mode (experimental) - ccv's int8
+    // attention on M5-class GPUs; see H3Engine.fastAttentionAvailable. The
+    // same seed gives a different video than the standard mode. Separate
+    // from the speed settings above and never turned on by them.
+    public var fastAttention = false
     public init() {}
 }
 
@@ -320,6 +331,11 @@ public final class H3Engine: @unchecked Sendable {
         currentCancelFlag?.cancel()
     }
 
+    /// Whether h3_params.fast_attention can be used here: the engine was
+    /// built with the ccv backend and the GPU has the neural matrix
+    /// accelerators it needs.
+    public static var fastAttentionAvailable: Bool { h3_fast_attention_available() != 0 }
+
     public func generate(prompt: String, outputPath: String,
                           params: H3GenerationParams) -> AsyncThrowingStream<H3GenerationEvent, Error> {
         let ctx = self.ctx
@@ -365,6 +381,14 @@ public final class H3Engine: @unchecked Sendable {
                     setenv("H3_QWEN_PREFETCH_DEPTH", "1", 1)
                 }
 
+                // One pool per generation, inside the background closure: a
+                // system global queue sets up no per-item autorelease pool
+                // (AutoreleaseFrequency.never), so without this the Metal
+                // objects h3_generate autoreleases would outlive the run.
+                // Covers the call and the result handling, and is left on
+                // success, failure and cancel alike. It does not replace the
+                // engine's own GPU-completion waits.
+                autoreleasepool {
                 var cParams = h3_params()
                 cParams.width = params.width
                 cParams.height = params.height
@@ -378,6 +402,14 @@ public final class H3Engine: @unchecked Sendable {
                 cParams.core_reuse = params.coreReuse
                 cParams.token_reduction = params.tokenReduction ? 1 : 0
                 cParams.ssd_streaming = params.ssdStreaming ? 1 : 0
+                cParams.fast_attention = params.fastAttention ? 1 : 0
+                // The values actually handed to the engine (not the form's
+                // labels), for checking presets and defaults end to end.
+                NSLog("h3: generation params - %dx%d, %d frames, %d steps, dit_layers %d, denoise_reuse %d, core_reuse %d, token_reduction %d, fast_attention %d, ssd_streaming %d, seed %llu",
+                      cParams.width, cParams.height, cParams.frames, cParams.steps,
+                      cParams.dit_layers, cParams.denoise_reuse, cParams.core_reuse,
+                      cParams.token_reduction, cParams.fast_attention, cParams.ssd_streaming,
+                      cParams.seed)
                 cParams.on_progress = h3ProgressTrampoline
                 cParams.on_frame = h3FrameTrampoline
                 cParams.callback_opaque = bridgeHandle.toOpaque()
@@ -408,15 +440,30 @@ public final class H3Engine: @unchecked Sendable {
                         frames: Int(result.pointee.frames),
                         fps: Int(result.pointee.fps),
                         seed: result.pointee.seed,
-                        outputPath: outputPath
+                        outputPath: outputPath,
+                        ccvAttentionCalls: Int(result.pointee.ccv_attention_calls),
+                        ccvAttentionDirectCalls: Int(result.pointee.ccv_attention_direct_calls)
                     )
                     h3_result_free(result)
+                    let path = genResult.ccvAttentionCalls == 0 ? "standard" :
+                        genResult.ccvAttentionDirectCalls == genResult.ccvAttentionCalls ?
+                        "fast (direct)" : "ccv (mixed/bridge)"
+                    NSLog("h3: generation finished - fast attention requested: %@, attention path: %@ (%d ccv calls, %d direct)",
+                          params.fastAttention ? "yes" : "no", path,
+                          genResult.ccvAttentionCalls, genResult.ccvAttentionDirectCalls)
                     continuation.yield(.finished(genResult))
                     continuation.finish()
                 } else {
                     let message = h3_last_error(ctx).map { String(cString: $0) } ?? "unknown error"
                     continuation.finish(throwing: cancelFlag.isCancelled
                         ? H3EngineError.cancelled : H3EngineError.generationFailed(message))
+                }
+                }
+                // After the pool has drained: what is still allocated on the
+                // GPU once this generation's objects are gone.
+                if let device = MTLCreateSystemDefaultDevice() {
+                    NSLog("h3: device allocated after generation: %.3f GiB",
+                          Double(device.currentAllocatedSize) / 1_073_741_824)
                 }
             }
         }

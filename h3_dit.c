@@ -149,6 +149,7 @@ struct h3_dit {
     int ssd_streaming;
     int keep_bf16_mlp;
     int activation_aliases;
+    h3_dit_attention_mode attention_mode;
     int fused_patch_projection;
     int fused_patch_pack;
     int token_reduction;
@@ -2607,9 +2608,9 @@ static void debug_dump_attention_qkv(h3_dit *dit, unsigned index, int step,
  * (dit->attention_heads) in the same [1, rows, HEADS, HEAD_DIM] FP16
  * format - lets an external kernel's output on the matching captured Q/K/V
  * be diffed directly against what this engine actually produced, not just
- * against that kernel's own internal reference. Only meaningful in the
- * row-major output layout; skipped with a warning when the head-major
- * fast path is active (set H3_DISABLE_HEAD_MAJOR_ATTENTION_OUTPUT=1 for a
+ * against that kernel's own internal reference. A head-major output is
+ * reordered to row-major on the CPU, like the Q/K/V capture (previously
+ * skipped here; H3_DISABLE_HEAD_MAJOR_ATTENTION_OUTPUT=1 still gives a
  * comparable capture). Gated behind the same env vars as the QKV dump. */
 static void debug_dump_attention_output(h3_dit *dit, unsigned index, int step,
                                         uint32_t rows, int head_major) {
@@ -2620,13 +2621,6 @@ static void debug_dump_attention_output(h3_dit *dit, unsigned index, int step,
     unsigned want_block = block_text ? (unsigned)atoi(block_text) : 0;
     int want_step = step_text ? atoi(step_text) : 0;
     if (index != want_block || step != want_step) return;
-    if (head_major) {
-        fprintf(stderr, "h3: warning: H3_DUMP_ATTENTION_QKV output capture "
-                "skipped - head-major output layout active (set "
-                "H3_DISABLE_HEAD_MAJOR_ATTENTION_OUTPUT=1 for a row-major "
-                "dump comparable to the Q/K/V capture)\n");
-        return;
-    }
     if (!gpu_op(dit, h3_gpu_submit(dit->gpu), NULL, 0,
                 "flush for attention output dump") ||
         !gpu_op(dit, h3_gpu_begin(dit->gpu), NULL, 0,
@@ -2650,14 +2644,24 @@ static void debug_dump_attention_output(h3_dit *dit, unsigned index, int step,
         free(bf16); free(f16);
         return;
     }
-    for (size_t i = 0; i < count; i++) f16[i] = debug_bf16_to_f16(bf16[i]);
+    for (size_t row = 0; row < rows; row++) {
+        for (int head = 0; head < HEADS; head++) {
+            size_t dst_base = (row * HEADS + (size_t)head) * HEAD_DIM;
+            size_t src_base = head_major
+                ? ((size_t)head * rows + row) * HEAD_DIM : dst_base;
+            for (int d = 0; d < HEAD_DIM; d++)
+                f16[dst_base + (size_t)d] =
+                    debug_bf16_to_f16(bf16[src_base + (size_t)d]);
+        }
+    }
     char path[1024];
     snprintf(path, sizeof(path), "%s.out.bin", prefix);
     FILE *file = fopen(path, "wb");
     if (file) {
         fwrite(f16, sizeof(*f16), count, file);
         fclose(file);
-        debug_append_attention_meta(prefix, 0, "out", rows, "row_major",
+        debug_append_attention_meta(prefix, 0, "out", rows,
+                                    head_major ? "head_major" : "row_major",
                                     "row_major", index, step);
         fprintf(stderr, "h3: dumped attention block %u step %d production "
                 "output (rows=%u heads=%d head_dim=%d) to %s.out.bin\n",
@@ -2720,7 +2724,35 @@ static int run_block(h3_dit *dit, unsigned index, int step,
         !dit->use_slower_row_major_attention_output &&
         !dit->use_slower_uncached_int8_scales &&
         !getenv("H3_DISABLE_HEAD_MAJOR_ATTENTION_OUTPUT");
-    if (head_major_attention_output)
+    /* Experimental, opt-in: replace this engine's own MPSGraph SDPA with
+     * liuliu/ccv's Metal int8 NAX attention kernel for an A/B comparison
+     * (see SPEEDUP_ROADMAP.md item 5, tools/ccv_eval/README.md). Only
+     * available in builds made with CCV_DIR set - h3_gpu_ccv_dense_
+     * attention_bf16 fails cleanly with a clear error otherwise, it never
+     * silently falls back to the default path, so a run that requests this
+     * backend either really used it or aborted. Produces row-major output
+     * (and so forces the following projection down the row-major path)
+     * except in direct mode, which writes the head-major layout itself.
+     * The mode is dit->attention_mode, fixed per generation by h3_generate
+     * (h3_params.fast_attention, or H3_ATTENTION_BACKEND for diagnostics).
+     * "ccv_fp16" is the same bridge with ccv's non-quantized FP16 kernel,
+     * so the two differ only in int8 quantization of Q/K/V/P. */
+    int ccv_direct = dit->attention_mode == H3_DIT_ATTENTION_CCV_INT8_DIRECT;
+    int ccv_int8 = ccv_direct ||
+                   dit->attention_mode == H3_DIT_ATTENTION_CCV_INT8;
+    int ccv_fp16 = dit->attention_mode == H3_DIT_ATTENTION_CCV_FP16;
+    if (ccv_int8 || ccv_fp16) {
+        /* In: whether head-major output may be written (direct mode only,
+         * and only when the projection below can take it). Out: what the
+         * bridge actually wrote. */
+        int ccv_head_major = ccv_direct && head_major_attention_output;
+        OP(h3_gpu_ccv_dense_attention_bf16(
+            dit->gpu, dit->attention_heads, dit->query, dit->key, dit->value,
+            rows, HEADS, HEAD_DIM, 1.0f / sqrtf((float)HEAD_DIM), ccv_int8,
+            &ccv_head_major),
+           ccv_int8 ? "DiT ccv int8 attention" : "DiT ccv fp16 attention");
+        head_major_attention_output = ccv_head_major;
+    } else if (head_major_attention_output)
         OP(h3_gpu_sdpa_bf16_head_major_output(
             dit->gpu, dit->attention_heads, dit->query, dit->key, dit->value,
             rows, HEADS, HEAD_DIM, 1.0f / sqrtf((float)HEAD_DIM)),
@@ -3866,6 +3898,15 @@ int h3_dit_denoise_euler(h3_dit *dit, float *video_latent,
     return h3_dit_denoise_euler_preview(
         dit, video_latent, audio_latent, reuse_interval,
         progress, progress_opaque, NULL, NULL, error, error_size);
+}
+
+void h3_dit_set_attention_mode(h3_dit *dit, h3_dit_attention_mode mode) {
+    if (dit) dit->attention_mode = mode;
+}
+
+void h3_dit_release_backend_scratch(h3_dit *dit) {
+    if (dit && !h3_gpu_ccv_release_scratch(dit->gpu))
+        fprintf(stderr, "h3: warning: ccv scratch kept, GPU work pending\n");
 }
 
 void h3_dit_free(h3_dit *dit) {

@@ -21,7 +21,32 @@ git checkout unstable
 # Tools here were built and validated against this exact commit:
 git checkout 6a611be1aab6470ae279115ae4eaf7e01bc87135
 git apply /path/to/h3c-app/tools/ccv_eval/ccv-sol-metal27-addrspace.patch
+git apply /path/to/h3c-app/tools/ccv_eval/ccv-na-int8-bf16-lse-store.patch
+git apply /path/to/h3c-app/tools/ccv_eval/ccv-na-attention-msl4-options.patch
 ```
+
+The third patch makes `NAInt8AttentionKernel` and `NAAttentionKernel`
+compile their generated shaders with an explicit Metal 4.0 language
+version instead of `nil` options. With `nil`, the runtime's default
+language version follows the SDK version recorded in the host
+executable's `LC_BUILD_VERSION`; SwiftPM links `native/H3Spike` (and the
+app) with `sdk 13.0` for its macOS 13 deployment target, which predates
+`MetalPerformancePrimitives`, so the shader failed with `use of undeclared
+identifier 'mpp'` from Swift but not from `clang`-built tools (`sdk 27.0`).
+This was the "Swift-only" failure; it reproduces from plain C linked with
+`-Wl,-platform_version,macos,13.0,13.0` and disappears from Swift when
+linked with SDK 27.0 recorded. h3's own shaders already set
+`MTLLanguageVersion4_0` explicitly (`h3_gpu.m`).
+
+The second patch is needed only for `H3_CCV_DIRECT=1` (BF16 I/O into the
+dense `NAInt8AttentionKernel`): with BF16 I/O the kernel stores its
+log-sum-exp `L` as `bfloat`, and the generated
+`L[idx[0]] = cM[k] + fast::log2(cL[k]);` fails to compile (`assigning to
+'bfloat' from incompatible type 'float'`). It adds an explicit
+`({{L_MEMORY_NAME}})(...)` conversion at those two stores. `L` is only
+written in the forward pass (it feeds the backward kernels), so the forward
+output is unaffected. `h3_generate_cli` depends on `$(CCV_DIR)/lib/libccv.a`,
+so rebuilding ccv relinks it.
 
 The patch fixes a real Metal shader compile failure
 (`no matching member function for call to 'get_destination_cooperative_tensor'`)
@@ -120,3 +145,19 @@ trustworthy numbers — see `SPEEDUP_ROADMAP.md` for the current results table
 and what they do and don't establish (per-block PSNR is not directly
 comparable to final decoded-frame PSNR; end-to-end generation validation is
 still the open item).
+
+## Fast mode in the engine and app
+
+`h3_params.fast_attention = 1` (the app's "高速モード（試験的）" checkbox,
+`"fast_attention": true` in its HTTP API, `H3SPIKE_FAST_ATTENTION=1` in
+H3Spike / `h3_generate_cli`) selects the direct path for one generation;
+`h3_fast_attention_available()` says whether it can run.
+
+**Diagnostic override:** when `fast_attention` is 0, the environment
+variables used throughout this directory still select a ccv path —
+`H3_ATTENTION_BACKEND=ccv_dense` (FP16 bridge, or direct with
+`H3_CCV_DIRECT=1`) or `ccv_fp16`. So ccv can run even with the checkbox
+off if one of these is set in the app's environment. `h3_result`'s
+`ccv_attention_calls` / `ccv_attention_direct_calls` report what actually
+ran; the app keys its history and timing calibration on those, not on the
+checkbox.

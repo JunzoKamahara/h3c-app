@@ -94,6 +94,16 @@ extension GenerationViewModel {
               !requestedPrompt.isEmpty else {
             return .error(400, "\"prompt\" is required")
         }
+        // Checked before anything below touches the draft/LoRA state. The
+        // engine params clamp to stepsRange, so an out-of-range value would
+        // otherwise be accepted and silently run a different step count.
+        var requestedSteps: Int?
+        if let stepsValue = json["steps"] {
+            guard let value = jsonInteger(stepsValue), stepsRange.contains(value) else {
+                return .error(400, "\"steps\" must be an integer from \(stepsRange.lowerBound) to \(stepsRange.upperBound)")
+            }
+            requestedSteps = value
+        }
 
         // Every field below is set from this request (defaulting when
         // omitted), not merged onto whatever the UI's form last held - a
@@ -111,8 +121,14 @@ extension GenerationViewModel {
             sizeProfile = .square
         }
 
-        seconds = (json["seconds"] as? Int) ?? 5
-        denoiseReuse = (json["reuse"] as? Int) ?? 1
+        if let secondsValue = json["seconds"] {
+            guard let value = jsonInteger(secondsValue), secondsRange.contains(value) else {
+                return .error(400, "\"seconds\" must be an integer from \(secondsRange.lowerBound) to \(secondsRange.upperBound)")
+            }
+            seconds = value
+        } else {
+            seconds = 5
+        }
 
         if let modeRaw = json["compute_mode"] as? String {
             guard let mode = ComputeMode(rawValue: modeRaw) else {
@@ -131,11 +147,50 @@ extension GenerationViewModel {
         } else {
             speedMode = .quality
         }
-
-        if let seed = json["seed"] {
-            seedText = "\(seed)".filter(\.isNumber)
+        // Stored as given (default when omitted); a speed preset still runs
+        // at reuse 1 - see effectiveDenoiseReuse. The engine rejects values
+        // outside reuseRange and the params builder would clamp them
+        // silently, so reject them here.
+        if let reuse = json["reuse"] {
+            guard let reuse = jsonInteger(reuse), reuseRange.contains(reuse) else {
+                return .error(400, "\"reuse\" must be an integer from \(reuseRange.lowerBound) to \(reuseRange.upperBound)")
+            }
+            denoiseReuse = reuse
         } else {
-            seedText = ""
+            denoiseReuse = defaultReuse
+        }
+
+        if let layers = json["dit_layers"] {
+            guard let layers = jsonInteger(layers), ditLayersRange.contains(layers) else {
+                return .error(400, "\"dit_layers\" must be an integer in \(ditLayersRange.lowerBound)-\(ditLayersRange.upperBound)")
+            }
+            ditLayers = layers
+        } else {
+            ditLayers = defaultDitLayers
+        }
+
+        if let fast = json["fast_attention"] {
+            guard let fast = fast as? Bool else {
+                return .error(400, "\"fast_attention\" must be true or false")
+            }
+            if fast && !fastAttentionAvailable {
+                return .error(400, "fast_attention is not available on this build/device")
+            }
+            fastAttention = fast
+        } else {
+            fastAttention = false
+        }
+
+        // A JSON number, or a decimal string for clients whose JSON numbers
+        // are doubles and would round a large seed.
+        if let seedValue = json["seed"] {
+            guard let seed = jsonUInt64(seedValue) else {
+                return .error(400, "\"seed\" must be an integer from 0 to \(UInt64.max), as a number or a decimal string")
+            }
+            seedFixed = true
+            seedText = String(seed)
+        } else {
+            seedFixed = false
         }
 
         let firstFrame = json["first_frame_path"] as? String
@@ -201,7 +256,7 @@ extension GenerationViewModel {
         // to its recommended steps (followTurboLoRASteps), which an explicit
         // "steps" in the request still overrides.
         let turboSteps = library.enabledLoRAs.first { $0.recommendedSteps != nil }?.recommendedSteps
-        steps = (json["steps"] as? Int) ?? turboSteps ?? defaultStepsForAPI
+        steps = requestedSteps ?? turboSteps ?? defaultStepsForAPI
 
         guard canGenerate else {
             return .error(409, validationMessage ?? "a generation is already running")
@@ -214,3 +269,23 @@ extension GenerationViewModel {
 /// h3.h's own default - kept here rather than importing CH3 into this
 /// small API file just for one constant.
 private let defaultStepsForAPI = 20
+
+/// A JSON number as an Int. JSONSerialization hands booleans back as
+/// NSNumber too, and `true as? Int` succeeds as 1 - so without this check
+/// "reuse": true would quietly run reuse 1.
+private func jsonInteger(_ value: Any) -> Int? {
+    guard let number = value as? NSNumber,
+          CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+    return value as? Int
+}
+
+/// A seed: a non-negative JSON integer, or a string of decimal digits.
+private func jsonUInt64(_ value: Any) -> UInt64? {
+    if let text = value as? String {
+        guard !text.isEmpty, text.allSatisfy({ $0.isASCII && $0.isNumber }) else { return nil }
+        return UInt64(text)
+    }
+    guard let number = value as? NSNumber,
+          CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+    return value as? UInt64
+}

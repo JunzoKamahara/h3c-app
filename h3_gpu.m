@@ -424,6 +424,7 @@ h3_gpu *h3_gpu_create(const char *shader_source_path,
             @"h3_cast_f32_to_bf16",
             @"h3_cast_bf16_to_f32",
             @"h3_cast_bf16_to_f32_bias",
+            @"h3_cast_bf16_to_f16_qkv", @"h3_cast_f16_to_bf16_flat",
             @"h3_lora_add_rows_bf16", @"h3_lora_add_int8",
             @"h3_rms_norm_f32",
             @"h3_scale_add_f32", @"h3_layer_norm_f32",
@@ -1695,6 +1696,141 @@ int h3_gpu_sdpa_bf16(h3_gpu *opaque, h3_gpu_tensor *output,
 
 int h3_gpu_head_major_sdpa_inputs(h3_gpu *opaque) {
     return GPU(opaque).headMajorSDPAInputs != 0;
+}
+
+void h3_gpu_set_head_major_sdpa_inputs(h3_gpu *opaque, int value) {
+    GPU(opaque).headMajorSDPAInputs = value != 0;
+}
+
+static uint64_t h3_ccv_attention_dispatch_total = 0;
+static uint64_t h3_ccv_attention_direct_total = 0;
+
+void h3_gpu_note_ccv_attention_dispatch(h3_gpu *opaque, int direct) {
+    H3GPU *gpu = GPU(opaque);
+    h3_gpu_stats stats = gpu.stats;
+    stats.ccv_attention_dispatches++;
+    gpu.stats = stats;
+    h3_ccv_attention_dispatch_total++;
+    if (direct) h3_ccv_attention_direct_total++;
+}
+
+uint64_t h3_gpu_ccv_attention_dispatch_count(void) {
+    return h3_ccv_attention_dispatch_total;
+}
+
+uint64_t h3_gpu_ccv_attention_direct_count(void) {
+    return h3_ccv_attention_direct_total;
+}
+
+void h3_gpu_report_error(h3_gpu *opaque, const char *message) {
+    h3_gpu_set_error(GPU(opaque), @"%s", message);
+}
+
+void *h3_gpu_raw_device(h3_gpu *opaque) {
+    return (__bridge void *)GPU(opaque).device;
+}
+
+void *h3_gpu_raw_command_buffer(h3_gpu *opaque) {
+    H3GPU *gpu = GPU(opaque);
+    if (!h3_gpu_require_command(gpu)) return NULL;
+    return (__bridge void *)gpu.command;
+}
+
+void *h3_gpu_raw_buffer(const h3_gpu_tensor *tensor) {
+    return (__bridge void *)TENSOR(tensor).buffer;
+}
+
+int h3_gpu_ccv_cast_bf16_to_f16(h3_gpu *opaque, void *output_f16_buffer,
+                                const h3_gpu_tensor *input, uint32_t rows,
+                                uint32_t heads, uint32_t head_dim,
+                                int head_major) {
+    H3GPU *gpu = GPU(opaque);
+    size_t count = (size_t)rows * heads * head_dim;
+    if (!h3_gpu_require_elements(gpu, input, count, @"ccv cast input") ||
+        !output_f16_buffer) return 0;
+    id<MTLBuffer> output = (__bridge id<MTLBuffer>)output_f16_buffer;
+    struct { uint32_t rows, heads, head_dim, head_major; } args = {
+        rows, heads, head_dim, (uint32_t)(head_major != 0)
+    };
+    return h3_gpu_dispatch_1d(gpu, @"h3_cast_bf16_to_f16_qkv", (uint32_t)count,
+        ^(id<MTLComputeCommandEncoder> encoder) {
+            [encoder setBuffer:TENSOR(input).buffer offset:0 atIndex:0];
+            [encoder setBuffer:output offset:0 atIndex:1];
+            [encoder setBytes:&args length:sizeof(args) atIndex:2];
+        });
+}
+
+int h3_gpu_ccv_cast_f16_to_bf16(h3_gpu *opaque, h3_gpu_tensor *output,
+                                const void *input_f16_buffer,
+                                uint32_t elements) {
+    H3GPU *gpu = GPU(opaque);
+    if (!h3_gpu_require_elements(gpu, output, elements, @"ccv cast output") ||
+        !input_f16_buffer) return 0;
+    id<MTLBuffer> input = (__bridge id<MTLBuffer>)input_f16_buffer;
+    return h3_gpu_dispatch_1d(gpu, @"h3_cast_f16_to_bf16_flat", elements,
+        ^(id<MTLComputeCommandEncoder> encoder) {
+            [encoder setBuffer:input offset:0 atIndex:0];
+            [encoder setBuffer:TENSOR(output).buffer offset:0 atIndex:1];
+            [encoder setBytes:&elements length:sizeof(elements) atIndex:2];
+        });
+}
+
+static h3_gpu_ccv_dense_attention_fn h3_gpu_ccv_dense_attention_impl = NULL;
+
+void h3_gpu_register_ccv_dense_attention(h3_gpu_ccv_dense_attention_fn fn) {
+    h3_gpu_ccv_dense_attention_impl = fn;
+}
+
+static h3_gpu_ccv_release_scratch_fn h3_gpu_ccv_release_scratch_impl = NULL;
+
+void h3_gpu_register_ccv_release_scratch(h3_gpu_ccv_release_scratch_fn fn) {
+    h3_gpu_ccv_release_scratch_impl = fn;
+}
+
+int h3_gpu_ccv_release_scratch(h3_gpu *opaque) {
+    H3GPU *gpu = GPU(opaque);
+    if (!h3_gpu_ccv_release_scratch_impl) return 1;
+    /* Completion, not the CPU call returning, is what makes the buffers
+     * free to go: h3_gpu_submit waits for and clears inflightCommands, so
+     * an empty list with no open command means the GPU is done with them. */
+    if (!gpu || gpu.command || gpu.inflightCommands.count) return 0;
+    h3_gpu_ccv_release_scratch_impl(opaque);
+    return 1;
+}
+
+static h3_gpu_ccv_attention_supported_fn h3_gpu_ccv_attention_supported_impl =
+    NULL;
+
+void h3_gpu_register_ccv_attention_supported(
+    h3_gpu_ccv_attention_supported_fn fn) {
+    h3_gpu_ccv_attention_supported_impl = fn;
+}
+
+int h3_gpu_ccv_attention_supported(void) {
+    return h3_gpu_ccv_attention_supported_impl &&
+           h3_gpu_ccv_attention_supported_impl();
+}
+
+int h3_gpu_ccv_dense_attention_available(void) {
+    return h3_gpu_ccv_dense_attention_impl != NULL;
+}
+
+int h3_gpu_ccv_dense_attention_bf16(h3_gpu *opaque, h3_gpu_tensor *output,
+                                    const h3_gpu_tensor *query,
+                                    const h3_gpu_tensor *key,
+                                    const h3_gpu_tensor *value,
+                                    uint32_t rows, uint32_t heads,
+                                    uint32_t head_dim, float scale,
+                                    int quantized, int *head_major_output) {
+    if (!h3_gpu_ccv_dense_attention_impl) {
+        h3_gpu_set_error(GPU(opaque), @"ccv backend not compiled into this "
+                         "binary (build with CCV_DIR set - see "
+                         "tools/ccv_eval/README.md)");
+        return 0;
+    }
+    return h3_gpu_ccv_dense_attention_impl(opaque, output, query, key, value,
+                                           rows, heads, head_dim, scale,
+                                           quantized, head_major_output);
 }
 
 int h3_gpu_sdpa_bf16_head_major_output(

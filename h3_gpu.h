@@ -4,6 +4,14 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#ifdef __cplusplus
+/* Only h3_gpu_ccv_attention.mm (Objective-C++) includes this header from a
+ * C++ translation unit - everything else in this codebase is C/Objective-C.
+ * Without this, C++ would mangle these names and fail to find the plain C
+ * symbols h3_gpu.m actually exports. */
+extern "C" {
+#endif
+
 typedef struct h3_gpu h3_gpu;
 typedef struct h3_gpu_tensor h3_gpu_tensor;
 
@@ -23,6 +31,11 @@ typedef struct {
     uint64_t mps_linear_dispatches;
     uint64_t mps_conv_dispatches;
     uint64_t mps_sdpa_dispatches;
+    /* h3_gpu_ccv_dense_attention_bf16 calls that actually ran ccv's kernel
+     * (see h3_gpu_ccv_attention.mm) - an opt-in, non-default attention
+     * backend. Checking this after a run confirms the requested backend
+     * was really used for every block, rather than silently falling back. */
+    uint64_t ccv_attention_dispatches;
     uint64_t blit_copies;
     uint64_t submissions;
     double command_encode_seconds;
@@ -658,5 +671,91 @@ int h3_gpu_euler_bf16(h3_gpu *gpu, h3_gpu_tensor *sample,
 int h3_gpu_silu_mul_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
                          const h3_gpu_tensor *gate,
                          const h3_gpu_tensor *up, uint32_t elements);
+
+/* --- Experimental, opt-in attention backend (h3_gpu_ccv_attention.mm) ---
+ *
+ * Bridges to liuliu/ccv's Metal int8 attention kernels for an A/B
+ * comparison against this engine's own MPSGraph SDPA (see
+ * SPEEDUP_ROADMAP.md item 5 and tools/ccv_eval/README.md). Only linked in
+ * when the build sets CCV_DIR (see Makefile); h3_gpu_ccv_dense_attention_bf16
+ * itself is always declared and always safe to call - it fails cleanly with
+ * "ccv backend not compiled into this binary" when nothing registered a
+ * real implementation, so the normal build and every other binary that
+ * links libh3.a is unaffected whether or not the optional backend exists. */
+
+/* Raw, unretained accessors for h3_gpu_ccv_attention.mm's Metal-cpp
+ * bridging - it needs the actual MTLDevice/MTLCommandBuffer/MTLBuffer
+ * objects, not the opaque h3_gpu/h3_gpu_tensor handles the rest of this
+ * header deals in. Pointers are valid only as long as the h3_gpu/tensor
+ * they came from is alive and, for the command buffer, only until the next
+ * h3_gpu_submit(). */
+void *h3_gpu_raw_device(h3_gpu *gpu);
+void *h3_gpu_raw_command_buffer(h3_gpu *gpu);
+void *h3_gpu_raw_buffer(const h3_gpu_tensor *tensor);
+void h3_gpu_set_head_major_sdpa_inputs(h3_gpu *gpu, int value);
+/* `direct`: the call used the BF16 head-major direct path. */
+void h3_gpu_note_ccv_attention_dispatch(h3_gpu *gpu, int direct);
+void h3_gpu_report_error(h3_gpu *gpu, const char *message);
+
+/* Cast + (for Q/K/V only) layout-fix helpers, dispatched into the current
+ * command buffer like any other h3_gpu op. `head_major` reflects
+ * h3_gpu_head_major_sdpa_inputs() at the time query/key/value were
+ * produced - output from ccv is always row-major, matching h3_gpu_sdpa_bf16
+ * (non-head-major) semantics, by construction of the kernel used here. */
+int h3_gpu_ccv_cast_bf16_to_f16(h3_gpu *gpu, void *output_f16_buffer,
+                                const h3_gpu_tensor *input, uint32_t rows,
+                                uint32_t heads, uint32_t head_dim,
+                                int head_major);
+int h3_gpu_ccv_cast_f16_to_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
+                                const void *input_f16_buffer,
+                                uint32_t elements);
+
+/* The actual entry point h3_dit.c calls. Forwards to whatever
+ * h3_gpu_register_ccv_dense_attention() registered (see
+ * h3_gpu_ccv_attention.mm), or fails cleanly if nothing did. `quantized`
+ * selects ccv's int8 kernel (Q/K/V and the softmax weights P all int8);
+ * zero selects its non-quantized FP16 kernel through the same bridge.
+ * `head_major_output` may be NULL (row-major output required); otherwise
+ * set it to 1 if a head-major [heads, rows, dim] output is acceptable, and
+ * on return it says which layout `output` was actually written in. */
+int h3_gpu_ccv_dense_attention_bf16(h3_gpu *gpu, h3_gpu_tensor *output,
+                                    const h3_gpu_tensor *query,
+                                    const h3_gpu_tensor *key,
+                                    const h3_gpu_tensor *value,
+                                    uint32_t rows, uint32_t heads,
+                                    uint32_t head_dim, float scale,
+                                    int quantized, int *head_major_output);
+typedef int (*h3_gpu_ccv_dense_attention_fn)(
+    h3_gpu *gpu, h3_gpu_tensor *output, const h3_gpu_tensor *query,
+    const h3_gpu_tensor *key, const h3_gpu_tensor *value, uint32_t rows,
+    uint32_t heads, uint32_t head_dim, float scale, int quantized,
+    int *head_major_output);
+void h3_gpu_register_ccv_dense_attention(h3_gpu_ccv_dense_attention_fn fn);
+/* Drops the ccv bridge's per-process scratch (its FP16 Q/K/V/out copies and
+ * ccv's own int8 scratch; compiled pipelines are kept) once no command on
+ * `gpu` is open or in flight. Returns 1 when released or nothing was held,
+ * 0 (and changes nothing) while work that may use it is still pending. The
+ * next ccv attention call reallocates. A no-op in builds without CCV_DIR. */
+int h3_gpu_ccv_release_scratch(h3_gpu *gpu);
+typedef void (*h3_gpu_ccv_release_scratch_fn)(h3_gpu *gpu);
+void h3_gpu_register_ccv_release_scratch(h3_gpu_ccv_release_scratch_fn fn);
+int h3_gpu_ccv_dense_attention_available(void);
+/* 1 when the backend is linked in and this machine can run it (ccv
+ * supports the device and it has neural matrix accelerators). */
+int h3_gpu_ccv_attention_supported(void);
+typedef int (*h3_gpu_ccv_attention_supported_fn)(void);
+void h3_gpu_register_ccv_attention_supported(
+    h3_gpu_ccv_attention_supported_fn fn);
+/* Process-wide count of successful h3_gpu_ccv_dense_attention_bf16 calls -
+ * use this after a run to confirm the backend was really used for every
+ * block expected, not silently skipped - and how many of them took the
+ * direct path. Defined in h3_gpu.m so they link in every build, with or
+ * without CCV_DIR. */
+uint64_t h3_gpu_ccv_attention_dispatch_count(void);
+uint64_t h3_gpu_ccv_attention_direct_count(void);
+
+#ifdef __cplusplus
+} // extern "C"
+#endif
 
 #endif

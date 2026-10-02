@@ -5,7 +5,7 @@ import Foundation
 import H3Engine
 
 let secondsRange = 1 ... 15
-let stepsRange = 3 ... 20
+let stepsRange = 3 ... 40
 // h3.c rejects anything outside [1, 3] ("denoise reuse must be in [1, 3]");
 // gui/server.py's looser 1-6 check just let the engine reject 4+ later.
 let reuseRange = 1 ... 3
@@ -13,9 +13,14 @@ let reuseRange = 1 ... 3
 // - used only to detect whether "詳細設定" has been changed from them, not
 // as a claim that these are the only valid values.
 private let defaultSteps = 20
-// 1 = the close-reference path (h3.h); the old web GUI defaulted to 2 (the
-// validated fast path) - kept at 1 here so output doesn't silently change.
-private let defaultReuse = 1
+// 2 = the validated fast path (h3.h), as the old web GUI defaulted to; 1 is
+// the close-reference path. Also the HTTP API's default when "reuse" is
+// omitted.
+let defaultReuse = 2
+// h3.h: H3_MIN_DIT_LAYERS ... H3_DEFAULT_DIT_LAYERS. Fewer than 50 drops the
+// lowest-gate DiT blocks; 45 was found to break the audio (2026-10-01).
+let ditLayersRange = 35 ... 50
+let defaultDitLayers = 50
 private let defaultSizeProfile: SizeProfile = .square
 
 extension Comparable {
@@ -64,13 +69,19 @@ final class GenerationViewModel: ObservableObject {
 
     // MARK: Draft - editable settings, never overwritten by a running job or
     // a past result (design spec invariant #1).
-    @Published var prompt: String = "A cat playing with a ball of yarn."
+    // Starts empty: the composer shows a suggestion in grey that Tab turns
+    // into real text.
+    @Published var prompt: String = ""
     @Published var creationMethod: CreationMethod = .text
     @Published var imageInputMode: ImageInputMode = .firstLastFrame
     @Published var sizeProfile: SizeProfile = defaultSizeProfile
     @Published var seconds: Int = 5
     @Published var steps: Int = defaultSteps
+    // The user's reuse setting. A speed preset runs with reuse 1 instead
+    // (effectiveDenoiseReuse) without overwriting this, so going back to
+    // 標準 uses it again.
     @Published var denoiseReuse: Int = defaultReuse
+    @Published var ditLayers: Int = defaultDitLayers
     // See ComputeMode: cache, resident and SSD streaming are mutually
     // exclusive; LoRA works with all three.
     @Published var computeMode: ComputeMode = .attentionCache
@@ -81,6 +92,23 @@ final class GenerationViewModel: ObservableObject {
     @Published private(set) var supportsInt8Cache = true
     var defaultComputeMode: ComputeMode { supportsInt8Cache ? .attentionCache : .ssdStreaming }
     @Published var speedMode: SpeedMode = .quality
+    /// Reuse actually sent to the engine: the 高速/最速 presets rely on core
+    /// reuse, which the engine won't combine with denoiser reuse, and were
+    /// measured at reuse 1 - so they run at 1 whatever denoiseReuse holds.
+    var effectiveDenoiseReuse: Int {
+        speedMode == .quality ? denoiseReuse.clamped(to: reuseRange) : 1
+    }
+    // Opt-in fast mode (experimental): ccv's int8 attention, M5 only. Off by
+    // default, offered only where the engine reports it can run, and kept
+    // separate from speedMode - no speed preset turns it on.
+    @Published var fastAttention = false
+    // The 詳細設定 dialog, opened from the composer and the app menu (⌘,).
+    @Published var showingAdvancedSettings = false
+    // Settings presets live in PresetStore (shared by all windows); this
+    // window's active one, and one waiting for a name in the save dialog.
+    @Published var activePresetID: UUID?
+    @Published var presetPendingName: SettingsPreset?
+    let fastAttentionAvailable = H3Engine.fastAttentionAvailable
 
     struct SpeedSettings {
         var ditLayers: Int32 = 50
@@ -88,12 +116,16 @@ final class GenerationViewModel: ObservableObject {
         var tokenReduction = false
     }
 
-    /// The engine options behind speedMode for the current draft. Measured on
-    /// an M5 (512x512, 39 frames, 20 steps, int8 cache): 232.6s exact, 82.3s
-    /// fast (2.8x), 73.7s fastest (3.2x), both still sharp and coherent.
-    /// Stacking the engine's most aggressive values instead (40 layers, core
-    /// reuse 6, token reduction, int8 row FC2) reached 61.0s but visibly
-    /// smeared the subject, and int8 row FC2 alone bought nothing.
+    /// The engine options behind speedMode for the current draft. The
+    /// presets keep all 50 DiT blocks: dropping to 45 (the earlier preset,
+    /// judged on video only) turned the audio into loud broadband noise with
+    /// tonal bands - on 2026-10-01 (5 s, seed 7) 45 layers alone reproduced
+    /// it, while core reuse, token reduction and denoiser reuse 2 didn't add
+    /// such noise. DiT-phase time there (512x512, 124 frames, 20 steps, not
+    /// the whole generation): 557 s standard, 204 s with core reuse 4 (高速,
+    /// ~2.7x), 189 s adding token reduction (最速, ~2.9x).
+    /// Stacking the engine's most aggressive values (40 layers, core reuse
+    /// 6, token reduction, int8 row FC2) visibly smeared the subject.
     ///
     /// Core reuse refreshes the transformer core only every N steps, so it's
     /// scaled to the step count (a 4-step Turbo run has nothing to reuse
@@ -101,17 +133,38 @@ final class GenerationViewModel: ObservableObject {
     /// the engine rejects combining the two.
     var speedSettings: SpeedSettings {
         var settings = SpeedSettings()
+        // The layer count is its own advanced setting, not part of a preset.
+        settings.ditLayers = Int32(ditLayers.clamped(to: ditLayersRange))
         guard speedMode != .quality else { return settings }
-        settings.ditLayers = 45
-        settings.coreReuse = denoiseReuse > 1 ? 1 :
-            Int32(max(1, min(4, steps.clamped(to: stepsRange) / 5)))
+        settings.coreReuse = Int32(max(1, min(4, steps.clamped(to: stepsRange) / 5)))
         settings.tokenReduction = speedMode == .fastest
         return settings
     }
-    @Published var seedText: String = "" {
+    // Whether the seed is pinned is its own state, not "seedText is
+    // non-empty": the field must survive being cleared while typing.
+    @Published var seedFixed = false {
+        didSet {
+            // Switching to 固定する starts from the seed actually used last
+            // (also when that one was random), not from 0.
+            if seedFixed && !oldValue, let last = Self.lastUsedSeed {
+                seedText = String(last)
+            }
+        }
+    }
+    @Published var seedText: String = GenerationViewModel.lastUsedSeed.map(String.init) ?? "" {
         didSet {
             let digitsOnly = seedText.filter(\.isNumber)
             if digitsOnly != seedText { seedText = digitsOnly }
+        }
+    }
+    /// The seed the last generation actually ran with, kept across launches.
+    static var lastUsedSeed: UInt64? {
+        get {
+            (UserDefaults.standard.object(forKey: "h3c-app.lastUsedSeed") as? String)
+                .flatMap { UInt64($0) }
+        }
+        set {
+            UserDefaults.standard.set(newValue.map(String.init), forKey: "h3c-app.lastUsedSeed")
         }
     }
     // Not cleared on mode switches - design spec section 6: "モード切替では
@@ -165,9 +218,14 @@ final class GenerationViewModel: ObservableObject {
         !FileManager.default.fileExists(atPath: currentAttentionCachePath)
     }
 
+    /// What a generation started now would actually request.
+    var useFastAttention: Bool { fastAttention && fastAttentionAvailable }
+
     var hasAdvancedChanges: Bool {
         sizeProfile != defaultSizeProfile || steps != defaultSteps || denoiseReuse != defaultReuse
-            || computeMode != defaultComputeMode || speedMode != .quality || !seedText.isEmpty
+            || ditLayers != defaultDitLayers
+            || computeMode != defaultComputeMode || speedMode != .quality || fastAttention
+            || seedFixed
             || !library.enabledLoRAs.isEmpty
     }
 
@@ -408,9 +466,11 @@ final class GenerationViewModel: ObservableObject {
         sizeProfile = defaultSizeProfile
         steps = defaultSteps
         denoiseReuse = defaultReuse
+        ditLayers = defaultDitLayers
         computeMode = defaultComputeMode
         speedMode = .quality
-        seedText = ""
+        fastAttention = false
+        seedFixed = false
         library.setEnabledLoRAs([])
     }
 
@@ -421,6 +481,10 @@ final class GenerationViewModel: ObservableObject {
         guard case .ready = engineState else { return nil } // covered by engine status instead
         if prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return "動画の内容を入力してください"
+        }
+        if seedFixed && UInt64(seedText) == nil {
+            return seedText.isEmpty ? "シード値を入力してください"
+                                    : "シード値は0〜18446744073709551615の整数にしてください"
         }
         if creationMethod == .image {
             switch imageInputMode {
@@ -466,11 +530,14 @@ final class GenerationViewModel: ObservableObject {
     var draftSummaryText: String {
         var parts = ["\(sizeProfile.label)", "\(seconds)秒"]
         if hasAdvancedChanges {
-            parts.append("Steps \(steps)")
-            if denoiseReuse != defaultReuse { parts.append("reuse \(denoiseReuse)") }
+            // Clamped like the engine params, so this shows what will run.
+            parts.append("Steps \(steps.clamped(to: stepsRange))")
+            if speedMode == .quality && denoiseReuse != defaultReuse { parts.append("reuse \(denoiseReuse)") }
+            if ditLayers != defaultDitLayers { parts.append("層 \(ditLayers)") }
             if computeMode != defaultComputeMode { parts.append(computeMode.summaryLabel) }
             if speedMode != .quality { parts.append(speedMode.summaryLabel) }
-            if !seedText.isEmpty { parts.append("シード固定") }
+            if fastAttention { parts.append("高速モード（試験的）") }
+            if seedFixed { parts.append("シード固定") }
             let loras = library.enabledLoRAs
             if !loras.isEmpty { parts.append("追加モデル: " + loras.map(\.name).joined(separator: " + ")) }
         }
@@ -493,7 +560,7 @@ final class GenerationViewModel: ObservableObject {
         let dimensions = sizeProfile.dimensions
         let requestedSeconds = seconds.clamped(to: secondsRange)
         let requestedFrames = Int(h3AlignedFrameCount(seconds: Double(requestedSeconds)))
-        let seedWasRandom = seedText.isEmpty
+        let seedWasRandom = !seedFixed
 
         // Which resolution the DiT actually runs at (the upscaled profiles
         // generate at renderWidth x renderHeight, then upscale).
@@ -503,15 +570,19 @@ final class GenerationViewModel: ObservableObject {
         estimator = ProgressEstimator(
             shape: ProgressEstimator.Shape(
                 steps: steps.clamped(to: stepsRange),
-                reuse: denoiseReuse.clamped(to: reuseRange),
+                reuse: effectiveDenoiseReuse,
                 totalFrames: requestedFrames,
                 ditUnits: Double(requestedFrames) * ditPixels,
                 decodeUnits: Double(requestedFrames) * Double(dimensions.width) * Double(dimensions.height)),
-            calibration: TimingCalibration.load(for: computeMode, speed: speedMode),
+            calibration: TimingCalibration.load(for: computeMode, speed: speedMode,
+                                                fastAttention: useFastAttention,
+                                                ditLayers: ditLayers.clamped(to: ditLayersRange)),
             start: Date())
         publishTiming()
         startElapsedTimer()
-        let resolvedSeed = UInt64(seedText) ?? UInt64.random(in: UInt64.min ... UInt64.max)
+        // validationMessage guarantees a parsable seed when it's fixed.
+        let resolvedSeed = (seedFixed ? UInt64(seedText) : nil)
+            ?? UInt64.random(in: UInt64.min ... UInt64.max)
 
         // Design spec invariant #4: only the image state matching the
         // *current* mode reaches the engine - the rest stays in the draft,
@@ -527,7 +598,7 @@ final class GenerationViewModel: ObservableObject {
         params.renderHeight = dimensions.renderHeight
         params.frames = Int32(requestedFrames)
         params.steps = Int32(steps.clamped(to: stepsRange))
-        params.denoiseReuse = Int32(denoiseReuse.clamped(to: reuseRange))
+        params.denoiseReuse = Int32(effectiveDenoiseReuse)
         params.seed = resolvedSeed
         params.firstFrame = effectiveFirstFrame
         params.lastFrame = effectiveLastFrame
@@ -540,6 +611,9 @@ final class GenerationViewModel: ObservableObject {
         params.ditLayers = speed.ditLayers
         params.coreReuse = speed.coreReuse
         params.tokenReduction = speed.tokenReduction
+        // Decided here, once, for this generation: the value is copied into
+        // params, so later toggles in the form can't affect a running job.
+        params.fastAttention = useFastAttention
 
         let promptCopy = prompt
         let capturedMode = creationMethod
@@ -547,8 +621,12 @@ final class GenerationViewModel: ObservableObject {
         let capturedSizeProfile = sizeProfile
         let capturedSteps = steps.clamped(to: stepsRange)
         let capturedReuse = denoiseReuse.clamped(to: reuseRange)
+        let capturedEffectiveReuse = effectiveDenoiseReuse
+        let capturedLayers = ditLayers.clamped(to: ditLayersRange)
         let capturedComputeMode = computeMode
         let capturedSpeedMode = speedMode
+        let startedAt = Date()
+        let capturedFastAttention = params.fastAttention
         let capturedDeviceLine = deviceLine
 
         generationTask = Task {
@@ -564,9 +642,15 @@ final class GenerationViewModel: ObservableObject {
                     case .preview:
                         break
                     case .finished(let result):
+                        Self.lastUsedSeed = result.seed
                         self.phase = "できあがりました"
                         self.estimator?.finishedCalibration(now: Date())
-                            .save(for: capturedComputeMode, speed: capturedSpeedMode)
+                            // Keyed by the path that actually ran, not the
+                            // checkbox: a diagnostic H3_ATTENTION_BACKEND can
+                            // route through ccv even with it off.
+                            .save(for: capturedComputeMode, speed: capturedSpeedMode,
+                                  fastAttention: result.ccvAttentionCalls > 0,
+                                  ditLayers: capturedLayers)
                         let url = URL(fileURLWithPath: result.outputPath)
                         self.resultURL = url
                         self.resultAspectRatio = CGFloat(dimensions.width) / CGFloat(dimensions.height)
@@ -582,13 +666,19 @@ final class GenerationViewModel: ObservableObject {
                             actualDurationSeconds: nil,
                             steps: capturedSteps,
                             denoiseReuse: capturedReuse,
+                            effectiveDenoiseReuse: capturedEffectiveReuse,
+                            ditLayers: capturedLayers,
                             computeMode: capturedComputeMode,
                             speedMode: capturedSpeedMode,
+                            fastAttention: capturedFastAttention,
+                            ccvAttentionCalls: result.ccvAttentionCalls,
+                            ccvAttentionDirectCalls: result.ccvAttentionDirectCalls,
                             seed: result.seed,
                             seedWasRandom: seedWasRandom,
                             loras: capturedLoRAs,
                             deviceLine: capturedDeviceLine,
-                            completedAt: Date()
+                            completedAt: Date(),
+                            generationSeconds: Date().timeIntervalSince(startedAt)
                         )
                         self.loadActualDuration(for: url)
                     }
@@ -678,28 +768,38 @@ final class GenerationViewModel: ObservableObject {
         if let imageInputMode = result.imageInputMode { self.imageInputMode = imageInputMode }
         sizeProfile = result.sizeProfile
         seconds = result.requestedSeconds
-        denoiseReuse = result.denoiseReuse
-        computeMode = result.computeMode
         speedMode = result.speedMode
-        seedText = result.seedWasRandom ? "" : result.seedDecimalString
-        // The result only kept the paths/strengths actually used, not
-        // library entry ids (which may since have been renamed or removed) -
-        // best-effort match them back to still-registered LoRAs by path.
-        var ids = Set<UUID>()
-        for used in result.loras {
-            guard let match = library.loras.first(where: { $0.path == used.path }) else { continue }
-            ids.insert(match.id)
-            library.setLoRAScale(id: match.id, scaleText: used.strength == 1 ? "" : "\(used.strength)")
-        }
-        library.setEnabledLoRAs(ids)
+        denoiseReuse = result.denoiseReuse
+        ditLayers = result.ditLayers
+        computeMode = result.computeMode
+        fastAttention = result.fastAttention && fastAttentionAvailable
+        // The used seed stays in the field either way, so switching to
+        // 固定する later reproduces that run.
+        seedText = result.seedDecimalString
+        seedFixed = !result.seedWasRandom
+        applyLoRAs(result.loras.map { ($0.path, $0.strength) })
         // After the LoRAs: enabling a Turbo LoRA moves steps to its
         // recommended count, and the past result's own value should win.
         steps = result.steps
     }
 
+    /// The result / preset only kept the paths and strengths used, not
+    /// library entry ids (which may since have been renamed or removed) -
+    /// best-effort match them back to still-registered LoRAs by path.
+    func applyLoRAs(_ used: [(path: String, strength: Float)]) {
+        var ids = Set<UUID>()
+        for item in used {
+            guard let match = library.loras.first(where: { $0.path == item.path }) else { continue }
+            ids.insert(match.id)
+            library.setLoRAScale(id: match.id, scaleText: item.strength == 1 ? "" : "\(item.strength)")
+        }
+        library.setEnabledLoRAs(ids)
+    }
+
     /// "同じシードを使う": pins the exact seed regardless of the original
     /// policy, for reproducing one specific past output.
     func useSameSeed(from result: ResolvedResult) {
+        seedFixed = true
         seedText = result.seedDecimalString
     }
 }

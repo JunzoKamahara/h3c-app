@@ -1,53 +1,138 @@
 import H3Engine
 import SwiftUI
 
-private let promptExamples: [(label: String, text: String)] = [
-    ("猫と毛糸", "A cat playing with a ball of yarn."),
-    ("海辺", "Waves rolling onto a sandy beach at sunset."),
-]
+// Shown in grey while the prompt is empty; Tab turns it into real text.
+private let promptSuggestion = "A cat playing with a ball of yarn."
 
 struct CreationFormView: View {
     @ObservedObject var viewModel: GenerationViewModel
     @ObservedObject var library: ModelLibrary
     @Binding var showingModelManager: Bool
+    @ObservedObject private var presetStore = PresetStore.shared
+    // Floating-panel placement, owned by ContentView: offset from the
+    // bottom-centre home position, clamped to `bounds` (the window).
+    @Binding var offset: CGSize
+    @Binding var isCollapsed: Bool
+    var bounds: CGSize
     @Environment(\.colorScheme) private var colorScheme
-    @State private var isAdvancedExpanded = false
-    @State private var pendingExampleReplacement: String?
+    @State private var dragBase: CGSize?
 
     private var palette: H3Palette { H3Palette(colorScheme) }
 
+    static let panelWidth: CGFloat = 640
+
     var body: some View {
-        VStack(spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: H3Spacing.xl) {
-                    Text("動画をつくる")
-                        .font(.system(size: 22, weight: .semibold))
-                        .foregroundStyle(palette.textPrimary)
-
-                    creationMethodSection
-                    if viewModel.creationMethod == .image {
-                        imageInputSection
-                    }
-                    promptSection
-                    aspectSection
-                    durationSection
-                    advancedSection
+        VStack(alignment: .leading, spacing: H3Spacing.md) {
+            dragHandle
+            if !isCollapsed {
+                topRow
+                if viewModel.creationMethod == .image {
+                    imageInputSection
                 }
-                .padding(H3Spacing.xl)
+                promptSection
             }
-
-            Divider()
-
             bottomBar
         }
-        .background(palette.canvas)
+        .padding(.horizontal, H3Spacing.lg)
+        .padding(.bottom, H3Spacing.lg)
+        .padding(.top, 6)
+        .frame(width: Self.panelWidth)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(palette.border, lineWidth: 1))
+        .shadow(color: .black.opacity(0.25), radius: 18, y: 6)
     }
 
-    // MARK: 作り方
+    // MARK: 移動・折りたたみ
 
-    private var creationMethodSection: some View {
-        VStack(alignment: .leading, spacing: H3Spacing.sm) {
-            sectionHeading("作り方")
+    /// Drag to move the panel anywhere over the preview; double-click to
+    /// put it back at the bottom centre.
+    private var dragHandle: some View {
+        ZStack {
+            Capsule()
+                .fill(palette.textSecondary.opacity(0.45))
+                .frame(width: 44, height: 5)
+            HStack {
+                Spacer()
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) { isCollapsed.toggle() }
+                } label: {
+                    Image(systemName: isCollapsed ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(palette.textSecondary)
+                        .frame(width: 24, height: 18)
+                }
+                .buttonStyle(.plain)
+                .help(isCollapsed ? "パネルを広げる" : "パネルを折りたたむ")
+            }
+        }
+        .frame(height: 18)
+        .contentShape(Rectangle())
+        .gesture(
+            DragGesture(minimumDistance: 2)
+                .onChanged { value in
+                    let base = dragBase ?? offset
+                    dragBase = base
+                    offset = clamped(CGSize(width: base.width + value.translation.width,
+                                            height: base.height + value.translation.height))
+                }
+                .onEnded { _ in dragBase = nil }
+        )
+        .onTapGesture(count: 2) { withAnimation { offset = .zero } }
+        .help("ドラッグで移動、ダブルクリックで元の位置へ")
+    }
+
+    private func clamped(_ proposed: CGSize) -> CGSize {
+        let maxX = max(0, (bounds.width - Self.panelWidth) / 2 - 8)
+        let maxUp = max(0, bounds.height - 160)
+        return CGSize(width: min(max(proposed.width, -maxX), maxX),
+                      height: min(max(proposed.height, -maxUp), 0))
+    }
+
+    // MARK: 作り方・プリセット・詳細設定
+
+    private var presetMenu: some View {
+        Menu {
+            if presetStore.presets.isEmpty {
+                Text("保存したプリセットはありません")
+            } else {
+                ForEach(presetStore.presets) { preset in
+                    Button {
+                        viewModel.applyPreset(preset)
+                    } label: {
+                        if preset.id == viewModel.activePresetID {
+                            Label(preset.name, systemImage: "checkmark")
+                        } else {
+                            Text(preset.name)
+                        }
+                    }
+                }
+            }
+            Divider()
+            Button("現在の設定をプリセットとして保存…") {
+                viewModel.presetPendingName = viewModel.presetFromCurrentSettings()
+            }
+            if !presetStore.presets.isEmpty {
+                Menu("削除") {
+                    ForEach(presetStore.presets) { preset in
+                        Button(preset.name) { viewModel.deletePreset(id: preset.id) }
+                    }
+                }
+            }
+        } label: {
+            // The preset in use, marked when the form has moved off it.
+            if let active = viewModel.activePreset {
+                Label(active.modified ? "\(active.preset.name)・変更あり" : active.preset.name,
+                      systemImage: "square.stack")
+            } else {
+                Label("プリセット", systemImage: "square.stack")
+            }
+        }
+        .fixedSize()
+        .help("形・大きさ・長さと詳細設定をまとめて保存・適用します（プロンプトは含みません）")
+    }
+
+    private var topRow: some View {
+        HStack(spacing: H3Spacing.sm) {
             Picker("作り方", selection: $viewModel.creationMethod) {
                 ForEach(CreationMethod.allCases) { method in
                     Text(method.label).tag(method)
@@ -55,6 +140,7 @@ struct CreationFormView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
+            .frame(width: 200)
 
             if viewModel.creationMethod == .image {
                 Picker("画像の使い方", selection: $viewModel.imageInputMode) {
@@ -64,7 +150,20 @@ struct CreationFormView: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
+                .fixedSize()
             }
+
+            Spacer(minLength: 0)
+
+            presetMenu
+
+            Button {
+                viewModel.showingAdvancedSettings = true
+            } label: {
+                Label(viewModel.hasAdvancedChanges ? "詳細設定・変更あり" : "詳細設定",
+                      systemImage: "slider.horizontal.3")
+            }
+            .help("詳細設定を開く（⌘,）")
         }
     }
 
@@ -130,439 +229,178 @@ struct CreationFormView: View {
 
     private var promptSection: some View {
         VStack(alignment: .leading, spacing: H3Spacing.sm) {
-            sectionHeading("動画の内容")
-            ZStack(alignment: .topLeading) {
-                TextEditor(text: $viewModel.prompt)
-                    .font(.body)
-                    .scrollContentBackground(.hidden)
-                    .padding(6)
-                    .frame(minHeight: 132, maxHeight: 200)
-                    .background(palette.surface)
-                    .clipShape(RoundedRectangle(cornerRadius: H3Radius.editor))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: H3Radius.editor)
-                            .stroke(palette.border, lineWidth: 1)
-                    )
-                if viewModel.prompt.isEmpty {
-                    Text("猫が毛糸玉を追いかける。窓からやわらかな光が差し込む。")
-                        .font(.body)
-                        .foregroundStyle(palette.textSecondary)
+            // Composer layout: the basic shape/size/length choices and the
+            // generate button live in a toolbar along the bottom edge of the
+            // prompt box. Return generates, Shift+Return starts a new line.
+            VStack(spacing: 0) {
+                ZStack(alignment: .topLeading) {
+                    PromptTextView(text: $viewModel.prompt, suggestion: promptSuggestion) {
+                        if viewModel.canGenerate { viewModel.generate() }
+                    }
+                    .frame(height: 84)
+                    if viewModel.prompt.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(promptSuggestion)
+                                .font(.body)
+                            Text("Tabで入力 ・ Enterで生成 ・ Shift+Enterで改行")
+                                .font(.caption)
+                        }
+                        .foregroundStyle(palette.textSecondary.opacity(0.75))
                         .padding(.horizontal, 11)
-                        .padding(.vertical, 14)
+                        .padding(.vertical, 8)
                         .allowsHitTesting(false)
+                    }
                 }
-            }
-
-            HStack(spacing: H3Spacing.sm) {
-                Text("例を入れる:").font(.caption).foregroundStyle(palette.textSecondary)
-                ForEach(promptExamples, id: \.label) { example in
-                    Button(example.label) { requestExample(example.text) }
-                        .font(.caption)
+                HStack(spacing: H3Spacing.sm) {
+                    aspectMenu
+                    sizeMenu
+                    durationMenu
+                    Spacer(minLength: 0)
+                    generateButton
                 }
+                .padding(.horizontal, 8)
+                .padding(.bottom, 8)
             }
-
-            if let message = viewModel.validationMessage, message.contains("動画の内容") {
-                Text(message).font(.caption).foregroundStyle(palette.errorColor)
-            }
-        }
-        .confirmationDialog(
-            "入力をこの例に置き換えますか？",
-            isPresented: Binding(
-                get: { pendingExampleReplacement != nil },
-                set: { if !$0 { pendingExampleReplacement = nil } }
+            .background(palette.surface)
+            .clipShape(RoundedRectangle(cornerRadius: H3Radius.editor))
+            .overlay(
+                RoundedRectangle(cornerRadius: H3Radius.editor)
+                    .stroke(palette.border, lineWidth: 1)
             )
-        ) {
-            Button("置き換える") {
-                if let text = pendingExampleReplacement { viewModel.prompt = text }
-                pendingExampleReplacement = nil
-            }
-            Button("キャンセル", role: .cancel) { pendingExampleReplacement = nil }
+
         }
     }
 
-    private func requestExample(_ text: String) {
-        if viewModel.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            viewModel.prompt = text
-        } else {
-            pendingExampleReplacement = text
-        }
-    }
+    // MARK: 画面の形・長さ (プロンプト欄の下端)
 
-    // MARK: 画面の形
-
-    private var aspectSection: some View {
-        VStack(alignment: .leading, spacing: H3Spacing.sm) {
-            sectionHeading("画面の形")
-            HStack(spacing: H3Spacing.sm) {
+    private var aspectMenu: some View {
+        Menu {
+            Picker("画面の形", selection: Binding(
+                get: { viewModel.sizeProfile.shape },
+                set: { shape in
+                    // Keep 小/大 when the shape changes.
+                    viewModel.sizeProfile = SizeProfile.profile(
+                        for: shape, large: viewModel.sizeProfile.isLarge)
+                }
+            )) {
                 ForEach(AspectShape.allCases) { shape in
-                    shapeButton(shape)
+                    Label(shape.label, systemImage: shape.systemImage).tag(shape)
                 }
             }
-        }
-    }
-
-    private func shapeButton(_ shape: AspectShape) -> some View {
-        let isSelected = viewModel.sizeProfile.shape == shape
-        return Button {
-            if let first = SizeProfile.profiles(for: shape).first {
-                viewModel.sizeProfile = first
-            }
+            .pickerStyle(.inline)
         } label: {
-            VStack(spacing: 4) {
-                Image(systemName: shape.systemImage).font(.system(size: 18))
-                Text(shape.label).font(.caption)
-            }
-            .frame(width: 72, height: 56)
-            .background(isSelected ? palette.accentSoft : palette.surfaceMuted)
-            .foregroundStyle(isSelected ? palette.accent : palette.textPrimary)
-            .clipShape(RoundedRectangle(cornerRadius: H3Radius.control))
+            composerChip(systemImage: viewModel.sizeProfile.shape.systemImage,
+                         text: viewModel.sizeProfile.shape.label)
         }
+        .menuStyle(.button)
         .buttonStyle(.plain)
-        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("画面の形")
     }
 
-    // MARK: 長さ
+    private var sizeMenu: some View {
+        Menu {
+            Picker("大きさ", selection: Binding(
+                get: { viewModel.sizeProfile.isLarge },
+                set: { large in
+                    viewModel.sizeProfile = SizeProfile.profile(
+                        for: viewModel.sizeProfile.shape, large: large)
+                }
+            )) {
+                let shape = viewModel.sizeProfile.shape
+                Text("小（\(SizeProfile.profile(for: shape, large: false).resolutionLabel)）").tag(false)
+                Text("大（\(SizeProfile.profile(for: shape, large: true).resolutionLabel)）").tag(true)
+            }
+            .pickerStyle(.inline)
+        } label: {
+            composerChip(systemImage: "arrow.up.left.and.arrow.down.right",
+                         text: viewModel.sizeProfile.isLarge ? "大" : "小")
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("大きさ（\(viewModel.sizeProfile.resolutionLabel)）")
+    }
 
-    private var durationSection: some View {
-        VStack(alignment: .leading, spacing: H3Spacing.sm) {
-            sectionHeading("長さ")
+    private var durationMenu: some View {
+        Menu {
             Picker("長さ", selection: $viewModel.seconds) {
                 ForEach(secondsRange, id: \.self) { value in
                     Text("\(value) 秒").tag(value)
                 }
             }
-            .pickerStyle(.menu)
-            .labelsHidden()
-            .frame(maxWidth: 160)
-        }
-    }
-
-    // MARK: 詳細設定
-
-    private var advancedSection: some View {
-        DisclosureGroup(isExpanded: $isAdvancedExpanded) {
-            VStack(alignment: .leading, spacing: H3Spacing.md) {
-                if SizeProfile.profiles(for: viewModel.sizeProfile.shape).count > 1 {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("解像度").font(.caption).foregroundStyle(palette.textSecondary)
-                        Picker("解像度", selection: $viewModel.sizeProfile) {
-                            ForEach(SizeProfile.profiles(for: viewModel.sizeProfile.shape)) { profile in
-                                Text(profile.resolutionLabel).tag(profile)
-                            }
-                        }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
-                        .frame(maxWidth: 240)
-                    }
-                } else {
-                    labeledValue("解像度", viewModel.sizeProfile.resolutionLabel)
-                }
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("生成ステップ数").font(.caption).foregroundStyle(palette.textSecondary)
-                    Picker("生成ステップ数", selection: $viewModel.steps) {
-                        ForEach(stepsRange, id: \.self) { value in
-                            Text("\(value)").tag(value)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .labelsHidden()
-                    .frame(maxWidth: 120)
-                }
-
-                computeModeSection
-
-                speedSection
-
-                reuseSection
-
-                seedSection
-
-                loraSection
-
-                Button("詳細設定を既定に戻す") { viewModel.resetAdvancedSettings() }
-                    .font(.caption)
-            }
-            .padding(.top, H3Spacing.sm)
+            .pickerStyle(.inline)
         } label: {
-            Text(viewModel.hasAdvancedChanges ? "詳細設定・変更あり" : "詳細設定")
-                .font(.system(size: 14, weight: .semibold))
+            composerChip(systemImage: "clock", text: "\(viewModel.seconds)秒")
         }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("長さ")
     }
 
-    private var computeModeSection: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("計算方式").font(.caption).foregroundStyle(palette.textSecondary)
-            Picker("計算方式", selection: $viewModel.computeMode) {
-                ForEach(ComputeMode.allCases) { mode in
-                    Text(mode.label).tag(mode)
-                        .disabled(mode == .attentionCache && !viewModel.supportsInt8Cache)
-                }
-            }
-            .pickerStyle(.menu)
-            .labelsHidden()
-            .frame(maxWidth: 260)
-            switch viewModel.computeMode {
-            case .attentionCache:
-                Text("事前に作ったint8キャッシュを読みながら計算します。速く動作します。キャッシュと、Tensor演算ユニットを搭載したGPU（M5以降）が必要です。")
-                    .font(.caption)
-                    .foregroundStyle(palette.textSecondary)
-            case .resident:
-                Text("キャッシュファイルを作らず、起動のたびにモデル全体をメモリ上に展開して計算します。Tensor演算ユニット搭載GPU（M5以降）ではint8に量子化して常駐、それ以外ではBF16のまま常駐するため、大容量メモリのMac向けです。")
-                    .font(.caption)
-                    .foregroundStyle(palette.textSecondary)
-            case .ssdStreaming:
-                Text("元のBF16モデルを、必要なブロックだけSSDから読みながら計算します。メモリは少なくて済みますが遅くなります。キャッシュは使いません。")
-                    .font(.caption)
-                    .foregroundStyle(palette.textSecondary)
-            }
-            if viewModel.supportsInt8Cache && viewModel.computeMode == .attentionCache {
-                attentionCacheBuildSection
-            }
-            if viewModel.isHeavySsdStreamingConfig {
-                Text("最大解像度・長い秒数・SSDストリーミングの組み合わせは、メモリ不足でスワップが発生し非常に遅くなることがあります（数時間かかる場合も）。解像度か秒数を下げることをおすすめします。")
-                    .font(.caption)
-                    .foregroundStyle(palette.errorColor)
-            }
-            if viewModel.isLowMemoryForResident {
-                Text("このMacの物理メモリでは常駐モードがスワップを起こす可能性があります。int8キャッシュ方式かSSDストリーミングをおすすめします。")
-                    .font(.caption)
-                    .foregroundStyle(palette.errorColor)
-            }
+    private func composerChip(systemImage: String, text: String) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: systemImage)
+            Text(text)
+            Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold))
         }
-    }
-
-    private var speedSection: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("速度").font(.caption).foregroundStyle(palette.textSecondary)
-            Picker("速度", selection: $viewModel.speedMode) {
-                ForEach(SpeedMode.allCases) { mode in
-                    Text(mode.label).tag(mode)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(maxWidth: 300)
-            Text(speedDescription)
-                .font(.caption)
-                .foregroundStyle(palette.textSecondary)
-        }
-    }
-
-    private var speedDescription: String {
-        switch viewModel.speedMode {
-        case .quality:
-            return "省略なしで計算します。"
-        case .fast:
-            return "影響の小さいDiTブロックを省き、ステップ間でTransformerの計算結果を使い回します（20ステップで約2.8倍速）。画質は保たれますが、同じシードでも構図は標準と変わります。"
-        case .fastest:
-            return "高速に加えて、一部のトークンをまとめて計算します（20ステップで約3.2倍速）。細部がわずかに甘くなることがあります。"
-        }
-    }
-
-    /// Shown under the compute-mode picker when the current mode/reference
-    /// selection needs a cache that doesn't exist yet on disk - lets the
-    /// user build it in-app instead of just being told it's missing.
-    private var attentionCacheBuildSection: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            if viewModel.isBuildingCache {
-                HStack {
-                    ProgressView(value: viewModel.cacheBuildProgress)
-                        .frame(maxWidth: 200)
-                    Text(viewModel.cacheBuildProgress.map { "\(Int($0 * 50))/50 ブロック" } ?? "準備中…")
-                        .font(.caption)
-                        .foregroundStyle(palette.textSecondary)
-                    Spacer()
-                    Button("中止") { viewModel.cancelCacheBuild() }
-                        .font(.caption)
-                }
-                Text("キャッシュを作成しています。モデルの重みを読み込んで量子化するため、数十秒〜1分程度かかります。")
-                    .font(.caption)
-                    .foregroundStyle(palette.textSecondary)
-            } else if viewModel.attentionCacheMissing {
-                HStack {
-                    Text("int8キャッシュがまだありません。")
-                        .font(.caption)
-                        .foregroundStyle(palette.errorColor)
-                    Spacer()
-                    Button("キャッシュを作成…") { viewModel.buildMissingAttentionCache() }
-                        .font(.caption)
-                }
-            }
-            if let cacheBuildError = viewModel.cacheBuildError {
-                Text(cacheBuildError)
-                    .font(.caption)
-                    .foregroundStyle(palette.errorColor)
-            }
-        }
-    }
-
-    private var reuseSection: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("ノイズ除去の再利用（reuse）").font(.caption).foregroundStyle(palette.textSecondary)
-            Picker("ノイズ除去の再利用", selection: $viewModel.denoiseReuse) {
-                ForEach(reuseRange, id: \.self) { value in
-                    Text(reuseLabel(value)).tag(value)
-                }
-            }
-            .pickerStyle(.menu)
-            .labelsHidden()
-            .frame(maxWidth: 200)
-            Text("N回に1回だけモデルを計算し、残りは前回までの結果から補って高速化します。大きいほど速く、品質は下がる可能性があります。")
-                .font(.caption)
-                .foregroundStyle(palette.textSecondary)
-            if viewModel.denoiseReuse > 1 && viewModel.steps <= 7 {
-                Text("ステップ数が少ないと、実際にモデルを計算する回数が極端に少なくなります。")
-                    .font(.caption)
-                    .foregroundStyle(palette.errorColor)
-            }
-        }
-    }
-
-    private func reuseLabel(_ value: Int) -> String {
-        switch value {
-        case 1: return "1（標準）"
-        case 2: return "2（高速）"
-        default: return "\(value)（さらに高速）"
-        }
-    }
-
-    private var seedSection: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("ランダムさ").font(.caption).foregroundStyle(palette.textSecondary)
-            Picker("ランダムさ", selection: Binding(
-                get: { viewModel.seedText.isEmpty },
-                set: { useRandom in viewModel.seedText = useRandom ? "" : "0" }
-            )) {
-                Text("毎回変える").tag(true)
-                Text("固定する").tag(false)
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(maxWidth: 240)
-
-            if !viewModel.seedText.isEmpty {
-                TextField("シード値", text: $viewModel.seedText)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 200)
-            }
-        }
-    }
-
-    private var loraSection: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text("追加モデル（LoRA）").font(.caption).foregroundStyle(palette.textSecondary)
-                Spacer()
-                Button("管理…") { showingModelManager = true }
-                    .font(.caption)
-            }
-            if library.loras.isEmpty {
-                Text("登録された追加モデルはありません。「管理…」から追加できます。")
-                    .font(.caption)
-                    .foregroundStyle(palette.textSecondary)
-            } else {
-                ForEach(library.loras) { entry in
-                    loraStackRow(entry)
-                }
-                Text("オンにした追加モデルは重ねて適用されます。強さは学習時の効き具合に対する倍率です（空欄=1）。")
-                    .font(.caption)
-                    .foregroundStyle(palette.textSecondary)
-            }
-            let enabled = library.enabledLoRAs
-            let turbo = enabled.filter { $0.recommendedSteps != nil }
-            if let first = turbo.first, let turboSteps = first.recommendedSteps {
-                Text("「\(first.name)」はTurbo用の追加モデルです。生成ステップ数を\(turboSteps)に合わせました（\(turboSteps)以外では品質が落ちます）。")
-                    .font(.caption)
-                    .foregroundStyle(viewModel.steps == turboSteps ? palette.textSecondary : palette.errorColor)
-            }
-            if turbo.count > 1 {
-                Text("Turbo用の追加モデルを複数重ねると効果が強くなりすぎます。1つにすることをおすすめします。")
-                    .font(.caption)
-                    .foregroundStyle(palette.errorColor)
-            }
-            if !enabled.isEmpty {
-                Text("読み込むモデル（最初/最後の画像・参照画像・動画）に対応したファイルか、事前に確認できません。")
-                    .font(.caption)
-                    .foregroundStyle(palette.textSecondary)
-            }
-        }
-    }
-
-    private func loraStackRow(_ entry: LoRAEntry) -> some View {
-        HStack(spacing: H3Spacing.sm) {
-            Toggle(isOn: Binding(
-                get: { entry.enabled },
-                set: { library.setLoRAEnabled(id: entry.id, $0) }
-            )) {
-                Text(entry.name).lineLimit(1).truncationMode(.middle)
-            }
-            .toggleStyle(.checkbox)
-            .disabled(!entry.enabled && library.enabledLoRAs.count >= maxStackedLoRAs)
-            Spacer()
-            if entry.enabled {
-                Text("強さ").font(.caption).foregroundStyle(palette.textSecondary)
-                TextField("1", text: Binding(
-                    get: { entry.scaleText },
-                    set: { library.setLoRAScale(id: entry.id, scaleText: $0) }
-                ))
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 56)
-            }
-        }
+        .font(.callout)
+        .foregroundStyle(palette.textPrimary)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(palette.surfaceMuted)
+        .clipShape(Capsule())
     }
 
     // MARK: 下部固定領域
 
     private var bottomBar: some View {
-        VStack(alignment: .leading, spacing: H3Spacing.sm) {
-            if let message = viewModel.validationMessage {
-                Text(message).font(.caption).foregroundStyle(palette.errorColor)
-            } else {
-                Text(viewModel.draftSummaryText)
-                    .font(.caption)
-                    .foregroundStyle(palette.textSecondary)
-                    .lineLimit(2)
-            }
-
-            HStack(spacing: H3Spacing.sm) {
-                Button {
-                    viewModel.generate()
-                } label: {
-                    Text(viewModel.isGenerating ? "生成中…" : "動画をつくる")
-                        .frame(maxWidth: .infinity)
-                        .frame(height: H3ControlHeight.primary)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(palette.accent)
-                .disabled(!viewModel.canGenerate)
-                .keyboardShortcut(.return, modifiers: .command)
-
-                if viewModel.isGenerating {
-                    Button("中止") { viewModel.cancel() }
-                        .disabled(viewModel.isCancelling)
+        HStack(spacing: H3Spacing.sm) {
+            Group {
+                // An empty prompt already shows its grey suggestion; no need
+                // for a red error line as well.
+                if let message = viewModel.validationMessage,
+                   !viewModel.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || !message.contains("動画の内容") {
+                    Text(message).foregroundStyle(palette.errorColor)
+                } else {
+                    Text(viewModel.draftSummaryText).foregroundStyle(palette.textSecondary)
                 }
             }
+            .font(.caption)
+            .lineLimit(2)
+            .frame(maxWidth: .infinity, alignment: .leading)
 
-            Text("⌘Return で生成")
-                .font(.caption2)
-                .foregroundStyle(palette.textSecondary)
+            // Collapsed, the prompt box (and its button) is hidden.
+            if isCollapsed { generateButton }
         }
-        .padding(H3Spacing.xl)
-        .background(palette.surface)
     }
 
-    private func sectionHeading(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: 14, weight: .semibold))
-            .foregroundStyle(palette.textPrimary)
+    /// Round icon at the prompt's bottom-right: generate, or stop while a
+    /// generation runs. ⌘Return also generates.
+    private var generateButton: some View {
+        Button {
+            if viewModel.isGenerating { viewModel.cancel() } else { viewModel.generate() }
+        } label: {
+            Image(systemName: viewModel.isGenerating ? "stop.fill" : "arrow.up")
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 30, height: 30)
+                .background(Circle().fill(generateEnabled ? palette.accent : palette.textSecondary.opacity(0.4)))
+        }
+        .buttonStyle(.plain)
+        .disabled(!generateEnabled)
+        .keyboardShortcut(.return, modifiers: .command)
+        .help(viewModel.isGenerating ? "中止" : "動画をつくる（Enter / ⌘Return）")
+        .accessibilityLabel(viewModel.isGenerating ? "中止" : "動画をつくる")
     }
 
-    private func labeledValue(_ label: String, _ value: String) -> some View {
-        HStack {
-            Text(label).font(.caption).foregroundStyle(palette.textSecondary)
-            Text(value).font(.caption)
-        }
+    private var generateEnabled: Bool {
+        viewModel.isGenerating ? !viewModel.isCancelling : viewModel.canGenerate
     }
 }
 

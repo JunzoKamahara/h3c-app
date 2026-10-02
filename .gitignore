@@ -31,6 +31,7 @@ libh3.a
 h3_baseline
 build_attention_cache
 build_lora_cache
+h3_generate_cli
 *.cache
 *.h3ac
 .DS_Store

@@ -79,6 +79,20 @@ h3_dit *h3_dit_load_conditioned(
                          h3_dit_progress progress, void *progress_opaque,
                          char *error, size_t error_size);
 void h3_dit_free(h3_dit *dit);
+/* Releases attention-backend scratch that only the denoise loop uses (see
+ * h3_gpu_ccv_release_scratch); call once denoising has finished. */
+void h3_dit_release_backend_scratch(h3_dit *dit);
+
+/* Which implementation the DiT's full attention uses. Chosen once per
+ * generation by the caller (h3_generate) and set before denoising, also on
+ * a reused prepared DiT, so nothing carries over from an earlier run. */
+typedef enum {
+    H3_DIT_ATTENTION_MPS = 0,         /* production MPSGraph SDPA */
+    H3_DIT_ATTENTION_CCV_INT8,        /* ccv int8 via the FP16 row-major bridge */
+    H3_DIT_ATTENTION_CCV_FP16,        /* ccv non-quantized FP16 (diagnostic) */
+    H3_DIT_ATTENTION_CCV_INT8_DIRECT  /* ccv int8 on the BF16 head-major Q/K/V */
+} h3_dit_attention_mode;
+void h3_dit_set_attention_mode(h3_dit *dit, h3_dit_attention_mode mode);
 
 /* Reset mutable sampler state and replace seed-dependent condition rows before
  * reusing an otherwise identical prepared transformer. */

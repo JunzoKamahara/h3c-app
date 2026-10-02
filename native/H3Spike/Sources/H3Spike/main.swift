@@ -62,6 +62,21 @@ let outputPath = arguments.count > 2 ? arguments[2] : "/tmp/h3spike_output.mp4"
 let prompt = arguments.count > 3 ? arguments[3] : "A cat playing with a ball of yarn."
 
 print("== h3c-app native spike ==")
+
+// Reproduces a real, unexplained failure: this exact call (creates its own
+// GPU, no model needed) succeeds from a plain C/Objective-C++ process but
+// consistently fails with a garbled Metal shader compile error when made
+// from this Swift binary - see SPEEDUP_ROADMAP.md item 5's "Swift runtime
+// blocks the live H3_ATTENTION_BACKEND=ccv_dense path" note. Kept here as
+// a minimal, fast repro for whoever investigates this further; not part
+// of normal operation.
+if ProcessInfo.processInfo.environment["H3_CCV_WARMUP_DIAG"] != nil {
+    var err = [CChar](repeating: 0, count: 4096)
+    let ok = h3_debug_ccv_warmup("h3_shaders.metal", &err, err.count)
+    print("H3_CCV_WARMUP_DIAG result=\(ok) err=\(String(cString: err))")
+    exit(ok != 0 ? 0 : 1)
+}
+
 print("Model dir: \(modelDir)")
 
 guard let ctx = h3_load_dir(modelDir) else {
@@ -110,6 +125,8 @@ params.ssd_streaming = useSSD ? 1 : 0
 params.denoise_reuse = envInt("H3SPIKE_REUSE", 1)
 params.core_reuse = envInt("H3SPIKE_CORE_REUSE", 1)
 params.token_reduction = envInt("H3SPIKE_TOKEN_REDUCTION", 0)
+params.fast_attention = envInt("H3SPIKE_FAST_ATTENTION", 0)
+print("Fast attention available: \(h3_fast_attention_available() != 0)")
 params.use_int8_row_fc2 = envInt("H3SPIKE_INT8_ROW_FC2", 0)
 params.reference_image_size = H3_REFERENCE_IMAGE_MATCH
 params.on_progress = progressCallback
@@ -127,10 +144,29 @@ defer { loraPaths.forEach { free($0) } }
 var loras = zip(loraPaths, loraSpecs).map { h3_lora(path: $0.0, strength: $0.1.1) }
 for (path, strength) in loraSpecs { print("LoRA: \(path) @ \(strength)") }
 
-print("Generating \(params.width)x\(params.height), \(params.frames) frames, \(params.steps) steps...")
+// H3SPIKE_REPEAT=<n>: run the same generation n times in this process
+// (outputs <name>_run<k>.<ext> after the first), to exercise state that
+// survives between generations - e.g. attention-backend scratch released
+// after one DiT and reallocated by the next. H3SPIKE_CACHE=1 also enables
+// the in-process model cache, so later runs reuse the prepared DiT.
+let repeatCount = max(1, envInt("H3SPIKE_REPEAT", 1))
+if ProcessInfo.processInfo.environment["H3SPIKE_CACHE"] == "1" {
+    h3_cache_set_enabled(ctx, 1)
+}
+for run in 1...repeatCount {
+// Without a per-run pool, Objective-C objects autoreleased inside
+// h3_generate (e.g. per-run Metal buffers) live until process exit here.
+autoreleasepool {
+let runOutputPath = run == 1 ? outputPath : {
+    let url = URL(fileURLWithPath: outputPath)
+    let ext = url.pathExtension
+    let base = url.deletingPathExtension().path
+    return ext.isEmpty ? "\(base)_run\(run)" : "\(base)_run\(run).\(ext)"
+}()
+print("Generating \(params.width)x\(params.height), \(params.frames) frames, \(params.steps) steps... (run \(run)/\(repeatCount))")
 let start = Date()
 
-let result: UnsafeMutablePointer<h3_result>? = outputPath.withCString { outputPathC in
+let result: UnsafeMutablePointer<h3_result>? = runOutputPath.withCString { outputPathC in
     prompt.withCString { promptC in
         loras.withUnsafeBufferPointer { loraBuffer in
             params.output_path = outputPathC
@@ -146,10 +182,13 @@ guard let result else {
     print("h3_generate failed: \(error)")
     exit(1)
 }
-defer { h3_result_free(result) }
 
 let elapsed = Date().timeIntervalSince(start)
 print(String(format: "Done in %.1fs", elapsed))
 print("Result: \(result.pointee.frames) frames @ \(result.pointee.fps)fps, seed=\(result.pointee.seed)")
+print("Attention: \(result.pointee.ccv_attention_calls) ccv calls (\(result.pointee.ccv_attention_direct_calls) direct)")
 print("Frames delivered via on_frame: \(context.framesReceived), previews: \(context.previewsReceived)")
-print("Output written to: \(outputPath)")
+print("Output written to: \(runOutputPath)")
+h3_result_free(result)
+}
+}
