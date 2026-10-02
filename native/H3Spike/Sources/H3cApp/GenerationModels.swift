@@ -43,6 +43,18 @@ enum SizeProfile: String, CaseIterable, Identifiable {
     static func profiles(for shape: AspectShape) -> [SizeProfile] {
         allCases.filter { $0.shape == shape }
     }
+
+    private var pixelCount: Int { Int(dimensions.width) * Int(dimensions.height) }
+
+    /// 大 = the larger output of this shape's two profiles, 小 = the smaller.
+    var isLarge: Bool {
+        Self.profiles(for: shape).allSatisfy { $0.pixelCount <= pixelCount }
+    }
+
+    static func profile(for shape: AspectShape, large: Bool) -> SizeProfile {
+        let sorted = profiles(for: shape).sorted { $0.pixelCount < $1.pixelCount }
+        return (large ? sorted.last : sorted.first)!
+    }
 }
 
 // "画面の形": the spec asks for a semantic ratio choice (横長/正方形/縦長)
@@ -187,7 +199,9 @@ struct ResolvedResult {
     let fps: Int
     var actualDurationSeconds: Double?
     let steps: Int
-    let denoiseReuse: Int
+    let denoiseReuse: Int           // the form's setting
+    let effectiveDenoiseReuse: Int  // what ran (1 under a speed preset)
+    let ditLayers: Int
     let computeMode: ComputeMode
     let speedMode: SpeedMode
     // Requested (the checkbox), and what the engine reports actually ran.
@@ -199,6 +213,8 @@ struct ResolvedResult {
     let loras: [ResolvedLoRA]
     let deviceLine: String
     let completedAt: Date
+    // Wall-clock time from pressing generate to the finished file.
+    let generationSeconds: Double
 
     var seedDecimalString: String { String(seed) }
 
@@ -217,10 +233,13 @@ struct ResolvedResult {
             "画面の形: \(sizeProfile.label)",
             "長さ: 指定\(requestedSeconds)秒 / 実測\(actualDurationSeconds.map { String(format: "%.1f秒", $0) } ?? "不明")",
             "生成ステップ数: \(steps)",
-            "ノイズ除去の再利用（reuse）: \(denoiseReuse)",
+            "ノイズ除去の再利用（reuse）: \(effectiveDenoiseReuse)"
+                + (effectiveDenoiseReuse != denoiseReuse ? "（設定値 \(denoiseReuse)、速度プリセットのため1で計算）" : ""),
+            "使用する層数: \(ditLayers) / 50",
             "計算方式: \(computeMode.label)",
             "速度: \(speedMode.label)",
             "高速モード（試験的）: " + fastAttentionSummary,
+            "生成時間: \(formatElapsed(generationSeconds))",
             "シード: \(seedDecimalString)" + (seedWasRandom ? "（毎回変える設定で決定）" : "（固定）"),
         ]
         for lora in loras {

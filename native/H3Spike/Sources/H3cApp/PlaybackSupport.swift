@@ -93,6 +93,15 @@ final class VideoPlaybackModel: ObservableObject {
 struct ResultPlayerView: View {
     @StateObject private var model: VideoPlaybackModel
     let aspectRatio: CGFloat
+    // The video's own pixel size: shown at most 1:1 (never blown up to fill
+    // a larger stage), scaled down to fit, then zoomed by pinch / mouse
+    // wheel. Double-click resets to the fitted size.
+    let nativeSize: CGSize
+    @State private var zoom: CGFloat = 1
+    @State private var pinchBase: CGFloat?
+    @State private var pan: CGSize = .zero
+    @State private var panBase: CGSize?
+    private static let zoomRange: ClosedRange<CGFloat> = 0.25 ... 8
     // While the user is dragging, the slider shows this instead of
     // model.currentTime - otherwise the periodic time observer (which lags
     // one seek behind while scrubbing) snaps the thumb back every ~0.1s and
@@ -100,18 +109,33 @@ struct ResultPlayerView: View {
     @State private var isScrubbing = false
     @State private var scrubTime: Double = 0
 
-    init(url: URL, aspectRatio: CGFloat) {
+    init(url: URL, aspectRatio: CGFloat, nativeSize: CGSize) {
         self.aspectRatio = aspectRatio
+        self.nativeSize = nativeSize
         _model = StateObject(wrappedValue: VideoPlaybackModel(url: url))
+    }
+
+    private func fittedSize(in area: CGSize) -> CGSize {
+        guard nativeSize.width > 0, nativeSize.height > 0 else { return area }
+        let scale = min(1, area.width / nativeSize.width, area.height / nativeSize.height)
+        return CGSize(width: nativeSize.width * scale, height: nativeSize.height * scale)
+    }
+
+    private func clampedPan(_ proposed: CGSize, shown: CGSize, area: CGSize) -> CGSize {
+        let maxX = max(0, (shown.width - area.width) / 2)
+        let maxY = max(0, (shown.height - area.height) / 2)
+        return CGSize(width: min(max(proposed.width, -maxX), maxX),
+                      height: min(max(proposed.height, -maxY), maxY))
+    }
+
+    private func setZoom(_ value: CGFloat) {
+        zoom = min(max(value, Self.zoomRange.lowerBound), Self.zoomRange.upperBound)
     }
 
     var body: some View {
         VStack(spacing: H3Spacing.sm) {
-            PlayerView(player: model.player)
-                .aspectRatio(aspectRatio, contentMode: .fit)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color.black)
-                .clipShape(RoundedRectangle(cornerRadius: H3Radius.stage))
+            // Transport bar on top: the floating composer overlays the
+            // bottom of the video.
             HStack {
                 Button(action: model.togglePlayback) {
                     Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
@@ -136,8 +160,110 @@ struct ResultPlayerView: View {
                 Text(String(format: "%.1fs / %.1fs", model.currentTime, model.duration))
                     .font(.caption)
                     .monospacedDigit()
+                Button("\(Int((zoom * 100).rounded()))%") {
+                    withAnimation(.easeInOut(duration: 0.15)) { zoom = 1; pan = .zero }
+                }
+                .buttonStyle(.borderless)
+                .font(.caption)
+                .monospacedDigit()
+                .help("動画をクリックで再生・停止。ピンチ・マウスホイールで拡大縮小、ドラッグで移動、ダブルクリックで元の大きさ")
             }
+            GeometryReader { geometry in
+                let area = geometry.size
+                let fitted = fittedSize(in: area)
+                let shown = CGSize(width: fitted.width * zoom, height: fitted.height * zoom)
+                let offset = clampedPan(pan, shown: shown, area: area)
+                PlayerView(player: model.player)
+                    .frame(width: shown.width, height: shown.height)
+                    .offset(offset)
+                    .frame(width: area.width, height: area.height)
+                    .clipped()
+                    // Gestures go on a SwiftUI layer above the AppKit
+                    // player view, which would otherwise take the events.
+                    .overlay(
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .gesture(
+                                MagnificationGesture()
+                                    .onChanged { value in
+                                        let base = pinchBase ?? zoom
+                                        pinchBase = base
+                                        setZoom(base * value)
+                                    }
+                                    .onEnded { _ in pinchBase = nil }
+                            )
+                            .simultaneousGesture(
+                                DragGesture(minimumDistance: 2)
+                                    .onChanged { value in
+                                        let base = panBase ?? offset
+                                        panBase = base
+                                        pan = clampedPan(CGSize(width: base.width + value.translation.width,
+                                                                height: base.height + value.translation.height),
+                                                         shown: shown, area: area)
+                                    }
+                                    .onEnded { _ in panBase = nil }
+                            )
+                            .gesture(
+                                TapGesture(count: 2)
+                                    .onEnded {
+                                        withAnimation(.easeInOut(duration: 0.15)) { zoom = 1; pan = .zero }
+                                    }
+                                    .exclusively(before: TapGesture(count: 1).onEnded {
+                                        model.togglePlayback()
+                                    })
+                            )
+                    )
+                    .background(ScrollWheelMonitor { deltaY in
+                        setZoom(zoom * exp(deltaY * 0.01))
+                    })
+            }
+            .background(Color.black)
+            .clipShape(RoundedRectangle(cornerRadius: H3Radius.stage))
         }
         .onDisappear { model.cleanup() }
+    }
+}
+
+/// Reports mouse-wheel / two-finger-scroll deltas that happen over this
+/// view (as a background, it doesn't take any other events), and consumes
+/// them so they zoom instead of scrolling anything else.
+struct ScrollWheelMonitor: NSViewRepresentable {
+    let onScroll: (CGFloat) -> Void
+
+    func makeNSView(context: Context) -> MonitorView {
+        let view = MonitorView()
+        view.onScroll = onScroll
+        return view
+    }
+
+    func updateNSView(_ nsView: MonitorView, context: Context) {
+        nsView.onScroll = onScroll
+    }
+
+    final class MonitorView: NSView {
+        var onScroll: ((CGFloat) -> Void)?
+        private var monitor: Any?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            monitor = nil
+            guard window != nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+                guard let self, event.window === self.window,
+                      self.bounds.contains(self.convert(event.locationInWindow, from: nil)) else {
+                    return event
+                }
+                let delta = event.hasPreciseScrollingDeltas ? event.scrollingDeltaY : event.scrollingDeltaY * 8
+                self.onScroll?(delta)
+                return nil
+            }
+        }
+
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        deinit {
+            if let monitor { NSEvent.removeMonitor(monitor) }
+        }
     }
 }

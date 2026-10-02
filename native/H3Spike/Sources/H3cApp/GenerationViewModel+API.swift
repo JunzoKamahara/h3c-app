@@ -140,10 +140,18 @@ extension GenerationViewModel {
         } else {
             speedMode = .quality
         }
-        // After speed_mode (whose didSet resets reuse for a preset): an
-        // explicit "reuse" wins, otherwise a preset gets 1 and the standard
-        // speed the app default.
-        denoiseReuse = (json["reuse"] as? Int) ?? (speedMode == .quality ? defaultReuse : 1)
+        // Stored as given (default when omitted); a speed preset still runs
+        // at reuse 1 - see effectiveDenoiseReuse.
+        denoiseReuse = (json["reuse"] as? Int) ?? defaultReuse
+
+        if let layers = json["dit_layers"] {
+            guard let layers = layers as? Int, ditLayersRange.contains(layers) else {
+                return .error(400, "\"dit_layers\" must be an integer in \(ditLayersRange.lowerBound)-\(ditLayersRange.upperBound)")
+            }
+            ditLayers = layers
+        } else {
+            ditLayers = defaultDitLayers
+        }
 
         if let fast = json["fast_attention"] {
             guard let fast = fast as? Bool else {
@@ -158,9 +166,10 @@ extension GenerationViewModel {
         }
 
         if let seed = json["seed"] {
+            seedFixed = true
             seedText = "\(seed)".filter(\.isNumber)
         } else {
-            seedText = ""
+            seedFixed = false
         }
 
         let firstFrame = json["first_frame_path"] as? String

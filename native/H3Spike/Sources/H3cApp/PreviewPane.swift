@@ -4,6 +4,11 @@ import UniformTypeIdentifiers
 
 struct PreviewPane: View {
     @ObservedObject var viewModel: GenerationViewModel
+    // Room the floating composer takes at the bottom: the empty and
+    // in-progress states centre their text above it. The finished video uses
+    // the whole stage and the composer overlays it (its transport bar sits
+    // on top for that reason).
+    var bottomInset: CGFloat = 0
     @Environment(\.colorScheme) private var colorScheme
     private var palette: H3Palette { H3Palette(colorScheme) }
 
@@ -12,27 +17,37 @@ struct PreviewPane: View {
             header
             centerContent
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-            if viewModel.resultURL != nil, let result = viewModel.lastResult {
-                ResultActionsView(viewModel: viewModel, result: result)
-            }
         }
-        .padding(H3Spacing.xl)
+        .padding(.horizontal, H3Spacing.xl)
+        .padding(.bottom, H3Spacing.xl)
+        .padding(.top, H3Spacing.sm)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(palette.canvas)
     }
 
     private var header: some View {
-        HStack {
+        // The result actions sit up here: the bottom of the stage is where
+        // the floating composer lives.
+        HStack(alignment: .top) {
             Text("プレビュー").font(.system(size: 14, weight: .semibold)).foregroundStyle(palette.textPrimary)
             Text(statusLabel).font(.caption).foregroundStyle(palette.textSecondary)
             Spacer()
+            if viewModel.resultURL != nil, let result = viewModel.lastResult {
+                ResultActionsView(viewModel: viewModel, result: result)
+                    .fixedSize()
+            }
         }
     }
 
     private var statusLabel: String {
         if viewModel.isCancelling { return "中止しています" }
         if viewModel.isGenerating { return "動画を生成しています" }
-        if viewModel.resultURL != nil { return "できあがりました" }
+        if viewModel.resultURL != nil {
+            if let seconds = viewModel.lastResult?.generationSeconds {
+                return "できあがりました ・ 生成時間 \(formatElapsed(seconds))"
+            }
+            return "できあがりました"
+        }
         if let message = viewModel.errorMessage { return message }
         return ""
     }
@@ -40,7 +55,11 @@ struct PreviewPane: View {
     @ViewBuilder
     private var centerContent: some View {
         if let url = viewModel.resultURL {
-            ResultPlayerView(url: url, aspectRatio: viewModel.resultAspectRatio)
+            ResultPlayerView(url: url, aspectRatio: viewModel.resultAspectRatio,
+                             nativeSize: viewModel.lastResult.map {
+                                 CGSize(width: CGFloat($0.sizeProfile.dimensions.width),
+                                        height: CGFloat($0.sizeProfile.dimensions.height))
+                             } ?? .zero)
         } else if viewModel.isGenerating {
             generatingView
         } else {
@@ -54,7 +73,7 @@ struct PreviewPane: View {
                 .font(.system(size: 32))
                 .foregroundStyle(palette.textSecondary)
             Text("ここに動画が表示されます").font(.body).foregroundStyle(palette.textSecondary)
-            Text("左側で内容を決めて、動画をつくりましょう。")
+            Text("下のパネルで内容を決めて、動画をつくりましょう。")
                 .font(.caption)
                 .foregroundStyle(palette.textSecondary)
             if let error = viewModel.errorMessage {
@@ -65,6 +84,7 @@ struct PreviewPane: View {
                     .padding(.top, H3Spacing.sm)
             }
         }
+        .padding(.bottom, bottomInset)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(palette.stage)
         .clipShape(RoundedRectangle(cornerRadius: H3Radius.stage))
@@ -100,6 +120,7 @@ struct PreviewPane: View {
                 }
             }
         }
+        .padding(.bottom, bottomInset)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(palette.stage)
         .clipShape(RoundedRectangle(cornerRadius: H3Radius.stage))
@@ -119,12 +140,12 @@ private struct ResultActionsView: View {
                 Button("動画を書き出す…") { exportVideo() }
                     .keyboardShortcut("s", modifiers: .command)
 
-                Button("設定を見る") { showingSettings = true }
+                Button("使用した設定…") { showingSettings = true }
                     .popover(isPresented: $showingSettings) {
-                        SettingsDetailView(viewModel: viewModel, result: result)
+                        SettingsDetailView(viewModel: viewModel, result: result) {
+                            showingSettings = false
+                        }
                     }
-
-                Button("この設定を使う") { viewModel.applyDraft(from: result) }
 
                 Spacer()
 
@@ -141,15 +162,33 @@ private struct ResultActionsView: View {
         }
     }
 
+    private static let exportDirectoryKey = "h3c-app.lastExportDirectory"
+
+    /// The folder the last export went to, or ~/Downloads the first time
+    /// (and whenever that folder no longer exists).
+    private static var initialExportDirectory: URL? {
+        var isDirectory: ObjCBool = false
+        if let path = UserDefaults.standard.string(forKey: exportDirectoryKey),
+           FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
+           isDirectory.boolValue {
+            return URL(fileURLWithPath: path, isDirectory: true)
+        }
+        return FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+    }
+
     private func exportVideo() {
         guard let sourceURL = viewModel.resultURLForExport else { return }
         let panel = NSSavePanel()
         panel.nameFieldStringValue = sourceURL.lastPathComponent
         panel.allowedContentTypes = [.mpeg4Movie]
+        panel.directoryURL = Self.initialExportDirectory
         guard panel.runModal() == .OK, let destination = panel.url else { return }
         try? FileManager.default.removeItem(at: destination)
         do {
             try FileManager.default.copyItem(at: sourceURL, to: destination)
+            // Remembered only once something was actually saved there.
+            UserDefaults.standard.set(destination.deletingLastPathComponent().path,
+                                      forKey: Self.exportDirectoryKey)
             lastExportedURL = destination
             exportConfirmation = "保存しました: \(destination.lastPathComponent)"
         } catch {
@@ -168,6 +207,7 @@ private extension GenerationViewModel {
 private struct SettingsDetailView: View {
     @ObservedObject var viewModel: GenerationViewModel
     let result: ResolvedResult
+    var close: () -> Void = {}
 
     var body: some View {
         VStack(alignment: .leading, spacing: H3Spacing.sm) {
@@ -181,11 +221,25 @@ private struct SettingsDetailView: View {
             .frame(maxHeight: 260)
 
             HStack {
-                Button("設定をコピー") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(result.settingsSummaryText, forType: .string)
+                Button("フォームに戻す") {
+                    viewModel.applyDraft(from: result)
+                    close()
                 }
-                Button("同じシードを使う") { viewModel.useSameSeed(from: result) }
+                .help("この動画のプロンプトと設定をパネルに戻します")
+                Button("プリセットとして保存…") {
+                    viewModel.presetPendingName = viewModel.presetFromResult(result)
+                    close()
+                }
+                .help("この動画の設定（プロンプト以外）に名前を付けて保存します")
+                Spacer()
+                Menu("その他") {
+                    Button("設定をテキストでコピー") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(result.settingsSummaryText, forType: .string)
+                    }
+                    Button("同じシードを使う") { viewModel.useSameSeed(from: result) }
+                }
+                .fixedSize()
             }
         }
         .padding(H3Spacing.lg)
