@@ -1766,6 +1766,23 @@ the API (logged engine params): 最速 → layers 50, reuse 1, core reuse 2
 | 高速 | 50 | 1 | 4 (steps/5, max 4) | no |
 | 最速 | 50 | 1 | 4 (steps/5, max 4) | yes |
 
+**API rejects out-of-range values instead of clamping** (2026-10-02,
+aeb3502; steps in 28043d5): POST /api/generate used to clamp or rewrite
+several fields silently — `"steps": 2` ran 3 steps (150 ccv calls),
+`"reuse": true` ran reuse 1, and `"seed": "7a"` / `-1` ran seed 7 / 1
+because non-digits were stripped. It now returns 400 for `steps` outside
+3–40, `reuse` outside 1–3 (the engine's limit), `seconds` outside 1–15
+and `dit_layers` outside 35–50, and for JSON booleans in any of them.
+`seed` accepts 0–UInt64.max as a number or a decimal string (a string
+keeps large seeds intact for clients whose JSON numbers are doubles).
+Checked against the running .app: every rejected value returned 400
+without starting a job; valid values were checked by pairing them with a
+later field that fails, so nothing generated. Then four real runs
+(256×256, 1 s, 3 steps, same prompt): seed max as a number and as a
+string gave identical decoded video and audio (MD5), also after an app
+restart, where the engine log showed `seed 18446744073709551615`; seed
+42 gave different video and audio.
+
 Earlier plan (kept for the record): (1) done — Makefile relinks `h3_generate_cli` when `libccv.a`
 changes; (2) done — replay above; (3) done for seed 7 — direct at 20
 steps on the short clip — detail, the foreground net, temporal flicker,
