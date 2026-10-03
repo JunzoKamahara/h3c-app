@@ -1783,6 +1783,52 @@ string gave identical decoded video and audio (MD5), also after an app
 restart, where the engine log showed `seed 18446744073709551615`; seed
 42 gave different video and audio.
 
+**Grid: size × length × speed preset × fast mode** (2026-10-02/03, the
+packaged app driven through its HTTP API, one run each, other apps
+running): square, compute mode int8 attention cache, 20 steps, prompt "A
+cat playing with a ball of yarn.", seed 7 (the engine log shows `seed 7`
+and `ssd_streaming 0` in all 36 runs; a later run with the same request had
+`~/models/cache/dit_int8_v2.cache` open during generation). Standard ran at
+the default reuse 2, fast/fastest at reuse 1 with core reuse 4. Wall time
+from request to finished file, fast mode off / on:
+
+| size | length | standard | fast | fastest |
+|---|---|---|---|---|
+| 256×256 | 5 s | 94 / 99 s | 68 / 69 s | 58 / 58 s |
+| 256×256 | 10 s | 174 / 174 s | 108 / 108 s | 88 / 88 s |
+| 256×256 | 15 s | 264 / 259 s | 164 / 164 s | 128 / 128 s |
+| 512×512 | 5 s | 359 / 339 s | 224 / 209 s | 164 / 158 s |
+| 512×512 | 10 s | 956 / 815 s | 565 / 489 s | 374 / 339 s |
+| 512×512 | 15 s | 1808 / 1467 s | 1036 / 851 s | 665 / 565 s |
+
+- Fast mode took the direct path in every "on" run (550/550 ccv calls at
+  reuse 2 = 11 model evaluations × 50 blocks; 300/300 with core reuse 4 =
+  6 × 50) and none in the "off" runs. It gives nothing at 256×256 (-5% at
+  5 s standard, otherwise 0–2%); at 512×512 it saves 3–7% at 5 s, 9–15% at
+  10 s, 15–19% at 15 s.
+- **Correction**: the earlier single run "core reuse 4 + fast attention
+  244 s vs 204 s DiT" (5 s, 512×512, audio isolation above) is not borne
+  out: here the fast preset with fast mode was faster in every 512×512
+  case (209 vs 224 s at 5 s). The two measurements differ in build and
+  run conditions and in what was timed (DiT phase vs whole run); the cause
+  of the earlier slowdown is not established. The README no longer says
+  the gains don't combine.
+- Presets vs standard: fast 1.37–1.75x, fastest 1.60–2.72x, growing with
+  size and length. Best for 512×512 15 s: fastest + fast mode, 565 s vs
+  1808 s (3.2x).
+- Length scaling (standard, off): 256×256 1 : 1.85 : 2.81, 512×512
+  1 : 2.66 : 5.04 for 5/10/15 s.
+- Swap used stayed 559–715 MiB over all 36 runs (no paging at 512×512
+  15 s on 24 GB, unlike the 768×768 15 s CLI runs above).
+- Output: all 36 files have the requested frame counts (124/243/362);
+  middle frames all show a coherent cat and yarn (a red blob in the 512×512
+  15 s fastest run was, at full size, a tangled yarn ball); compositions
+  differ between settings as expected. Audio mean level -36 to -64 dB, none
+  near the broken-audio levels (-24 to -33 dB); not listened to.
+
+Videos, results.csv/json and a contact sheet:
+`~/Movies/H3cApp-grid/2026-10-02/` (not in the repo).
+
 Earlier plan (kept for the record): (1) done — Makefile relinks `h3_generate_cli` when `libccv.a`
 changes; (2) done — replay above; (3) done for seed 7 — direct at 20
 steps on the short clip — detail, the foreground net, temporal flicker,

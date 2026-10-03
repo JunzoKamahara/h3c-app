@@ -41,7 +41,7 @@ BSD-3-Clause license reproduced above (Copyright (c) 2010, Liu Liu). ccv's
 `COPYING` file also carries the licenses of the third-party code ccv bundles
 (among them Apple's metal-cpp under the Apache License 2.0); builds made
 with `CCV_DIR` ship that file unchanged as
-`h3c-app.app/Contents/Resources/ccv-COPYING.txt`.
+`H3cApp.app/Contents/Resources/ccv-COPYING.txt`.
 
 Parts of ccv's Metal FlashAttention kernels are marked
 "Copyright (c) 2024 Philip Turner. See MIT LICENSE":

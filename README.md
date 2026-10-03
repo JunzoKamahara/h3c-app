@@ -2,7 +2,7 @@
 
 [English](README.md) | [日本語](README.ja.md)
 
-A native macOS app that runs
+H3cApp is a native macOS app that runs
 [MiniMax-H3](https://huggingface.co/lightx2v/Minimax-h3-Turbo) — a
 text/image/video-to-video-with-audio diffusion transformer — entirely on
 Apple Silicon. Everything runs in-process against Metal/MPSGraph: no
@@ -18,10 +18,10 @@ so it can be driven from a script as well as from its own window — see
 
 ## Download
 
-The easiest way to install h3c-app is the prebuilt, signed and notarized
+The easiest way to install H3cApp is the prebuilt, signed and notarized
 `.dmg` on the [Releases page](https://github.com/JunzoKamahara/h3c-app/releases/latest) —
 no Xcode Command Line Tools or building from source needed. Download the
-`.dmg`, open it, and drag `h3c-app` into `Applications`; Gatekeeper accepts
+`.dmg`, open it, and drag `H3cApp` into `Applications`; Gatekeeper accepts
 it on first launch with no "unidentified developer" warning.
 
 To build from source instead, see [Building from source](#building-from-source)
@@ -48,7 +48,7 @@ below.
 make -j8 libh3.a
 cd native/H3Spike
 ./package_app.sh
-open .build/h3c-app.app
+open .build/H3cApp.app
 ```
 
 On first launch, if no model is registered yet, the app offers to download
@@ -198,14 +198,41 @@ only when available: the app must be built with ccv linked in (the release
 accelerators (M5). Requesting it elsewhere is an error, never a silent
 fallback.
 
-Measured on an M5 with 24 GB at 512x512, 15 s, 20 steps, seed 7: 13727 s →
-9506 s (1.44x, 70 min saved), peak footprint 21.09 → 22.35 GiB. The gain
-grows with clip length: a 56-frame clip took 238 s standard vs 244 s fast, and
-combined with the fast preset it was slower (244 s vs 204 s DiT phase at
-5 s), so the two are independent choices whose gains don't multiply. The same
-seed gives a different video than standard. Side-by-side checks on several
-prompts and seeds found no consistent quality loss, which is not a proof of
-equal quality.
+Measured on an M5 with 24 GB at 768x768, 15 s, 20 steps, seed 7 (command-line
+driver): 13727 s → 9506 s (1.44x, 70 min saved), peak footprint 21.09 →
+22.35 GiB. The gain grows with canvas size and clip length and is about nil
+at 256x256; it also applies on top of the speed presets (see the table
+below). The same seed gives a different video than standard. Side-by-side
+checks on several prompts and seeds found no consistent quality loss, which
+is not a proof of equal quality.
+
+### Measured generation times
+
+A grid run through the app's API on an M5 with 24 GB (2026-10-02/03): square,
+int8 attention cache, 20 steps, the prompt "A cat playing with a ball of
+yarn.", seed 7, one run each, wall time from request to finished file.
+Standard ran at the default `reuse` 2; fast and fastest at `reuse` 1 with
+core reuse 4. Each cell is fast mode off / on.
+
+| Size | Length | Standard | Fast | Fastest |
+|---|---|---|---|---|
+| 256x256 | 5 s | 1:34 / 1:39 | 1:08 / 1:09 | 0:58 / 0:58 |
+| 256x256 | 10 s | 2:54 / 2:54 | 1:48 / 1:48 | 1:28 / 1:28 |
+| 256x256 | 15 s | 4:24 / 4:19 | 2:44 / 2:44 | 2:08 / 2:08 |
+| 512x512 | 5 s | 5:59 / 5:39 | 3:44 / 3:29 | 2:44 / 2:38 |
+| 512x512 | 10 s | 15:56 / 13:35 | 9:25 / 8:10 | 6:14 / 5:39 |
+| 512x512 | 15 s | 30:08 / 24:27 | 17:16 / 14:10 | 11:05 / 9:25 |
+
+- The presets help more the larger and longer the clip: against standard,
+  fast is 1.4–1.75x and fastest 1.6–2.7x faster.
+- Fast mode does nothing at 256x256 (5% slower at 5 s standard). At 512x512
+  it saves 3–7% at 5 s, 9–15% at 10 s and 15–19% at 15 s, presets included.
+  The fastest setting for a 15 s 512x512 clip, fastest + fast mode, took
+  9:25 against 30:08 for standard.
+- Time grows roughly in proportion to length at 256x256 (1 : 1.9 : 2.8 for
+  5/10/15 s) and faster than that at 512x512 (1 : 2.7 : 5.0 for standard).
+- Swap stayed between 559 and 715 MiB across all 36 runs: 512x512 at 15 s
+  fits in 24 GB.
 
 ## LoRA
 
@@ -259,12 +286,12 @@ tests/                          C test suite (make test / make parity)
 native/H3Spike/                 Native macOS app (SwiftPM)
   Sources/CH3                   C shim exposing libh3.a's C API to Swift
   Sources/H3Engine              Swift async wrapper over the C API (AsyncThrowingStream-based progress/cancellation)
-  Sources/H3cApp                The SwiftUI app itself (h3c-app.app), including ModelLibrary/ModelManagerView
+  Sources/H3cApp                The SwiftUI app itself (H3cApp.app), including ModelLibrary/ModelManagerView
                                  (registered models/LoRAs), ModelDownloader (Hugging Face downloads), and
                                  HTTPServer/GenerationViewModel+API (the embedded automation API)
   Sources/H3Spike                Minimal in-process spike/reference client for H3Engine, not the shipped app
-  package_app.sh                Builds + bundles h3c-app.app; also signs/notarizes it, see below
-  make_dmg.sh                   Packages the built h3c-app.app into a distributable .dmg
+  package_app.sh                Builds + bundles H3cApp.app; also signs/notarizes it, see below
+  make_dmg.sh                   Packages the built H3cApp.app into a distributable .dmg
 ```
 
 ## Building from source
@@ -289,7 +316,7 @@ cd native/H3Spike
 
 `libh3.a` isn't rebuilt by this script — run `make libh3.a` at the repo root
 first, and again after changing engine code. `package_app.sh` then runs
-`swift build -c release` and assembles `h3c-app.app`. It builds to a
+`swift build -c release` and assembles `H3cApp.app`. It builds to a
 scratch directory outside the repo (`${TMPDIR}h3c-app-build-scratch`)
 rather than SwiftPM's default in-tree `.build`, because a repo that lives
 under a synced folder (Google Drive, iCloud Drive, Dropbox, ...) can cause
@@ -308,6 +335,15 @@ CCV_DIR=/path/to/ccv ./package_app.sh
 ```
 
 Without `CCV_DIR` the app builds as before, without fast mode.
+
+The UI is in English and Japanese, following the macOS language setting.
+The Japanese strings in the Swift sources are the keys; the tables are
+`native/H3Spike/Packaging/{en,ja}.lproj/Localizable.strings`, copied into the
+app by `package_app.sh`. A string reaches the UI translated only as a SwiftUI
+literal (`Text("…")`, `Button("…")`, …) or `String(localized: "…")`.
+`./check_localizations.sh` (in `native/H3Spike`) extracts the keys with the
+compiler and lists any missing from either table. To try the other
+language: `open .build/H3cApp.app --args -AppleLanguages '(en)'`.
 
 #### Code signing and notarization
 
@@ -336,7 +372,7 @@ H3C_NOTARY_PROFILE="some-keychain-profile" \
   resulting `.app` passes Gatekeeper (`spctl -a -vvv -t exec`) on any Mac.
 
 There are no nested frameworks or embedded dylibs to worry about here —
-`h3c-app`'s only linked libraries are Apple system frameworks and the
+`H3cApp`'s only linked libraries are Apple system frameworks and the
 statically-linked `libh3.a` (plus `libccv.a` with `CCV_DIR`), so a single
 `codesign --deep` on the bundle is sufficient.
 
@@ -346,7 +382,7 @@ statically-linked `libh3.a` (plus `libccv.a` with `CCV_DIR`), so a single
 ./make_dmg.sh
 ```
 
-Packages the already-built `h3c-app.app` into a compressed `.dmg` with a
+Packages the already-built `H3cApp.app` into a compressed `.dmg` with a
 drag-to-Applications shortcut, using only `hdiutil` (no third-party
 dmg-building tool). Run `package_app.sh` first. If `H3C_SIGN_IDENTITY` and
 `H3C_NOTARY_PROFILE` are set, `make_dmg.sh` also signs, notarizes, and
@@ -369,7 +405,7 @@ toolchain. `make parity` runs just those Metal/MLX checks.
 
 ## API
 
-While `h3c-app.app` is running it serves a plain JSON API on
+While `H3cApp.app` is running it serves a plain JSON API on
 `http://127.0.0.1:8420` — implemented over raw POSIX sockets (see
 [HTTPServer.swift](native/H3Spike/Sources/H3cApp/HTTPServer.swift)), not
 Network.framework or any third-party server, and with no separate process

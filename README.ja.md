@@ -4,8 +4,8 @@
 
 [MiniMax-H3](https://huggingface.co/lightx2v/Minimax-h3-Turbo)
 （テキスト／画像／動画から、音声付き動画を生成する拡散トランスフォーマー）を
-Apple Siliconだけで動かすネイティブmacOSアプリです。すべてMetal/MPSGraph上で
-プロセス内実行され、Python・PyTorch・クラウド通信は一切不要です — メディアの
+Apple Siliconだけで動かすネイティブmacOSアプリ、H3cAppです。すべて
+Metal/MPSGraph上でプロセス内実行され、Python・PyTorch・クラウド通信は一切不要です — メディアの
 入出力はネイティブのAVFoundation/ImageIO経由です。基盤となるC/Objective-Cの
 推論エンジン（`libh3.a`）はSalvatore
 Sanfilippo氏（antirez）の[h3.c](https://github.com/antirez/h3.c)を
@@ -21,7 +21,7 @@ Sanfilippo氏（antirez）の[h3.c](https://github.com/antirez/h3.c)を
 もっとも簡単なインストール方法は、[リリースページ](https://github.com/JunzoKamahara/h3c-app/releases/latest)
 にある署名・公証済みのビルド済み`.dmg`を使うことです — Xcode Command Line
 Toolsもソースからのビルドも不要です。`.dmg`をダウンロードして開き、
-`h3c-app`を`Applications`にドラッグしてください。初回起動時もGatekeeperに
+`H3cApp`を`Applications`にドラッグしてください。初回起動時もGatekeeperに
 よる「開発元が未確認」といった警告は出ません。
 
 ソースからビルドする場合は、下記の
@@ -48,7 +48,7 @@ Toolsもソースからのビルドも不要です。`.dmg`をダウンロード
 make -j8 libh3.a
 cd native/H3Spike
 ./package_app.sh
-open .build/h3c-app.app
+open .build/H3cApp.app
 ```
 
 初回起動時、まだモデルが登録されていなければ、アプリがHugging Faceから
@@ -200,14 +200,41 @@ BF16）で計算します。既定はオフで、使える環境でだけ表示�
 ユニットがあること（M5）が必要です。それ以外の環境で指定するとエラーになり、
 黙って通常経路に切り替わることはありません。
 
-M5・24GBのMacで512×512・15秒・20ステップ・シード7の実測: 13727秒 →
-9506秒（1.44倍、70分短縮）、ピークのメモリ使用量は21.09 → 22.35GiB。
-効果は動画が長いほど大きく、56フレームの動画では標準238秒に対し高速モード
-244秒でした。高速プリセットと組み合わせると遅くなった（5秒でDiT部分244秒
-対204秒）ため、両者は独立した選択肢で、効果は掛け算になりません。同じ
-シードでも標準とは別の動画になります。いくつかのプロンプトとシードで並べて
-比較した範囲では一貫した画質の低下は見られませんでしたが、同等の画質の証明
-ではありません。
+M5・24GBのMacで768×768・15秒・20ステップ・シード7の実測（コマンドライン
+ツール）: 13727秒 → 9506秒（1.44倍、70分短縮）、ピークのメモリ使用量は
+21.09 → 22.35GiB。効果は画面が大きく動画が長いほど大きく、256×256では
+ほぼありません。速度プリセットと組み合わせても効きます（下の表を参照）。
+同じシードでも標準とは別の動画になります。いくつかのプロンプトとシードで
+並べて比較した範囲では一貫した画質の低下は見られませんでしたが、同等の
+画質の証明ではありません。
+
+### 生成時間の実測
+
+M5・24GBのMacで、アプリのAPIからグリッドサーチで測った値です（2026-10-02〜03）。
+正方形、int8キャッシュ、20ステップ、プロンプト「A cat playing with a ball of
+yarn.」、シード7、各1回、リクエストから動画ファイル完成までの時間。標準は
+既定の`reuse` 2、高速・最速は`reuse` 1とコア再利用4で動きます。各欄は
+「高速モードなし / あり」です。
+
+| 大きさ | 長さ | 標準 | 高速 | 最速 |
+|---|---|---|---|---|
+| 256×256 | 5秒 | 1:34 / 1:39 | 1:08 / 1:09 | 0:58 / 0:58 |
+| 256×256 | 10秒 | 2:54 / 2:54 | 1:48 / 1:48 | 1:28 / 1:28 |
+| 256×256 | 15秒 | 4:24 / 4:19 | 2:44 / 2:44 | 2:08 / 2:08 |
+| 512×512 | 5秒 | 5:59 / 5:39 | 3:44 / 3:29 | 2:44 / 2:38 |
+| 512×512 | 10秒 | 15:56 / 13:35 | 9:25 / 8:10 | 6:14 / 5:39 |
+| 512×512 | 15秒 | 30:08 / 24:27 | 17:16 / 14:10 | 11:05 / 9:25 |
+
+- 速度プリセットの効果は、画面が大きく動画が長いほど大きくなります。標準に
+  対して、高速は1.4〜1.75倍、最速は1.6〜2.7倍速くなりました。
+- 高速モードは256×256では効きません（5秒の標準ではかえって5%遅い）。
+  512×512ではプリセットと組み合わせても効き、5秒で3〜7%、10秒で9〜15%、
+  15秒で15〜19%短くなりました。512×512・15秒で最も速いのは最速＋高速
+  モードの9分25秒で、標準の30分8秒の約3.2倍速です。
+- 時間は、256×256では長さにほぼ比例し（5・10・15秒で1 : 1.9 : 2.8）、
+  512×512ではそれより大きく伸びます（標準で1 : 2.7 : 5.0）。
+- スワップは36回を通じて559〜715MiBにとどまり、512×512・15秒も24GBに
+  収まりました。
 
 ## LoRA
 
@@ -261,12 +288,12 @@ tests/                          Cテストスイート（make test / make parity
 native/H3Spike/                 ネイティブmacOSアプリ（SwiftPM）
   Sources/CH3                   libh3.aのC APIをSwiftへ橋渡しするCシム
   Sources/H3Engine              C APIのSwift非同期ラッパー（AsyncThrowingStreamベースの進捗/キャンセル）
-  Sources/H3cApp                SwiftUIアプリ本体（h3c-app.app）。ModelLibrary/ModelManagerView（登録済み
+  Sources/H3cApp                SwiftUIアプリ本体（H3cApp.app）。ModelLibrary/ModelManagerView（登録済み
                                  モデル/LoRA）、ModelDownloader（Hugging Faceダウンロード）、
                                  HTTPServer/GenerationViewModel+API（組み込み自動化API）を含む
   Sources/H3Spike                H3Engine用の最小限のプロセス内スパイク/参照クライアント。配布アプリ本体ではない
-  package_app.sh                h3c-app.appをビルド・パッケージング。署名・公証も行う（下記参照）
-  make_dmg.sh                   ビルド済みh3c-app.appを配布用.dmgにまとめる
+  package_app.sh                H3cApp.appをビルド・パッケージング。署名・公証も行う（下記参照）
+  make_dmg.sh                   ビルド済みH3cApp.appを配布用.dmgにまとめる
 ```
 
 ## ソースからのビルド
@@ -292,7 +319,7 @@ cd native/H3Spike
 `libh3.a`はこのスクリプトでは再ビルドされません — リポジトリ直下で
 `make libh3.a`を先に（エンジンのコードを変更した後も同様に）実行して
 ください。`package_app.sh`はその後`swift build -c release`を実行し、
-`h3c-app.app`を組み立てます。SwiftPM標準のリポジトリ内`.build`ではなく
+`H3cApp.app`を組み立てます。SwiftPM標準のリポジトリ内`.build`ではなく
 リポジトリ外のスクラッチディレクトリ（`${TMPDIR}h3c-app-build-scratch`）
 にビルドします。これは、リポジトリが同期フォルダ（Google Drive、
 iCloud Drive、Dropboxなど）配下にあると、その同期デーモンがSwiftPMの
@@ -312,6 +339,14 @@ CCV_DIR=/path/to/ccv ./package_app.sh
 ```
 
 `CCV_DIR`なしでは、これまでどおり高速モードなしでビルドされます。
+
+画面は英語と日本語に対応し、macOSの言語設定に従います。Swiftソース中の
+日本語の文字列がキーで、訳は`native/H3Spike/Packaging/{en,ja}.lproj/Localizable.strings`
+にあり、`package_app.sh`がアプリに入れます。翻訳されるのは、SwiftUIの
+リテラル（`Text("…")`、`Button("…")`など）か`String(localized: "…")`として
+画面に渡る文字列だけです。`native/H3Spike`の`./check_localizations.sh`は
+コンパイラでキーを抽出し、どちらかの表に無いものを一覧にします。別の言語で
+試すには`open .build/H3cApp.app --args -AppleLanguages '(en)'`。
 
 #### コード署名と公証
 
@@ -339,7 +374,7 @@ H3C_NOTARY_PROFILE="some-keychain-profile" \
   Gatekeeper（`spctl -a -vvv -t exec`）を通過するようになります。
 
 ここでは気にする必要のあるネストされたフレームワークや埋め込みdylibは
-ありません — `h3c-app`がリンクしているのはAppleのシステムフレームワークと
+ありません — `H3cApp`がリンクしているのはAppleのシステムフレームワークと
 静的リンクされた`libh3.a`（`CCV_DIR`指定時は`libccv.a`も）だけなので、バンドルに対する単純な
 `codesign --deep`一回で十分です。
 
@@ -349,7 +384,7 @@ H3C_NOTARY_PROFILE="some-keychain-profile" \
 ./make_dmg.sh
 ```
 
-すでにビルド済みの`h3c-app.app`を、Applicationsへのドラッグ用ショート
+すでにビルド済みの`H3cApp.app`を、Applicationsへのドラッグ用ショート
 カット付きの圧縮`.dmg`にまとめます。`hdiutil`のみを使用（サードパーティ製
 のdmg作成ツールは不使用）。先に`package_app.sh`を実行しておいてください。
 `H3C_SIGN_IDENTITY`と`H3C_NOTARY_PROFILE`が設定されていれば、
@@ -374,7 +409,7 @@ MLXフィクスチャが`misc/fixtures/`に配置されていれば、Metalソ�
 
 ## API
 
-`h3c-app.app`が起動している間、`http://127.0.0.1:8420`でプレーンな
+`H3cApp.app`が起動している間、`http://127.0.0.1:8420`でプレーンな
 JSON APIを提供します — 生のPOSIXソケットで実装されており
 （[HTTPServer.swift](native/H3Spike/Sources/H3cApp/HTTPServer.swift)参照）、
 Network.frameworkやサードパーティ製サーバーは使っていません。別プロセスの
