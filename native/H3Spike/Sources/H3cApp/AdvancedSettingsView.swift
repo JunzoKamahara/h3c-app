@@ -142,11 +142,11 @@ struct AdvancedSettingsView: View {
     private var speedDescription: String {
         switch viewModel.speedMode {
         case .quality:
-            return "省略なしで計算します。"
+            return String(localized: "省略なしで計算します。")
         case .fast:
-            return "ステップ間でTransformerの計算結果を使い回します（5秒・20ステップのDiT部分で約2.7倍速）。画質は保たれますが、同じシードでも構図は標準と変わります。"
+            return String(localized: "ステップ間でTransformerの計算結果を使い回します（5秒・20ステップのDiT部分で約2.7倍速）。画質は保たれますが、同じシードでも構図は標準と変わります。")
         case .fastest:
-            return "高速に加えて、一部のトークンをまとめて計算します（5秒・20ステップのDiT部分で約2.9倍速）。細部がわずかに甘くなることがあります。"
+            return String(localized: "高速に加えて、一部のトークンをまとめて計算します（5秒・20ステップのDiT部分で約2.9倍速）。細部がわずかに甘くなることがあります。")
         }
     }
 
@@ -159,7 +159,7 @@ struct AdvancedSettingsView: View {
                 HStack {
                     ProgressView(value: viewModel.cacheBuildProgress)
                         .frame(maxWidth: 200)
-                    Text(viewModel.cacheBuildProgress.map { "\(Int($0 * 50))/50 ブロック" } ?? "準備中…")
+                    Text(viewModel.cacheBuildProgress.map { String(localized: "\(Int($0 * 50))/50 ブロック") } ?? String(localized: "準備中…"))
                         .font(.caption)
                         .foregroundStyle(palette.textSecondary)
                     Spacer()
@@ -220,7 +220,7 @@ struct AdvancedSettingsView: View {
             Text("使用する層数（DiTブロック）").font(.caption).foregroundStyle(palette.textSecondary)
             Picker("使用する層数", selection: $viewModel.ditLayers) {
                 ForEach(Array(ditLayersRange.reversed()), id: \.self) { value in
-                    Text(value == defaultDitLayers ? "\(value)（全層・標準）" : "\(value)").tag(value)
+                    Text(value == defaultDitLayers ? String(localized: "\(value)（全層・標準）") : "\(value)").tag(value)
                 }
             }
             .pickerStyle(.menu)
@@ -239,9 +239,9 @@ struct AdvancedSettingsView: View {
 
     private func reuseLabel(_ value: Int) -> String {
         switch value {
-        case 1: return "1（標準）"
-        case 2: return "2（高速）"
-        default: return "\(value)（さらに高速）"
+        case 1: return String(localized: "1（標準）")
+        case 2: return String(localized: "2（高速）")
+        default: return String(localized: "\(value)（さらに高速）")
         }
     }
 
@@ -263,7 +263,7 @@ struct AdvancedSettingsView: View {
                 TextField("シード値", text: $viewModel.seedText)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 200)
-                if let message = viewModel.validationMessage, message.hasPrefix("シード値") {
+                if let message = viewModel.seedValidationMessage {
                     Text(message).font(.caption).foregroundStyle(palette.errorColor)
                 }
             }

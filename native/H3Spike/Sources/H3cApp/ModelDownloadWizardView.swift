@@ -118,9 +118,11 @@ struct ModelDownloadWizardView: View {
         case .downloading:
             VStack(alignment: .leading, spacing: 4) {
                 ProgressView(value: Double(downloader.downloadedBytes), total: Double(max(downloader.totalBytes, 1)))
-                Text("\(formatGB(downloader.downloadedBytes)) / \(formatGB(downloader.totalBytes)) ・ "
-                     + "\(downloader.filesCompleted)/\(downloader.totalFiles)ファイル ・ "
-                     + formatSpeed(downloader.bytesPerSecond))
+                Text([
+                    "\(formatGB(downloader.downloadedBytes)) / \(formatGB(downloader.totalBytes))",
+                    String(localized: "\(downloader.filesCompleted)/\(downloader.totalFiles)ファイル"),
+                    formatSpeed(downloader.bytesPerSecond),
+                ].joined(separator: summarySeparator))
                     .font(.caption)
                     .foregroundStyle(palette.textSecondary)
                 Text("中断しても、次回は続きから再開します。")
@@ -167,7 +169,7 @@ struct ModelDownloadWizardView: View {
     }
 
     private func formatSpeed(_ bytesPerSecond: Double) -> String {
-        guard bytesPerSecond > 0 else { return "計測中…" }
+        guard bytesPerSecond > 0 else { return String(localized: "計測中…") }
         return String(format: "%.1fMB/s", bytesPerSecond / 1_048_576)
     }
 }

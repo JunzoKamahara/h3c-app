@@ -126,7 +126,7 @@ struct CreationFormView: View {
         } label: {
             // The preset in use, marked when the form has moved off it.
             if let active = viewModel.activePreset {
-                Label(active.modified ? "\(active.preset.name)・変更あり" : active.preset.name,
+                Label(active.modified ? String(localized: "\(active.preset.name)・変更あり") : active.preset.name,
                       systemImage: "square.stack")
             } else {
                 Label("プリセット", systemImage: "square.stack")
@@ -165,7 +165,7 @@ struct CreationFormView: View {
             Button {
                 viewModel.showingAdvancedSettings = true
             } label: {
-                Label(viewModel.hasAdvancedChanges ? "詳細設定・変更あり" : "詳細設定",
+                Label(viewModel.hasAdvancedChanges ? String(localized: "詳細設定・変更あり") : String(localized: "詳細設定"),
                       systemImage: "slider.horizontal.3")
             }
             .help("詳細設定を開く（⌘,）")
@@ -179,9 +179,9 @@ struct CreationFormView: View {
             switch viewModel.imageInputMode {
             case .firstLastFrame:
                 Text("この画像から動き始めます。").font(.caption).foregroundStyle(palette.textSecondary)
-                ImagePickerRow(label: "最初の画像", path: $viewModel.firstFramePath, choose: viewModel.pickFirstFrame)
+                ImagePickerRow(label: String(localized: "最初の画像"), path: $viewModel.firstFramePath, choose: viewModel.pickFirstFrame)
                 if viewModel.lastFramePath != nil {
-                    ImagePickerRow(label: "最後の画像", path: $viewModel.lastFramePath, choose: viewModel.pickLastFrame)
+                    ImagePickerRow(label: String(localized: "最後の画像"), path: $viewModel.lastFramePath, choose: viewModel.pickLastFrame)
                 } else {
                     Button("最後の画像も指定…") { viewModel.pickLastFrame() }
                         .font(.caption)
@@ -320,7 +320,7 @@ struct CreationFormView: View {
             .pickerStyle(.inline)
         } label: {
             composerChip(systemImage: "arrow.up.left.and.arrow.down.right",
-                         text: viewModel.sizeProfile.isLarge ? "大" : "小")
+                         text: viewModel.sizeProfile.isLarge ? String(localized: "大") : String(localized: "小"))
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
@@ -338,7 +338,7 @@ struct CreationFormView: View {
             }
             .pickerStyle(.inline)
         } label: {
-            composerChip(systemImage: "clock", text: "\(viewModel.seconds)秒")
+            composerChip(systemImage: "clock", text: String(localized: "\(viewModel.seconds)秒"))
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
@@ -401,9 +401,7 @@ struct CreationFormView: View {
         Group {
             // An empty prompt already shows its grey suggestion; no need
             // for a red error line as well.
-            if let message = viewModel.validationMessage,
-               !viewModel.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                || !message.contains("動画の内容") {
+            if let message = viewModel.validationMessage, !viewModel.promptIsEmpty {
                 Text(message).foregroundStyle(palette.errorColor)
             } else {
                 Text(viewModel.draftSummaryText).foregroundStyle(palette.textSecondary)
@@ -416,7 +414,7 @@ struct CreationFormView: View {
         let firstLine = viewModel.prompt
             .split(whereSeparator: \.isNewline)
             .first { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
-        return firstLine.map(String.init) ?? "プロンプトを入力"
+        return firstLine.map(String.init) ?? String(localized: "プロンプトを入力")
     }
 
     private func expand() {
@@ -438,8 +436,8 @@ struct CreationFormView: View {
         .buttonStyle(.plain)
         .disabled(!generateEnabled)
         .keyboardShortcut(.return, modifiers: .command)
-        .help(viewModel.isGenerating ? "中止" : "動画をつくる（Enter / ⌘Return）")
-        .accessibilityLabel(viewModel.isGenerating ? "中止" : "動画をつくる")
+        .help(viewModel.isGenerating ? String(localized: "中止") : String(localized: "動画をつくる（Enter / ⌘Return）"))
+        .accessibilityLabel(viewModel.isGenerating ? String(localized: "中止") : String(localized: "動画をつくる"))
     }
 
     private var generateEnabled: Bool {
@@ -455,7 +453,7 @@ private struct ImagePickerRow: View {
     var body: some View {
         HStack {
             Text(label).font(.caption).frame(width: 84, alignment: .leading)
-            Text(path.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "未選択")
+            Text(path.map { URL(fileURLWithPath: $0).lastPathComponent } ?? String(localized: "未選択"))
                 .font(.caption)
                 .lineLimit(1)
                 .truncationMode(.middle)

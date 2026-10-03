@@ -66,9 +66,9 @@ enum AspectShape: String, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .landscape: return "横長"
-        case .square: return "正方形"
-        case .portrait: return "縦長"
+        case .landscape: return String(localized: "横長")
+        case .square: return String(localized: "正方形")
+        case .portrait: return String(localized: "縦長")
         }
     }
 
@@ -89,8 +89,8 @@ enum CreationMethod: String, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .text: return "文章から"
-        case .image: return "画像から"
+        case .text: return String(localized: "文章から")
+        case .image: return String(localized: "画像から")
         }
     }
 }
@@ -107,8 +107,8 @@ enum ImageInputMode: String, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .firstLastFrame: return "最初・最後の画像"
-        case .referenceImage: return "参照画像・動画・音声"
+        case .firstLastFrame: return String(localized: "最初・最後の画像")
+        case .referenceImage: return String(localized: "参照画像・動画・音声")
         }
     }
 }
@@ -140,17 +140,17 @@ enum SpeedMode: String, CaseIterable, Identifiable, Codable {
 
     var label: String {
         switch self {
-        case .quality: return "標準（高品質）"
-        case .fast: return "高速"
-        case .fastest: return "最速"
+        case .quality: return String(localized: "標準（高品質）")
+        case .fast: return String(localized: "高速")
+        case .fastest: return String(localized: "最速")
         }
     }
 
     var summaryLabel: String {
         switch self {
-        case .quality: return "標準"
-        case .fast: return "高速"
-        case .fastest: return "最速"
+        case .quality: return String(localized: "標準")
+        case .fast: return String(localized: "高速")
+        case .fastest: return String(localized: "最速")
         }
     }
 }
@@ -161,17 +161,17 @@ enum ComputeMode: String, CaseIterable, Identifiable, Codable {
 
     var label: String {
         switch self {
-        case .attentionCache: return "高速（int8キャッシュ）"
-        case .resident: return "常駐（大容量メモリ向け、キャッシュ不要）"
-        case .ssdStreaming: return "省メモリ（SSDストリーミング）"
+        case .attentionCache: return String(localized: "高速（int8キャッシュ）")
+        case .resident: return String(localized: "常駐（大容量メモリ向け、キャッシュ不要）")
+        case .ssdStreaming: return String(localized: "省メモリ（SSDストリーミング）")
         }
     }
 
     var summaryLabel: String {
         switch self {
-        case .attentionCache: return "int8キャッシュ"
-        case .resident: return "常駐モード"
-        case .ssdStreaming: return "SSDストリーミング"
+        case .attentionCache: return String(localized: "int8キャッシュ")
+        case .resident: return String(localized: "常駐モード")
+        case .ssdStreaming: return String(localized: "SSDストリーミング")
         }
     }
 }
@@ -221,32 +221,50 @@ struct ResolvedResult {
     /// From the path that actually ran; a diagnostic environment override
     /// can route through ccv even with the checkbox off.
     var fastAttentionSummary: String {
-        if ccvAttentionCalls == 0 { return fastAttention ? "指定したが未使用" : "使用しない" }
-        let path = ccvAttentionDirectCalls == ccvAttentionCalls ? "使用" : "一部使用（ccv経路）"
-        return fastAttention ? path : path + "（診断用の環境変数による）"
+        if ccvAttentionCalls == 0 {
+            return fastAttention ? String(localized: "指定したが未使用") : String(localized: "使用しない")
+        }
+        let path = ccvAttentionDirectCalls == ccvAttentionCalls
+            ? String(localized: "使用") : String(localized: "一部使用（ccv経路）")
+        return fastAttention ? path : path + String(localized: "（診断用の環境変数による）")
     }
 
     var settingsSummaryText: String {
+        let method = imageInputMode.map { String(localized: "\(creationMethod.label)（\($0.label)）") }
+            ?? creationMethod.label
+        let actual = actualDurationSeconds.map { String(format: String(localized: "%.1f秒"), $0) }
+            ?? String(localized: "不明")
+        var reuseLine = String(localized: "ノイズ除去の再利用（reuse）: \(effectiveDenoiseReuse)")
+        if effectiveDenoiseReuse != denoiseReuse {
+            reuseLine += String(localized: "（設定値 \(denoiseReuse)、速度プリセットのため1で計算）")
+        }
+        let seedLine = seedWasRandom
+            ? String(localized: "シード: \(seedDecimalString)（毎回変える設定で決定）")
+            : String(localized: "シード: \(seedDecimalString)（固定）")
         var lines = [
-            "動画の内容: \(prompt)",
-            "作り方: \(creationMethod.label)" + (imageInputMode.map { "（\($0.label)）" } ?? ""),
-            "画面の形: \(sizeProfile.label)",
-            "長さ: 指定\(requestedSeconds)秒 / 実測\(actualDurationSeconds.map { String(format: "%.1f秒", $0) } ?? "不明")",
-            "生成ステップ数: \(steps)",
-            "ノイズ除去の再利用（reuse）: \(effectiveDenoiseReuse)"
-                + (effectiveDenoiseReuse != denoiseReuse ? "（設定値 \(denoiseReuse)、速度プリセットのため1で計算）" : ""),
-            "使用する層数: \(ditLayers) / 50",
-            "計算方式: \(computeMode.label)",
-            "速度: \(speedMode.label)",
-            "高速モード（試験的）: " + fastAttentionSummary,
-            "生成時間: \(formatElapsed(generationSeconds))",
-            "シード: \(seedDecimalString)" + (seedWasRandom ? "（毎回変える設定で決定）" : "（固定）"),
+            String(localized: "動画の内容: \(prompt)"),
+            String(localized: "作り方: \(method)"),
+            String(localized: "画面の形: \(sizeProfile.label)"),
+            String(localized: "長さ: 指定\(requestedSeconds)秒 / 実測\(actual)"),
+            String(localized: "生成ステップ数: \(steps)"),
+            reuseLine,
+            String(localized: "使用する層数: \(ditLayers) / 50"),
+            String(localized: "計算方式: \(computeMode.label)"),
+            String(localized: "速度: \(speedMode.label)"),
+            String(localized: "高速モード（試験的）: \(fastAttentionSummary)"),
+            String(localized: "生成時間: \(formatElapsed(generationSeconds))"),
+            seedLine,
         ]
         for lora in loras {
-            let strength = lora.strength == 1 ? "" : "（強さ \(lora.strength)）"
-            lines.append("追加モデル（LoRA）: \(URL(fileURLWithPath: lora.path).lastPathComponent)" + strength)
+            let file = URL(fileURLWithPath: lora.path).lastPathComponent
+            // As a String: a Float interpolated into a localized string
+            // formats as %f ("0.800000").
+            let strength = "\(lora.strength)"
+            lines.append(lora.strength == 1
+                ? String(localized: "追加モデル（LoRA）: \(file)")
+                : String(localized: "追加モデル（LoRA）: \(file)（強さ \(strength)）"))
         }
-        lines.append("動作環境: \(deviceLine)")
+        lines.append(String(localized: "動作環境: \(deviceLine)"))
         return lines.joined(separator: "\n")
     }
 }

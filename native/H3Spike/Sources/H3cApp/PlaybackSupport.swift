@@ -141,7 +141,7 @@ struct ResultPlayerView: View {
                     Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
                 }
                 .buttonStyle(.borderless)
-                .accessibilityLabel(model.isPlaying ? "一時停止" : "再生")
+                .accessibilityLabel(model.isPlaying ? String(localized: "一時停止") : String(localized: "再生"))
                 Slider(
                     value: Binding(
                         get: { isScrubbing ? scrubTime : model.currentTime },

@@ -27,7 +27,8 @@ extension GenerationViewModel {
             apiServer = server
             apiServerStatus = "http://127.0.0.1:\(h3APIPort)"
         } catch {
-            apiServerStatus = "起動できませんでした（\(error)）"
+            let detail = String(describing: error)
+            apiServerStatus = String(localized: "起動できませんでした（\(detail)）")
         }
     }
 

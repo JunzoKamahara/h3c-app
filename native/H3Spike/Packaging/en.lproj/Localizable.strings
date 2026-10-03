@@ -1,0 +1,289 @@
+/* Keys are the Japanese source strings. native/H3Spike/check_localizations.sh
+ * reports keys missing from this file. */
+
+/* AdvancedSettingsView.swift */
+"詳細設定" = "Advanced Settings";
+"変更あり" = "Modified";
+"生成ステップ数" = "Steps";
+"%lld" = "%lld";
+"変更は次の生成から適用されます" = "Changes apply from the next generation";
+"既定に戻す" = "Restore Defaults";
+"閉じる" = "Close";
+"計算方式" = "Compute mode";
+"事前に作ったint8キャッシュを読みながら計算します。速く動作します。キャッシュと、Tensor演算ユニットを搭載したGPU（M5以降）が必要です。" = "Computes while reading a prebuilt int8 cache. Fast. Needs the cache and a GPU with tensor units (M5 or later).";
+"キャッシュファイルを作らず、起動のたびにモデル全体をメモリ上に展開して計算します。Tensor演算ユニット搭載GPU（M5以降）ではint8に量子化して常駐、それ以外ではBF16のまま常駐するため、大容量メモリのMac向けです。" = "Loads the whole model into memory at every launch instead of using a cache file. On a GPU with tensor units (M5 or later) it stays resident as int8, otherwise as BF16, so it is meant for a Mac with plenty of memory.";
+"元のBF16モデルを、必要なブロックだけSSDから読みながら計算します。メモリは少なくて済みますが遅くなります。キャッシュは使いません。" = "Computes from the original BF16 model, reading only the blocks it needs from the SSD. Uses little memory but is slower. No cache is used.";
+"最大解像度・長い秒数・SSDストリーミングの組み合わせは、メモリ不足でスワップが発生し非常に遅くなることがあります（数時間かかる場合も）。解像度か秒数を下げることをおすすめします。" = "The maximum resolution with a long duration and SSD streaming can run short of memory and swap, becoming very slow (possibly hours). A lower resolution or a shorter duration is recommended.";
+"このMacの物理メモリでは常駐モードがスワップを起こす可能性があります。int8キャッシュ方式かSSDストリーミングをおすすめします。" = "With this Mac's physical memory, resident mode may swap. The int8 cache or SSD streaming is recommended.";
+"速度" = "Speed";
+"M5のニューラルアクセラレータでAttentionをint8計算します。長い動画ほど効果が大きく（15秒・20ステップで約1.4倍速、メモリ約1.3GB増）、短い動画では効果が小さく、条件によっては遅くなることがあります。同じシードでも標準とは映像が変わります。上の速度設定やreuseとも併用できますが、その組み合わせでの効果と画質は十分に検証していません。" = "Computes attention in int8 on the M5's neural accelerators. The longer the video, the larger the gain (about 1.4x at 15 s and 20 steps, about 1.3 GB more memory); short videos gain little and can be slower in some conditions. The same seed gives a different video than standard. It can be combined with the speed setting above and with reuse, but the speed and quality of those combinations are not fully verified.";
+"生成中の変更は次の生成から適用されます。" = "Changes made while generating apply from the next generation.";
+"高速モード（試験的）" = "Fast mode (experimental)";
+"省略なしで計算します。" = "Computes everything, with no shortcuts.";
+"ステップ間でTransformerの計算結果を使い回します（5秒・20ステップのDiT部分で約2.7倍速）。画質は保たれますが、同じシードでも構図は標準と変わります。" = "Reuses transformer results across steps (about 2.7x faster in the DiT phase at 5 s and 20 steps). Quality holds, but the same seed gives a different composition than standard.";
+"高速に加えて、一部のトークンをまとめて計算します（5秒・20ステップのDiT部分で約2.9倍速）。細部がわずかに甘くなることがあります。" = "Fast, plus computing some tokens together (about 2.9x faster in the DiT phase at 5 s and 20 steps). Fine detail can get slightly softer.";
+"キャッシュを作成しています。モデルの重みを読み込んで量子化するため、数十秒〜1分程度かかります。" = "Building the cache. Reading and quantizing the model weights takes from several tens of seconds to about a minute.";
+"中止" = "Cancel";
+"%lld/50 ブロック" = "%lld/50 blocks";
+"準備中…" = "Preparing…";
+"int8キャッシュがまだありません。" = "There is no int8 cache yet.";
+"キャッシュを作成…" = "Build Cache…";
+"ノイズ除去の再利用（reuse）" = "Denoiser reuse (reuse)";
+"N回に1回だけモデルを計算し、残りは前回までの結果から補って高速化します。大きいほど速く、品質は下がる可能性があります。" = "Runs the model only once every N steps and fills in the rest from earlier results. Higher is faster, and quality may drop.";
+"速度が「%@」の間は、Transformerの使い回しと併用できないためreuse 1で計算します（設定値は保持され、「標準」に戻すと使われます）。" = "While speed is “%@”, generation runs at reuse 1, since reuse can't be combined with transformer reuse (the setting is kept and used again when you switch back to “Standard”).";
+"ステップ数が少ないと、実際にモデルを計算する回数が極端に少なくなります。" = "With few steps, the model actually runs very few times.";
+"ノイズ除去の再利用" = "Denoiser reuse";
+"1（標準）" = "1 (standard)";
+"2（高速）" = "2 (faster)";
+"%lld（さらに高速）" = "%lld (fastest)";
+"使用する層数（DiTブロック）" = "Layer count (DiT blocks)";
+"50未満にすると、影響の小さいブロックから省いて高速化します。速度設定とは別に効きます。" = "Below 50, the least influential blocks are skipped to go faster. Works independently of the speed setting.";
+"層を減らすと音声が壊れることがあります（45層で強い雑音に変わることを確認）。映像も変わります。" = "Fewer layers can break the audio (45 layers was seen to turn it into loud noise). The video changes too.";
+"使用する層数" = "Layer count";
+"%lld（全層・標準）" = "%lld (all layers, standard)";
+"ランダムさ" = "Randomness";
+"シード値" = "Seed";
+"毎回変える" = "Random each time";
+"固定する" = "Fixed";
+"登録された追加モデルはありません。「管理…」から追加できます。" = "No add-on models are registered. You can add them from “Manage…”.";
+"オンにした追加モデルは重ねて適用されます。強さは学習時の効き具合に対する倍率です（空欄=1）。" = "Add-on models that are switched on are applied together. Strength multiplies the effect they were trained with (blank = 1).";
+"「%@」はTurbo用の追加モデルです。生成ステップ数を%lldに合わせました（%lld以外では品質が落ちます）。" = "“%@” is a Turbo add-on model. Steps were set to %lld (quality drops at any other value than %lld).";
+"Turbo用の追加モデルを複数重ねると効果が強くなりすぎます。1つにすることをおすすめします。" = "Stacking several Turbo add-on models makes the effect too strong. Using just one is recommended.";
+"読み込むモデル（最初/最後の画像・参照画像・動画）に対応したファイルか、事前に確認できません。" = "Whether the file fits the model being loaded (first/last image, or reference images and videos) can't be checked in advance.";
+"追加モデル（LoRA）" = "Add-on models (LoRA)";
+"管理…" = "Manage…";
+"強さ" = "Strength";
+"1" = "1";
+"モデルを準備しています…" = "Preparing the model…";
+"起動しています…" = "Starting…";
+
+/* ContentView.swift */
+"プリセットとして保存" = "Save as Preset";
+"名前" = "Name";
+"保存" = "Save";
+"キャンセル" = "Cancel";
+"形・大きさ・長さと詳細設定を保存します（プロンプトは含みません）。同じ名前のプリセットは上書きされます。" = "Saves the shape, size, length and advanced settings (not the prompt). A preset with the same name is overwritten.";
+"H3cApp" = "H3cApp";
+"モデル管理" = "Model Manager";
+
+/* CreationFormView.swift */
+"ドラッグで移動、ダブルクリックで元の位置へ" = "Drag to move, double-click to put it back";
+"パネルを折りたたむ" = "Collapse the panel";
+"形・大きさ・長さと詳細設定をまとめて保存・適用します（プロンプトは含みません）" = "Saves and applies the shape, size, length and advanced settings together (not the prompt)";
+"保存したプリセットはありません" = "No saved presets";
+"現在の設定をプリセットとして保存…" = "Save Current Settings as Preset…";
+"削除" = "Delete";
+"%@・変更あり" = "%@ · modified";
+"プリセット" = "Presets";
+"作り方" = "Mode";
+"画像の使い方" = "Image use";
+"詳細設定を開く（⌘,）" = "Open the advanced settings (⌘,)";
+"詳細設定・変更あり" = "Advanced Settings · modified";
+"この画像から動き始めます。" = "The video starts from this image.";
+"最初の画像" = "First image";
+"最後の画像" = "Last image";
+"画像・動画・音声の特徴を参考にして動画をつくります。最初のフレームが同じになるとは限りません。音声だけを参照にすることはできないので、画像か動画と組み合わせて追加してください。" = "Makes a video that takes after the images, videos and audio you add. The first frame won't necessarily match. Audio alone can't be a reference, so add it together with an image or a video.";
+"最後の画像も指定…" = "Also Set the Last Image…";
+"参照画像・動画・音声" = "Reference images, videos and audio";
+"ファイルを選ぶ…" = "Choose Files…";
+"%lld. %@" = "%lld. %@";
+"取り除く" = "Remove";
+"Tabで入力 ・ Enterで生成 ・ Shift+Enterで改行" = "Tab to use · Enter to generate · Shift+Enter for a new line";
+"画面の形" = "Shape";
+"大きさ（%@）" = "Size (%@)";
+"長さ" = "Length";
+"動画をつくる（Enter / ⌘Return）" = "Generate (Enter / ⌘Return)";
+"動画をつくる" = "Generate";
+"大きさ" = "Size";
+"小（%@）" = "Small (%@)";
+"大（%@）" = "Large (%@)";
+"大" = "Large";
+"小" = "Small";
+"%lld 秒" = "%lld s";
+"%lld秒" = "%lld s";
+"クリックでパネルを広げる" = "Click to expand the panel";
+"プロンプトを入力" = "Enter a prompt";
+"変更…" = "Change…";
+"未選択" = "Not selected";
+
+/* EngineStatusButton.swift */
+"モデルを準備しています" = "Preparing the model";
+"準備完了" = "Ready";
+"モデルが見つかりません" = "Model not found";
+"動作環境" = "System";
+"使用中のモデル" = "Model in use";
+"APIサーバー" = "API server";
+"読み込みエラー" = "Load error";
+"モデル管理…" = "Model Manager…";
+"もう一度試す" = "Try Again";
+"未登録" = "None registered";
+
+/* Formatting.swift */
+" ・ " = " · ";
+
+/* GenerationModels.swift */
+"高速（int8キャッシュ）" = "Fast (int8 cache)";
+"常駐（大容量メモリ向け、キャッシュ不要）" = "Resident (for plenty of memory, no cache)";
+"省メモリ（SSDストリーミング）" = "Low memory (SSD streaming)";
+"標準（高品質）" = "Standard (best quality)";
+"高速" = "Fast";
+"最速" = "Fastest";
+"文章から" = "From text";
+"画像から" = "From images";
+"最初・最後の画像" = "First/last image";
+"横長" = "Landscape";
+"正方形" = "Square";
+"縦長" = "Portrait";
+"標準" = "Standard";
+"int8キャッシュ" = "int8 cache";
+"常駐モード" = "Resident";
+"SSDストリーミング" = "SSD streaming";
+"指定したが未使用" = "requested but not used";
+"使用しない" = "not used";
+"使用" = "used";
+"一部使用（ccv経路）" = "partly used (ccv path)";
+"（診断用の環境変数による）" = " (via the diagnostic environment variable)";
+"ノイズ除去の再利用（reuse）: %lld" = "Denoiser reuse (reuse): %lld";
+"（設定値 %lld、速度プリセットのため1で計算）" = " (setting %lld; run at 1 because of the speed preset)";
+"シード: %@（毎回変える設定で決定）" = "Seed: %@ (chosen at random)";
+"シード: %@（固定）" = "Seed: %@ (fixed)";
+"動画の内容: %@" = "Prompt: %@";
+"作り方: %@" = "Mode: %@";
+"画面の形: %@" = "Shape: %@";
+"長さ: 指定%lld秒 / 実測%@" = "Length: %lld s requested / %@ actual";
+"生成ステップ数: %lld" = "Steps: %lld";
+"使用する層数: %lld / 50" = "Layer count: %lld / 50";
+"計算方式: %@" = "Compute mode: %@";
+"速度: %@" = "Speed: %@";
+"高速モード（試験的）: %@" = "Fast mode (experimental): %@";
+"生成時間: %@" = "Generation time: %@";
+"追加モデル（LoRA）: %@" = "Add-on model (LoRA): %@";
+"追加モデル（LoRA）: %@（強さ %@）" = "Add-on model (LoRA): %@ (strength %@)";
+"動作環境: %@" = "System: %@";
+"%@（%@）" = "%@ (%@)";
+"%.1f秒" = "%.1f s";
+"不明" = "unknown";
+
+/* GenerationViewModel+API.swift */
+"起動できませんでした（%@）" = "Couldn't start (%@)";
+
+/* GenerationViewModel.swift */
+"シード値を入力してください" = "Enter a seed";
+"シード値は0〜18446744073709551615の整数にしてください" = "The seed must be an integer from 0 to 18446744073709551615";
+"モデルは読み込めましたが、GPU情報が取得できませんでした" = "The model loaded, but GPU information couldn't be read";
+"モデルが登録されていません" = "No model is registered";
+"「モデル管理」からMiniMax-H3のフォルダを追加してください。" = "Add a MiniMax-H3 folder in the Model Manager.";
+"モデルの読み込みに失敗しました" = "Couldn't load the model";
+"動画の内容を入力してください" = "Enter a prompt";
+"最初の画像を選んでください" = "Choose the first image";
+"参照画像・動画・音声を選んでください" = "Choose reference images, videos or audio";
+"音声だけの参照はできません。画像か動画の参照も追加してください" = "Audio alone can't be a reference. Add an image or video reference too";
+"追加モデル「%@」のファイルが見つかりません。モデル管理で確認してください" = "The file for the add-on model “%@” wasn't found. Check it in the Model Manager";
+"追加モデル「%@」はMiniMax-H3用として読み込めません。モデル管理で確認してください" = "The add-on model “%@” can't be loaded for MiniMax-H3. Check it in the Model Manager";
+"このGPUではint8キャッシュを使えません。詳細設定の「計算方式」でSSDストリーミングを選んでください" = "This GPU can't use the int8 cache. Choose SSD streaming under “Compute mode” in the advanced settings";
+"int8キャッシュが見つかりません。詳細設定の「計算方式」から作成するか、SSDストリーミングに切り替えてください" = "The int8 cache wasn't found. Build it under “Compute mode” in the advanced settings, or switch to SSD streaming";
+"層 %lld" = "Layers %lld";
+"シード固定" = "Fixed seed";
+"追加モデル: %@" = "Add-on models: %@";
+"キャッシュの作成に失敗しました。（詳細: %@）" = "Couldn't build the cache. (Details: %@)";
+"できあがりました" = "Done";
+"生成を中止しました" = "Generation canceled";
+"この設定ではメモリが足りませんでした。もっと小さいサイズや短い長さをお試しください。（詳細: %@）" = "There wasn't enough memory for these settings. Try a smaller size or a shorter length. (Details: %@)";
+"動画をつくれませんでした。（詳細: %@）" = "Couldn't make the video. (Details: %@)";
+
+/* H3cApp.swift */
+"詳細設定…" = "Advanced Settings…";
+
+/* ModelDownloadWizardView.swift */
+"MiniMax-H3 モデルのダウンロード" = "Download the MiniMax-H3 Model";
+"Ref2VA も含める（参照画像・動画機能。おおよそ倍のサイズになります）" = "Also include Ref2VA (reference images and videos; roughly doubles the size)";
+"Hugging Face（MiniMaxAI/MiniMax-H3）から直接ダウンロードします。FL2VAだけで約130GB、Ref2VAも含めると約260GBと非常に大きいので、時間と空き容量に余裕がある回線・ディスクで実行してください。" = "Downloads directly from Hugging Face (MiniMaxAI/MiniMax-H3). It is very large, about 130 GB for FL2VA alone and about 260 GB with Ref2VA, so run it with plenty of time, bandwidth and free disk space.";
+"合計 %@（%lldファイル）。「ダウンロード開始」を押してください。" = "%@ in total (%lld files). Click “Start Download”.";
+"ダウンロードが完了しました。" = "Download complete.";
+"FL2VA（と、あればRef2VA）を含むフォルダが既にある場合は、ダウンロードせずに登録できます。" = "If you already have a folder containing FL2VA (and Ref2VA, if any), you can register it without downloading.";
+"フォルダを追加…" = "Add Folder…";
+"保存先" = "Save to";
+"ファイル一覧を確認しています…" = "Checking the file list…";
+"%lld/%lldファイル" = "%lld/%lld files";
+"中断しても、次回は続きから再開します。" = "If interrupted, it resumes where it left off next time.";
+"計測中…" = "Measuring…";
+"あとで" = "Later";
+"サイズを確認…" = "Check Size…";
+"ダウンロード開始" = "Start Download";
+"再開" = "Resume";
+"完了" = "Done";
+
+/* ModelDownloader.swift */
+"ファイル一覧の取得に失敗しました。（詳細: %@）" = "Couldn't get the file list. (Details: %@)";
+"保存先の空き容量が足りません。あと約%.1fGB必要です（空き: 約%.1fGB）。" = "Not enough free space at the destination. About %.1f GB more is needed (free: about %.1f GB).";
+"%@ のダウンロードに失敗しました。（HTTP %lld）" = "Couldn't download %@. (HTTP %lld)";
+"%@ のダウンロード結果のサイズが一致しませんでした。" = "The downloaded size of %@ didn't match.";
+
+/* ModelManagerView.swift */
+"H3モデル" = "H3 models";
+"登録されたH3モデルはありません。" = "No H3 models are registered.";
+"FL2VA（と、あれば任意でRef2VA）を含むフォルダを登録してください。" = "Register a folder containing FL2VA (and, optionally, Ref2VA).";
+"ダウンロードして追加…" = "Download and Add…";
+"FL2VAあり" = "FL2VA present";
+"FL2VAなし" = "no FL2VA";
+"Ref2VAあり" = "Ref2VA present";
+"Ref2VAなし" = "no Ref2VA";
+"名前を変更" = "Rename";
+"登録されたLoRAはありません。" = "No LoRAs are registered.";
+"チェックしたLoRAを重ねて適用します（最大%lld個、ドラッグで並べ替え）。" = "Checked LoRAs are applied together (up to %lld; drag to reorder).";
+"追加…" = "Add…";
+"%lld/50ブロック" = "%lld/50 blocks";
+"未対応%lld件は無視" = "%lld unsupported ignored";
+"MiniMax-H3用として読み込めません: %@" = "Can't be loaded for MiniMax-H3: %@";
+"ファイルが見つかりません" = "File not found";
+"ステップ" = "Steps";
+"学習時の効き具合に対する倍率。空欄は1。" = "Multiplies the effect it was trained with. Blank means 1.";
+"—" = "—";
+"Turbo（蒸留）LoRAの学習ステップ数。オンにすると生成ステップ数がこれに切り替わります。空欄は通常のLoRA。" = "The step count a Turbo (distilled) LoRA was trained for. Switching it on sets the generation steps to this. Blank for a regular LoRA.";
+
+/* PlaybackSupport.swift */
+"一時停止" = "Pause";
+"再生" = "Play";
+"再生位置" = "Playback position";
+"%lld%%" = "%lld%%";
+"動画をクリックで再生・停止。ピンチ・マウスホイールで拡大縮小、ドラッグで移動、ダブルクリックで元の大きさ" = "Click the video to play or pause. Pinch or scroll to zoom, drag to pan, double-click to reset the size";
+
+/* PreviewPane.swift */
+"プレビュー" = "Preview";
+"中止しています" = "Canceling";
+"動画を生成しています" = "Generating the video";
+"できあがりました ・ 生成時間 %@" = "Done · generation time %@";
+"ここに動画が表示されます" = "Your video will appear here";
+"下のパネルで内容を決めて、動画をつくりましょう。" = "Describe your video in the panel below and generate it.";
+"経過 %@" = "Elapsed %@";
+"残り約 %@（完了予定 %@）" = "About %@ left (done around %@)";
+"残り時間を見積り中…" = "Estimating the time left…";
+"動画を書き出す…" = "Export Video…";
+"使用した設定…" = "Settings Used…";
+"Finderで表示" = "Show in Finder";
+"保存しました: %@" = "Saved: %@";
+"選んだ場所に保存できませんでした（詳細: %@）" = "Couldn't save to the chosen location (details: %@)";
+"使用した設定" = "Settings used";
+"フォームに戻す" = "Back to the Form";
+"この動画のプロンプトと設定をパネルに戻します" = "Puts this video's prompt and settings back into the panel";
+"プリセットとして保存…" = "Save as Preset…";
+"この動画の設定（プロンプト以外）に名前を付けて保存します" = "Saves this video's settings (not the prompt) under a name";
+"その他" = "More";
+"設定をテキストでコピー" = "Copy Settings as Text";
+"同じシードを使う" = "Use the Same Seed";
+
+/* ProgressEstimator.swift */
+"準備中" = "Preparing";
+"ノイズ除去" = "Denoising";
+"映像への変換" = "Decoding to video";
+"動画ファイルの書き出し" = "Writing the video file";
+"文章を解析" = "Tokenizing the text";
+"文章を理解" = "Encoding the text";
+"文章を調整" = "Refining the text";
+"条件を計算" = "Computing conditions";
+"モデルを読み込み" = "Loading the model";
+"音声を解析" = "Encoding the audio";
+"画像を解析" = "Encoding the images";
+"%lld/%lld ステップ" = "%lld/%lld steps";
+"音声と映像をデコードしています" = "Decoding the audio and video";
+"%lld/%lld フレーム" = "%lld/%lld frames";

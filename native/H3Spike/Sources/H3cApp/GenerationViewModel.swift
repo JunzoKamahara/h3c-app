@@ -63,7 +63,7 @@ final class GenerationViewModel: ObservableObject {
     // MARK: Engine readiness (separate from job state and results - design
     // spec invariant: "エンジン準備状態・生成ジョブ状態・前回結果は別々に保持する")
     @Published private(set) var engineState: EngineState = .loading
-    @Published private(set) var deviceLine: String = "モデルを準備しています…"
+    @Published private(set) var deviceLine: String = String(localized: "モデルを準備しています…")
     @Published private(set) var modelDirectory: String = ""
     let library = ModelLibrary()
 
@@ -289,7 +289,7 @@ final class GenerationViewModel: ObservableObject {
                 if case H3EngineError.cancelled = error {
                     // user-initiated - no error text needed
                 } else {
-                    self.cacheBuildError = "キャッシュの作成に失敗しました。（詳細: \(error.localizedDescription)）"
+                    self.cacheBuildError = String(localized: "キャッシュの作成に失敗しました。（詳細: \(error.localizedDescription)）")
                 }
             }
             self.isBuildingCache = false
@@ -333,7 +333,7 @@ final class GenerationViewModel: ObservableObject {
     // the same job/state a person drives through the form is also reachable
     // over HTTP, with no separate process or dependency to install.
     var apiServer: HTTPServer?
-    @Published var apiServerStatus: String = "起動しています…"
+    @Published var apiServerStatus: String = String(localized: "起動しています…")
 
     init() {
         // Sweep anything a previous run left behind (crash, force quit) -
@@ -397,14 +397,14 @@ final class GenerationViewModel: ObservableObject {
     func loadModel() {
         guard let active = library.activeModel else {
             modelDirectory = ""
-            deviceLine = "モデルが登録されていません"
-            engineState = .failed("「モデル管理」からMiniMax-H3のフォルダを追加してください。")
+            deviceLine = String(localized: "モデルが登録されていません")
+            engineState = .failed(String(localized: "「モデル管理」からMiniMax-H3のフォルダを追加してください。"))
             return
         }
         let modelDir = active.path
         modelDirectory = modelDir
         engineState = .loading
-        deviceLine = "モデルを準備しています…"
+        deviceLine = String(localized: "モデルを準備しています…")
         do {
             let engine = try H3Engine(modelDirectory: modelDir)
             self.engine = engine
@@ -413,11 +413,11 @@ final class GenerationViewModel: ObservableObject {
                 supportsInt8Cache = device.hasTensorHardware
                 if !supportsInt8Cache { computeMode = .ssdStreaming }
             } else {
-                deviceLine = "モデルは読み込めましたが、GPU情報が取得できませんでした"
+                deviceLine = String(localized: "モデルは読み込めましたが、GPU情報が取得できませんでした")
             }
             engineState = .ready
         } catch {
-            deviceLine = "モデルの読み込みに失敗しました"
+            deviceLine = String(localized: "モデルの読み込みに失敗しました")
             engineState = .failed(error.localizedDescription)
         }
     }
@@ -477,45 +477,54 @@ final class GenerationViewModel: ObservableObject {
     // MARK: Validation (UI-07: block generation with a locatable reason
     // instead of a generic disabled button)
 
+    var promptIsEmpty: Bool {
+        prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// The seed field's own error, shown next to it in 詳細設定 whatever
+    /// else is wrong with the form.
+    var seedValidationMessage: String? {
+        guard seedFixed && UInt64(seedText) == nil else { return nil }
+        return seedText.isEmpty ? String(localized: "シード値を入力してください")
+                                : String(localized: "シード値は0〜18446744073709551615の整数にしてください")
+    }
+
     var validationMessage: String? {
         guard case .ready = engineState else { return nil } // covered by engine status instead
-        if prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return "動画の内容を入力してください"
+        if promptIsEmpty {
+            return String(localized: "動画の内容を入力してください")
         }
-        if seedFixed && UInt64(seedText) == nil {
-            return seedText.isEmpty ? "シード値を入力してください"
-                                    : "シード値は0〜18446744073709551615の整数にしてください"
-        }
+        if let seedValidationMessage { return seedValidationMessage }
         if creationMethod == .image {
             switch imageInputMode {
             case .firstLastFrame:
-                if firstFramePath == nil { return "最初の画像を選んでください" }
+                if firstFramePath == nil { return String(localized: "最初の画像を選んでください") }
             case .referenceImage:
-                if referenceImages.isEmpty { return "参照画像・動画・音声を選んでください" }
+                if referenceImages.isEmpty { return String(localized: "参照画像・動画・音声を選んでください") }
                 // h3.c rejects this combination outright ("reference audio
                 // requires an image or video reference") - an audio file
                 // can season a visual reference but can't carry a
                 // generation on its own.
                 let hasVisualReference = referenceImages.contains { $0.kind == .image || $0.kind == .video }
                 if !hasVisualReference {
-                    return "音声だけの参照はできません。画像か動画の参照も追加してください"
+                    return String(localized: "音声だけの参照はできません。画像か動画の参照も追加してください")
                 }
             }
         }
         for lora in library.enabledLoRAs {
             if !FileManager.default.fileExists(atPath: lora.path) {
-                return "追加モデル「\(lora.name)」のファイルが見つかりません。モデル管理で確認してください"
+                return String(localized: "追加モデル「\(lora.name)」のファイルが見つかりません。モデル管理で確認してください")
             }
             if case .failure = library.loraInfo(for: lora) {
-                return "追加モデル「\(lora.name)」はMiniMax-H3用として読み込めません。モデル管理で確認してください"
+                return String(localized: "追加モデル「\(lora.name)」はMiniMax-H3用として読み込めません。モデル管理で確認してください")
             }
         }
         if computeMode == .attentionCache {
             if !supportsInt8Cache {
-                return "このGPUではint8キャッシュを使えません。詳細設定の「計算方式」でSSDストリーミングを選んでください"
+                return String(localized: "このGPUではint8キャッシュを使えません。詳細設定の「計算方式」でSSDストリーミングを選んでください")
             }
             if attentionCacheMissing {
-                return "int8キャッシュが見つかりません。詳細設定の「計算方式」から作成するか、SSDストリーミングに切り替えてください"
+                return String(localized: "int8キャッシュが見つかりません。詳細設定の「計算方式」から作成するか、SSDストリーミングに切り替えてください")
             }
         }
         return nil
@@ -528,20 +537,23 @@ final class GenerationViewModel: ObservableObject {
     // MARK: Summary text shown above the primary button, and in "設定を見る"
 
     var draftSummaryText: String {
-        var parts = ["\(sizeProfile.label)", "\(seconds)秒"]
+        var parts = [sizeProfile.label, String(localized: "\(seconds)秒")]
         if hasAdvancedChanges {
             // Clamped like the engine params, so this shows what will run.
             parts.append("Steps \(steps.clamped(to: stepsRange))")
             if speedMode == .quality && denoiseReuse != defaultReuse { parts.append("reuse \(denoiseReuse)") }
-            if ditLayers != defaultDitLayers { parts.append("層 \(ditLayers)") }
+            if ditLayers != defaultDitLayers { parts.append(String(localized: "層 \(ditLayers)")) }
             if computeMode != defaultComputeMode { parts.append(computeMode.summaryLabel) }
             if speedMode != .quality { parts.append(speedMode.summaryLabel) }
-            if fastAttention { parts.append("高速モード（試験的）") }
-            if seedFixed { parts.append("シード固定") }
+            if fastAttention { parts.append(String(localized: "高速モード（試験的）")) }
+            if seedFixed { parts.append(String(localized: "シード固定")) }
             let loras = library.enabledLoRAs
-            if !loras.isEmpty { parts.append("追加モデル: " + loras.map(\.name).joined(separator: " + ")) }
+            if !loras.isEmpty {
+                let names = loras.map(\.name).joined(separator: " + ")
+                parts.append(String(localized: "追加モデル: \(names)"))
+            }
         }
-        return parts.joined(separator: " ・ ")
+        return parts.joined(separator: summarySeparator)
     }
 
     // MARK: Generation
@@ -643,7 +655,7 @@ final class GenerationViewModel: ObservableObject {
                         break
                     case .finished(let result):
                         Self.lastUsedSeed = result.seed
-                        self.phase = "できあがりました"
+                        self.phase = String(localized: "できあがりました")
                         self.estimator?.finishedCalibration(now: Date())
                             // Keyed by the path that actually ran, not the
                             // checkbox: a diagnostic H3_ATTENTION_BACKEND can
@@ -684,10 +696,10 @@ final class GenerationViewModel: ObservableObject {
                     }
                 }
             } catch is CancellationError {
-                self.phase = "生成を中止しました"
+                self.phase = String(localized: "生成を中止しました")
             } catch {
                 if case H3EngineError.cancelled = error {
-                    self.phase = "生成を中止しました"
+                    self.phase = String(localized: "生成を中止しました")
                 } else {
                     self.errorMessage = Self.userFacingMessage(for: error)
                 }
@@ -717,9 +729,9 @@ final class GenerationViewModel: ObservableObject {
         // alongside it rather than guessing at a specific cause.
         let raw = error.localizedDescription
         if raw.contains("out of memory") || raw.contains("insufficient memory") {
-            return "この設定ではメモリが足りませんでした。もっと小さいサイズや短い長さをお試しください。（詳細: \(raw)）"
+            return String(localized: "この設定ではメモリが足りませんでした。もっと小さいサイズや短い長さをお試しください。（詳細: \(raw)）")
         }
-        return "動画をつくれませんでした。（詳細: \(raw)）"
+        return String(localized: "動画をつくれませんでした。（詳細: \(raw)）")
     }
 
     func cancel() {

@@ -19,12 +19,11 @@ struct H3cApp: App {
     }
 
     var body: some Scene {
-        // The Swift type/module is named H3cApp (Swift module names
-        // can't contain a hyphen), but every user-visible name - this
+        // The app is named H3cApp wherever the user sees it - this
         // window's title, the app/menu-bar name from Info.plist, the
-        // bundle and executable filenames from package_app.sh - is
-        // h3c-app, matching the actual product/repo name.
-        WindowGroup("h3c-app") {
+        // bundle and executable filenames from package_app.sh. Only the
+        // repository (and internal identifiers) are h3c-app.
+        WindowGroup("H3cApp") {
             ContentView()
         }
         .commands { AdvancedSettingsCommand() }

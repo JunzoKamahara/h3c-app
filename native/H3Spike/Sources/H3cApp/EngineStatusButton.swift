@@ -11,9 +11,9 @@ struct EngineStatusButton: View {
 
     private var statusText: String {
         switch viewModel.engineState {
-        case .loading: return "モデルを準備しています"
-        case .ready: return "準備完了"
-        case .failed: return "モデルが見つかりません"
+        case .loading: return String(localized: "モデルを準備しています")
+        case .ready: return String(localized: "準備完了")
+        case .failed: return String(localized: "モデルが見つかりません")
         }
     }
 
@@ -45,7 +45,7 @@ struct EngineStatusButton: View {
             Text(viewModel.deviceLine).font(.body).textSelection(.enabled)
             Divider()
             Text("使用中のモデル").font(.caption).foregroundStyle(.secondary)
-            Text(library.activeModel?.name ?? "未登録").font(.body).textSelection(.enabled)
+            Text(library.activeModel?.name ?? String(localized: "未登録")).font(.body).textSelection(.enabled)
             Text(viewModel.modelDirectory).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
             Button("モデル管理…") {
                 showingPopover = false

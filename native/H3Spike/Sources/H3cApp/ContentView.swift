@@ -64,10 +64,9 @@ struct ContentView: View {
                 showingModelManager: $showingModelManager
             )
         }
+        // The window title (WindowGroup in H3cApp.swift) already names the
+        // app; a toolbar title next to it showed the name twice.
         .toolbar {
-            ToolbarItem(placement: .navigation) {
-                Text("h3c-app").font(.headline)
-            }
             ToolbarItem(placement: .automatic) {
                 Button {
                     showingModelManager = true

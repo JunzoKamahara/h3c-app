@@ -19,14 +19,14 @@ enum ModelDownloadError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .listingFailed(let detail):
-            return "ファイル一覧の取得に失敗しました。（詳細: \(detail)）"
+            return String(localized: "ファイル一覧の取得に失敗しました。（詳細: \(detail)）")
         case .insufficientDiskSpace(let needed, let available):
-            return String(format: "保存先の空き容量が足りません。あと約%.1fGB必要です（空き: 約%.1fGB）。",
+            return String(format: String(localized: "保存先の空き容量が足りません。あと約%.1fGB必要です（空き: 約%.1fGB）。"),
                            needed, available)
         case .httpStatus(let path, let status):
-            return "\(path) のダウンロードに失敗しました。（HTTP \(status)）"
+            return String(localized: "\(path) のダウンロードに失敗しました。（HTTP \(status)）")
         case .sizeMismatch(let path):
-            return "\(path) のダウンロード結果のサイズが一致しませんでした。"
+            return String(localized: "\(path) のダウンロード結果のサイズが一致しませんでした。")
         }
     }
 }

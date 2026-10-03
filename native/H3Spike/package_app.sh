@@ -1,15 +1,16 @@
 #!/bin/sh
-# Assembles h3c-app.app from a release build of the H3cApp SPM target.
-# The Swift target/module itself stays named H3cApp (Swift module names
-# can't contain a hyphen), but every user-visible name - the bundle
-# folder, the executable inside it, Info.plist - is h3c-app, matching
-# the actual product/repo name.
+# Assembles H3cApp.app from a release build of the H3cApp SPM target.
+# The app is named H3cApp everywhere the user sees it - the bundle folder,
+# the executable inside it, Info.plist - while the repository is h3c-app.
+# The bundle ID (dev.kamahara.h3c-app), the UserDefaults keys and the
+# Application Support folder keep the h3c-app spelling so existing
+# settings, presets and downloaded models carry over.
 set -eu
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/../.." && pwd)
 build_dir="$script_dir/.build"
-app_bundle="$build_dir/h3c-app.app"
+app_bundle="$build_dir/H3cApp.app"
 # This repo lives under ~/Documents, which Google Drive's desktop app
 # watches/syncs by default; it periodically opens swift build's llbuild
 # SQLite database (build.db) for that, and the resulting lock contention is
@@ -33,10 +34,13 @@ fi
 
 rm -rf "$app_bundle"
 mkdir -p "$app_bundle/Contents/MacOS" "$app_bundle/Contents/Resources"
-cp "$scratch_dir/release/H3cApp" "$app_bundle/Contents/MacOS/h3c-app"
+cp "$scratch_dir/release/H3cApp" "$app_bundle/Contents/MacOS/H3cApp"
 cp "$repo_root/h3_shaders.metal" "$app_bundle/Contents/Resources/h3_shaders.metal"
 cp "$script_dir/Packaging/AppIcon.icns" "$app_bundle/Contents/Resources/AppIcon.icns"
 cp "$script_dir/Packaging/Info.plist" "$app_bundle/Contents/Info.plist"
+# UI strings: Japanese keys, English and Japanese tables (see
+# check_localizations.sh).
+cp -R "$script_dir/Packaging/en.lproj" "$script_dir/Packaging/ja.lproj" "$app_bundle/Contents/Resources/"
 # License texts travel with the binary (BSD/MIT/Apache require it for
 # binary redistribution). ccv's COPYING also carries the licenses of the
 # third-party code ccv bundles, so it's included whenever ccv is linked in.
@@ -61,7 +65,7 @@ if [ -n "${H3C_SIGN_IDENTITY:-}" ]; then
     echo "Signed $app_bundle"
 
     if [ -n "${H3C_NOTARY_PROFILE:-}" ]; then
-        zip_path="$build_dir/h3c-app.zip"
+        zip_path="$build_dir/H3cApp.zip"
         rm -f "$zip_path"
         ditto -c -k --keepParent "$app_bundle" "$zip_path"
         echo "Submitting for notarization (profile: $H3C_NOTARY_PROFILE)..."

@@ -31,10 +31,10 @@ enum JobStage: Int, Comparable {
 
     var title: String {
         switch self {
-        case .setup: return "準備中"
-        case .denoise: return "ノイズ除去"
-        case .decode: return "映像への変換"
-        case .encode: return "動画ファイルの書き出し"
+        case .setup: return String(localized: "準備中")
+        case .denoise: return String(localized: "ノイズ除去")
+        case .decode: return String(localized: "映像への変換")
+        case .encode: return String(localized: "動画ファイルの書き出し")
         }
     }
 
@@ -56,13 +56,13 @@ enum JobStage: Int, Comparable {
 }
 
 private let phaseLabels: [String: String] = [
-    "tokenizer": "文章を解析",
-    "text encoder": "文章を理解",
-    "refine text": "文章を調整",
-    "precompute AdaLN": "条件を計算",
-    "load transformer core": "モデルを読み込み",
-    "audio VAE encoder": "音声を解析",
-    "video VAE encoder": "画像を解析",
+    "tokenizer": String(localized: "文章を解析"),
+    "text encoder": String(localized: "文章を理解"),
+    "refine text": String(localized: "文章を調整"),
+    "precompute AdaLN": String(localized: "条件を計算"),
+    "load transformer core": String(localized: "モデルを読み込み"),
+    "audio VAE encoder": String(localized: "音声を解析"),
+    "video VAE encoder": String(localized: "画像を解析"),
 ]
 
 struct TimingSample: Codable {
@@ -431,11 +431,11 @@ final class ProgressEstimator {
             let label = phaseLabels[currentPhase] ?? currentPhase
             return currentTotal > 1 ? "\(label) \(currentCompleted)/\(currentTotal)" : label
         case .denoise:
-            return "\(denoiseDone)/\(shape.steps) ステップ"
+            return String(localized: "\(denoiseDone)/\(shape.steps) ステップ")
         case .decode:
-            return "音声と映像をデコードしています"
+            return String(localized: "音声と映像をデコードしています")
         case .encode:
-            return "\(encodeEmitted)/\(shape.totalFrames) フレーム"
+            return String(localized: "\(encodeEmitted)/\(shape.totalFrames) フレーム")
         }
     }
 

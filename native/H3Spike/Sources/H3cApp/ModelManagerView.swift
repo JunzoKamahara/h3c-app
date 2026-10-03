@@ -26,7 +26,7 @@ struct ModelManagerView: View {
     private enum Section: String, CaseIterable, Identifiable {
         case models, loras
         var id: String { rawValue }
-        var label: String { self == .models ? "H3モデル" : "LoRA" }
+        var label: String { self == .models ? String(localized: "H3モデル") : "LoRA" }
     }
 
     var body: some View {
@@ -62,7 +62,7 @@ struct ModelManagerView: View {
     private var modelsSection: some View {
         VStack(spacing: 0) {
             if library.models.isEmpty {
-                emptyState("登録されたH3モデルはありません。")
+                emptyState(String(localized: "登録されたH3モデルはありません。"))
             } else {
                 List {
                     ForEach(library.models) { model in
@@ -152,9 +152,9 @@ struct ModelManagerView: View {
             fm.fileExists(atPath: model.path + subpath, isDirectory: &isDir) && isDir.boolValue
         }
         return [
-            has("/FL2VA") ? "FL2VAあり" : "FL2VAなし",
-            has("/Ref2VA") ? "Ref2VAあり" : "Ref2VAなし",
-        ].joined(separator: " ・ ")
+            has("/FL2VA") ? String(localized: "FL2VAあり") : String(localized: "FL2VAなし"),
+            has("/Ref2VA") ? String(localized: "Ref2VAあり") : String(localized: "Ref2VAなし"),
+        ].joined(separator: summarySeparator)
     }
 
     private func addModel() {
@@ -167,7 +167,7 @@ struct ModelManagerView: View {
     private var lorasSection: some View {
         VStack(spacing: 0) {
             if library.loras.isEmpty {
-                emptyState("登録されたLoRAはありません。")
+                emptyState(String(localized: "登録されたLoRAはありません。"))
             } else {
                 List {
                     ForEach(library.loras) { entry in
@@ -256,14 +256,14 @@ struct ModelManagerView: View {
         switch library.loraInfo(for: entry) {
         case .success(let info):
             var parts = [info.format,
-                         "\(info.blocks)/50ブロック" + (info.refinerBlocks > 0 ? "+refiner" : ""),
+                         String(localized: "\(info.blocks)/50ブロック") + (info.refinerBlocks > 0 ? "+refiner" : ""),
                          info.rankMin == info.rankMax ? "rank \(info.rankMax)" : "rank \(info.rankMin)–\(info.rankMax)"]
-            if info.unsupported > 0 { parts.append("未対応\(info.unsupported)件は無視") }
-            text = parts.joined(separator: " ・ ")
+            if info.unsupported > 0 { parts.append(String(localized: "未対応\(info.unsupported)件は無視")) }
+            text = parts.joined(separator: summarySeparator)
         case .failure(let error):
             text = FileManager.default.fileExists(atPath: entry.path)
-                ? "MiniMax-H3用として読み込めません: \(error.localizedDescription)"
-                : "ファイルが見つかりません"
+                ? String(localized: "MiniMax-H3用として読み込めません: \(error.localizedDescription)")
+                : String(localized: "ファイルが見つかりません")
             isError = true
         }
         return Text(text)

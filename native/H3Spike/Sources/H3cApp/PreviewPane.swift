@@ -40,13 +40,13 @@ struct PreviewPane: View {
     }
 
     private var statusLabel: String {
-        if viewModel.isCancelling { return "中止しています" }
-        if viewModel.isGenerating { return "動画を生成しています" }
+        if viewModel.isCancelling { return String(localized: "中止しています") }
+        if viewModel.isGenerating { return String(localized: "動画を生成しています") }
         if viewModel.resultURL != nil {
             if let seconds = viewModel.lastResult?.generationSeconds {
-                return "できあがりました ・ 生成時間 \(formatElapsed(seconds))"
+                return String(localized: "できあがりました ・ 生成時間 \(formatElapsed(seconds))")
             }
-            return "できあがりました"
+            return String(localized: "できあがりました")
         }
         if let message = viewModel.errorMessage { return message }
         return ""
@@ -190,9 +190,9 @@ private struct ResultActionsView: View {
             UserDefaults.standard.set(destination.deletingLastPathComponent().path,
                                       forKey: Self.exportDirectoryKey)
             lastExportedURL = destination
-            exportConfirmation = "保存しました: \(destination.lastPathComponent)"
+            exportConfirmation = String(localized: "保存しました: \(destination.lastPathComponent)")
         } catch {
-            exportConfirmation = "選んだ場所に保存できませんでした（詳細: \(error.localizedDescription)）"
+            exportConfirmation = String(localized: "選んだ場所に保存できませんでした（詳細: \(error.localizedDescription)）")
         }
     }
 }
