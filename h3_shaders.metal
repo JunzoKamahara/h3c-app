@@ -685,6 +685,9 @@ kernel void h3_vae_encoder_group_norm_silu_f32(
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
     float mean = reductions[0] / float(elements);
+    /* Same hazard as in h3_gqa_causal_bf16: all threads read the mean
+     * before reductions[] is reused for the variance. */
+    threadgroup_barrier(mem_flags::mem_threadgroup);
     local = 0.0f;
     for (uint index = tid; index < elements; index += threadgroup_size.x) {
         uint spatial = index / channels_per_group;
@@ -4115,6 +4118,13 @@ kernel void h3_gqa_causal_bf16(
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
     float maximum = reductions[0];
+    /* Every thread must have read reductions[0] before any thread reuses
+     * the array for the sum below - without this barrier a fast thread 0
+     * overwrote the maximum with its partial sum while slower threads were
+     * still reading it, so the same inputs intermittently gave different
+     * attention output (seen as same-seed videos differing, most often
+     * with the longer FL2VA/Ref2VA Qwen sequences). */
+    threadgroup_barrier(mem_flags::mem_threadgroup);
     float local_sum = 0.0f;
     for (uint key_row = tid; key_row < key_count; key_row += threads) {
         float probability = exp(scores[key_row] - maximum);
