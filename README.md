@@ -111,7 +111,9 @@ to skip that step and stream the original BF16 weights instead.
   project restores its form; Restore Settings on a video pins its seed to
   make it again. Generated videos can be used as references, and with a
   project open the composer's count makes several videos in a row with
-  different seeds (a fixed seed counts up). Without a project the result
+  different seeds (a fixed seed counts up); after the first, each one
+  reuses the encoded prompt and references (about 8 s saved for text,
+  ~14 s with a reference image). Without a project the result
   is a temp file, as before. The same request and seed give the same
   frames, bit for bit; the H.264 file itself can still differ invisibly
   (around 57-60 dB PSNR) because the hardware encoder isn't bit-exact.
@@ -414,6 +416,14 @@ MLX fixtures are installed under `misc/fixtures/`, also compiles the Metal
 source at runtime and checks a toy H3 block against named MLX outputs —
 intentionally at runtime, matching Iris, so it needs no Xcode offline Metal
 toolchain. `make parity` runs just those Metal/MLX checks.
+
+Same-seed reproducibility: `make test` includes `h3_determinism_tests`
+(repeat runs of the threadgroup-reduction kernels must match bit for bit).
+With the released weights installed, `make h3_repro_check CCV_DIR=...` and
+`./h3_repro_check` generate a short Ref2VA clip three times (~4 min) and
+fail unless the RGB frames handed to the encoder are identical; `--run`
+overrides the request per run, for example `--run cache=0 --run
+'cache=conditioning;seed=8'`.
 
 ## API
 

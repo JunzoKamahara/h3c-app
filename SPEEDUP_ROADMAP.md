@@ -1889,7 +1889,9 @@ seed matched bit for bit up to the RGB frames handed to the encoder.
 768×768 is not an app resolution and is out of scope for this check.
 
 Rules going forward: reproducibility is judged on the RGB frames handed to
-the encoder (`h3: hash rgb chunk` under `H3_DEBUG_HASHES=1`; noise, text
+the encoder (`h3: hash rgb video` under `H3_DEBUG_HASHES=1`, one hash over
+all frames in order, so streamed and monolithic decoding compare alike; it
+replaced the per-chunk `rgb chunk` lines on 2026-10-04; noise, text
 conditioning and denoised-latent hashes locate a divergence), never on the
 MP4's own hash, which is a reference value only. In Metal shaders, every
 `threadgroup` array must follow write → barrier → read → barrier →
@@ -1898,10 +1900,26 @@ any thread writing that array again needs a barrier in between. GPU race
 detectors rarely catch this, so it is a review item for any kernel that
 uses threadgroup memory.
 
-Still to do: a regression test that runs a fixed request a few times with
-`H3_DEBUG_HASHES=1` (a Ref2VA case, since its long Qwen sequence exposed
-the race) and fails unless the RGB hashes match, plus the threadgroup
-review rule above for every new or changed kernel.
+Regression checks (added 2026-10-04, `65c8d90`):
+
+- `h3_determinism_tests`, part of `make test` (~4 s, no weights): the causal
+  GQA and the VAE-encoder GroupNorm kernels, 50 runs each on fixed random
+  input; every output must equal the first bit for bit. With the two
+  barriers removed it failed in 5 of 5 invocations (GQA 14-49 of 50 runs
+  differed, GroupNorm 10-49 of 50 at the test's shape; a 3x64x64 GroupNorm
+  shape only caught it ~1 in 150, hence 512 planes of 16x16).
+- `h3_repro_check` (needs the weights; ~4 min; `make h3_repro_check`):
+  Ref2VA with a generated 512x512 reference, 512x512, 25 frames (39
+  delivered), 8 steps, reuse 2, int8 cache as the app sets it, generation
+  cache off, 3 runs in one process. Each frame delivered through
+  `on_frame` (the same buffer the encoder gets) is hashed on its own; a
+  failed run, a missing frame or a short frame count also fails. Fixed
+  shaders: 3/3 identical. Barriers removed: 5/5 runs differed, from the
+  text-encoder hash on. Runs can override the request (`--run
+  'seed=8;cache=1'`), which item 7 uses for cache on/off comparisons.
+
+Still to do: the threadgroup review rule above for every new or changed
+kernel (the kernel test only covers the two kernels that were fixed).
 
 Not done (from the review of this issue): pass the cache path and MLP
 streaming as generation parameters instead of process-wide `setenv`, and
@@ -1995,6 +2013,59 @@ other item here. Needs a size-aware eligibility/eviction policy, not
 as the existing "resident" compute mode). Not started. Small-to-medium
 effort — the reuse mechanism itself already exists and works; the work is
 deciding the eviction policy.
+
+**Status: partly adopted 2026-10-04 - conditioning only.** `h3_cache_set_
+targets(ctx, H3_CACHE_*)` now enables the three retained parts separately
+(`h3_cache_set_enabled(ctx, 1)` = all three, as before); H3cApp's engine
+turns on `H3_CACHE_CONDITIONING` only. Each part keeps one entry and is
+dropped when the next request's key differs.
+
+Measured with `h3_repro_check` (M5, 24 GB, int8 cache, reuse 2, seed 7,
+one process; "held" is the process footprint between generations, "peak"
+the sampled footprint during one):
+
+| request | cache | first run | seed-only rerun | held | peak |
+|---|---|---|---|---|---|
+| Ref2VA 512, 25 fr, 8 st | off | 78-80 s | 78-80 s | ~0.5 GiB | 6.0-7.4 GiB |
+| | conditioning | 78 s | 63.5 s | +2.9 MB | 6.6 GiB |
+| | + decoder | 78 s | 60.8 s | ~3.2 GiB | 4.6 GiB |
+| | + DiT (all) | 78-81 s | 52-54 s | ~4.7 GiB | 5.0 GiB; 8.0-9.1 GiB on a miss with the others held |
+| T2V 512, 25 fr, 8 st | conditioning | 66 s | 58 s | +92 KB | 6.6 GiB (off: 6.1) |
+| Ref2VA 512, 5 s, 20 st | off | 400 s | 400-402 s | - | 6.0-6.5 GiB |
+| | conditioning | 400 s | 388 s | +2.9 MB | 6.6 GiB |
+| | all | 400 s (peak 8.9) | 376 s | ~5.8 GiB | 6.3 GiB; 8.6 GiB on a prompt change |
+| T2V 512, 5 s, 20 st | all | 372 s (peak 9.1, off 6.2) | 353 s | ~5.7 GiB | 6.2 GiB |
+
+What each part saves on a hit: conditioning skips tokenizer, reference
+VAE encoder, Qwen vision and the text encoder (Ref2VA ~14.5 s, T2V ~8 s);
+the DiT skips the AdaLN precompute and core load (~8.5 s); the decoder
+skips its load (~3 s). A prompt change misses conditioning and the DiT
+(the DiT key contains the prompt), so only the decoder hits there (~3-4 s).
+Footprint peaks vary by about ±0.7 GiB between identical runs; the
+held/peak increases above for DiT and decoder are larger than that.
+
+Correctness (every comparison bit-identical on the RGB handed to the
+encoder): off vs on (on switches decoding from monolithic to streamed);
+seed 7 -> 8 -> 7 with every part hit; prompt A -> B -> A; and after each of
+fast mode on, denoise reuse 1, steps 6, 45 layers, T2V, 256x256 the cached
+result equalled a fresh cache-off run, and returning to the first request
+reproduced it. Fast mode and denoise reuse are not in the DiT key, but they
+are applied per run to a reused DiT, so that is correct.
+
+Not adopted: the DiT and decoder. They add ~13 s on a 400 s generation
+but hold ~5.8 GiB between generations and raise the first/prompt-change
+peak by ~2.5-2.9 GiB, which on this 24 GB Mac is the difference between
+running clean and swapping on longer clips. Before enabling the DiT in
+any form its key must also cover the int8 attention-cache file and
+`H3_INT8_STREAM_MLP` (read from the environment at preparation, so the
+app's attentionCache <-> resident switch would reuse a stale DiT today),
+and LoRA file contents (only path and strength are in the key now). Not
+measured: 15 s clips with the cache on, and reference video/audio inputs.
+
+In the packaged app (T2V, 512x512, 1 s, 8 steps, a 2-item batch with seeds
+7 and 8 into a project): item 1 logged a conditioning miss and took 66.5 s,
+item 2 a hit and 57.8 s - the same as the CLI measurement above. Batches
+(seeds count up from a fixed seed) and seed-only reruns get this for free.
 
 ---
 
