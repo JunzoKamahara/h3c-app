@@ -695,18 +695,49 @@ typedef struct {
 /* H3_DEBUG_HASHES=1: log an FNV-1a hash of each intermediate result, to find
  * where two runs with the same request and seed first diverge. Off by
  * default; costs one pass over each buffer when on. */
-static void h3_debug_hash(const char *name, const void *data, size_t bytes) {
+static int h3_debug_hashes_enabled(void) {
     static int enabled = -1;
     if (enabled < 0) enabled = getenv("H3_DEBUG_HASHES") != NULL;
-    if (!enabled || !data) return;
-    uint64_t hash = 1469598103934665603ULL;
+    return enabled;
+}
+
+static uint64_t h3_fnv1a(uint64_t hash, const void *data, size_t bytes) {
     const unsigned char *bytes_ptr = data;
     for (size_t i = 0; i < bytes; i++) {
         hash ^= bytes_ptr[i];
         hash *= 1099511628211ULL;
     }
+    return hash;
+}
+
+static void h3_debug_hash(const char *name, const void *data, size_t bytes) {
+    if (!h3_debug_hashes_enabled() || !data) return;
     fprintf(stderr, "h3: hash %s %016llx (%zu bytes)\n", name,
-            (unsigned long long)hash, bytes);
+            (unsigned long long)h3_fnv1a(1469598103934665603ULL, data, bytes),
+            bytes);
+}
+
+/* The RGB frames handed to the encoder, hashed as one stream in frame order,
+ * so the value does not depend on how the decoder split the video into
+ * chunks (streamed) or not (monolithic). */
+typedef struct {
+    uint64_t hash;
+    size_t frames;
+} h3_debug_video_hash;
+
+static void h3_debug_hash_frames(h3_debug_video_hash *state,
+                                 const uint8_t *rgb, size_t frames,
+                                 size_t frame_bytes) {
+    if (!h3_debug_hashes_enabled() || !rgb) return;
+    if (!state->frames) state->hash = 1469598103934665603ULL;
+    state->hash = h3_fnv1a(state->hash, rgb, frames * frame_bytes);
+    state->frames += frames;
+}
+
+static void h3_debug_hash_video_done(const h3_debug_video_hash *state) {
+    if (!h3_debug_hashes_enabled()) return;
+    fprintf(stderr, "h3: hash rgb video %016llx (%zu frames)\n",
+            (unsigned long long)state->hash, state->frames);
 }
 
 static void h3_progress_emit(h3_generation_progress *state, const char *phase,
@@ -927,6 +958,7 @@ typedef struct {
     int need_resize;
     int total_frames;
     int emitted;
+    h3_debug_video_hash rgb_hash;
 } h3_stream_encode_ctx;
 
 static int h3_stream_encode_chunk(void *opaque, const float *rgb,
@@ -951,8 +983,9 @@ static int h3_stream_encode_chunk(void *opaque, const float *rgb,
         free(chunk8);
         chunk8 = resized;
     }
-    h3_debug_hash("rgb chunk", chunk8, (size_t)frame_count *
-                  (size_t)stream->output_width * (size_t)stream->output_height * 3);
+    h3_debug_hash_frames(&stream->rgb_hash, chunk8, (size_t)frame_count,
+                         (size_t)stream->output_width *
+                             (size_t)stream->output_height * 3);
     if (stream->on_frame) {
         size_t frame_bytes = (size_t)stream->output_width *
             (size_t)stream->output_height * 3;
@@ -1840,7 +1873,7 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
             writer, params->on_frame, params->callback_opaque, &progress,
             output_width, output_height,
             native_width != output_width || native_height != output_height,
-            total_frames, 0
+            total_frames, 0, {0, 0}
         };
         int video_ok = h3_video_vae_decoder_decode_streamed(
             preview_decoder, video, temporal.video_t,
@@ -1860,6 +1893,7 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
             h3_set_error(ctx, "%s", detail);
             goto cleanup;
         }
+        h3_debug_hash_video_done(&stream.rgb_hash);
         if (writer)
             h3_progress_emit(&progress, "encode", total_frames, total_frames);
         if (progress.cancelled) goto cleanup;
@@ -1912,8 +1946,10 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
             output_width = params->width;
             output_height = params->height;
         }
-        h3_debug_hash("rgb chunk", rgb8, (size_t)frames.frames *
-                      (size_t)output_width * (size_t)output_height * 3);
+        h3_debug_video_hash rgb_hash = {0, 0};
+        h3_debug_hash_frames(&rgb_hash, rgb8, (size_t)frames.frames,
+                             (size_t)output_width * (size_t)output_height * 3);
+        h3_debug_hash_video_done(&rgb_hash);
         if (params->on_frame) {
             size_t frame_bytes = (size_t)output_width * (size_t)output_height * 3;
             for (int index = 0; index < frames.frames; index++) {
