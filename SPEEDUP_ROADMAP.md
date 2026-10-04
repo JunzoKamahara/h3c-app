@@ -1981,12 +1981,18 @@ identical; with sparse copies of the T2V cache header under a temporary
 without it), and the new id computed independently in Python validates
 under STRICT. The Python re-implementation also reproduced the on-disk
 legacy id `28118324f70bb4ae` of `dit_int8_v2.cache`.
-Remaining limits: the two existing caches still carry legacy ids, so they
-still break if the model folder moves before they are next rebuilt with
-`build_attention_cache` (not done: 19.3 GB each, needs the owner's
-go-ahead; patching the id bytes by hand stays ruled out). A copy that
-does not preserve mtime (plain `cp` without `-p`) changes the id by
-design.
+Both caches were then rebuilt in place with `build_attention_cache` from
+`7900c86` (owner's go-ahead; not patched by hand). Payload SHA-256 (bytes
+after the 64-byte header) unchanged: FL2VA `a4f4697ef75b...dee2d84`,
+Ref2VA `8b3d8945b30d...3129a5b1`. id bytes on disk, before -> after: FL2VA
+`28118324f70bb4ae` -> `ee60019d04e52c70` + tag, Ref2VA `72f9be238b29c520`
+(= the `20c5298b23bef972` above, printed as a little-endian uint64) ->
+`f96a035117b504d3` + tag. Re-check with `H3_ATTENTION_CACHE_STRICT=1
+H3_PROFILE=1 h3_repro_check --runs 2`: no warning, 90.1 GiB int8 stream,
+runs identical, video hashes the same as before the rebuild (Ref2VA
+`d55429d37cc8455b`, T2V `05e986d2cf5a8673`). The legacy-id acceptance
+stays for caches elsewhere. A copy that does not preserve mtime (plain
+`cp` without `-p`) changes the id by design.
 
 Not done (from the review of this issue): pass the cache path and MLP
 streaming as generation parameters instead of process-wide `setenv`, and
