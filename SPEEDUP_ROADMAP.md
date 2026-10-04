@@ -1921,6 +1921,47 @@ Regression checks (added 2026-10-04, `65c8d90`):
 Still to do: the threadgroup review rule above for every new or changed
 kernel (the kernel test only covers the two kernels that were fixed).
 
+Ref2VA int8 cache fingerprint warning (2026-10-05). Every Ref2VA run had
+logged that `~/models/cache/dit_int8_v2_ref2va.cache`'s model fingerprint
+did not match - including the production check above, so it had to be
+ruled out as a cause or a confound. The fingerprint
+(`h3_weight_store_fingerprint`) hashes each shard's *path*, size and
+mtime, not its contents. The cache's kind was Ref2VA and its stored id
+`9893f6f715fe5803` equals the fingerprint of today's Ref2VA shards (same
+names, sizes, mtimes to the second) under their earlier location
+`~/Library/Application Support/h3c-analysis/MiniMax-H3/Ref2VA/transformer`;
+the model folder was moved to `~/models` on 2026-09-26 (the FL2VA cache,
+rebuilt 2026-09-28, already matched). Contents check: `build_attention_
+cache` from the model the app loads, streamed through a FIFO into `cmp`
+against the old file (no free space for a second 19.3 GB copy): only the 8
+id bytes (offsets 28-35) differed, so every quantized weight was identical
+and earlier Ref2VA results used the right weights. The cache was then
+rebuilt in place (payload SHA-256 `8b3d8945...29a5b1` before and after,
+id now `20c5298b23bef972` = the current fingerprint); the id was not
+patched by hand.
+
+Re-check after that, clean build of `de4d6a5` (shader SHA-256
+`3329182726ff...e234`, the app bundle's copy identical; H3cApp
+`26999aa176a9...8c86`; h3_repro_check `0e1bffd40a8c...998a`; ccv-mfa
+`6a611be` with the three `tools/ccv_eval` patches), with
+`H3_ATTENTION_CACHE_STRICT=1` and `H3_PROFILE=1`: no fingerprint warning;
+every run read 90.1 GiB from the int8 cache ("attention int8 stream");
+`h3_determinism_tests` 0 of 50 differing for both kernels;
+`h3_repro_check` 3/3 identical; generation cache off / conditioning miss /
+conditioning hit 3/3 identical. RGB video hash `fe287b88aebec03b`, the same
+as before the rebuild.
+
+Closed: a false positive of the path-based fingerprint, not a weight
+mismatch; the earlier reproducibility checks stand. Operating rule: normal
+use keeps the warning; regression and release validation run with
+`H3_ATTENTION_CACHE_STRICT=1`, so a stale cache stops the run.
+
+Follow-up (small, not scheduled): moving or copying the model folder
+invalidates every int8 cache's fingerprint although the weights are
+unchanged, and rebuilding means 19.3 GB per cache. Start by dropping the
+absolute path: identify by model kind + shard file name (relative) + size
++ mtime. Hashing the ~65 GB of shards on every load is not practical.
+
 Not done (from the review of this issue): pass the cache path and MLP
 streaming as generation parameters instead of process-wide `setenv`, and
 keep ccv's attention state per GPU context instead of one global
