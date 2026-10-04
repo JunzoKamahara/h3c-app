@@ -66,10 +66,31 @@ void h3_cache_clear(h3_ctx *ctx) {
     ctx->video_decoder_key = NULL;
 }
 
-void h3_cache_set_enabled(h3_ctx *ctx, int enabled) {
+void h3_cache_set_targets(h3_ctx *ctx, unsigned targets) {
     if (!ctx) return;
-    if (!enabled) h3_cache_clear(ctx);
-    ctx->cache_enabled = enabled != 0;
+    targets &= H3_CACHE_ALL;
+    if (!(targets & H3_CACHE_CONDITIONING)) h3_conditioning_cache_clear(ctx);
+    if (!(targets & H3_CACHE_DIT)) {
+        h3_dit_free(ctx->dit);
+        ctx->dit = NULL;
+        free(ctx->dit_key);
+        ctx->dit_key = NULL;
+    }
+    if (!(targets & H3_CACHE_DECODER)) {
+        h3_video_vae_decoder_free(ctx->video_decoder);
+        ctx->video_decoder = NULL;
+        free(ctx->video_decoder_key);
+        ctx->video_decoder_key = NULL;
+    }
+    ctx->cache_targets = targets;
+}
+
+void h3_cache_set_enabled(h3_ctx *ctx, int enabled) {
+    h3_cache_set_targets(ctx, enabled ? H3_CACHE_ALL : 0u);
+}
+
+static int h3_cache_target(const h3_ctx *ctx, unsigned target) {
+    return (ctx->cache_targets & target) != 0;
 }
 
 void h3_cache_get_info(const h3_ctx *ctx, h3_cache_info *info) {
@@ -788,13 +809,13 @@ static h3_video_vae_decoder *h3_acquire_video_decoder(
         int latent_height, int latent_width, h3_video_vae_progress progress,
         void *progress_opaque, int *cached, char *error, size_t error_size) {
     *cached = 0;
-    if (ctx->cache_enabled && ctx->video_decoder &&
+    if (h3_cache_target(ctx, H3_CACHE_DECODER) && ctx->video_decoder &&
         ctx->video_decoder_key && !strcmp(ctx->video_decoder_key, key)) {
         *cached = 1;
         fprintf(stderr, "h3: video VAE cache hit\n");
         return ctx->video_decoder;
     }
-    if (ctx->cache_enabled) {
+    if (h3_cache_target(ctx, H3_CACHE_DECODER)) {
         h3_video_vae_decoder_free(ctx->video_decoder);
         ctx->video_decoder = NULL;
         free(ctx->video_decoder_key);
@@ -803,7 +824,7 @@ static h3_video_vae_decoder *h3_acquire_video_decoder(
     h3_video_vae_decoder *decoder = h3_video_vae_decoder_load(
         weight_directory, "h3_shaders.metal", latent_height, latent_width,
         progress, progress_opaque, error, error_size);
-    if (!decoder || !ctx->cache_enabled) return decoder;
+    if (!decoder || !h3_cache_target(ctx, H3_CACHE_DECODER)) return decoder;
     char *key_copy = strdup(key);
     if (!key_copy) {
         fprintf(stderr, "h3: warning: could not retain video VAE cache key\n");
@@ -1149,21 +1170,24 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
         goto cleanup;
     }
     decoder_key = decoder_cache_key.text;
-    if (ctx->cache_enabled && ctx->video_decoder &&
-        (!ctx->video_decoder_key || strcmp(ctx->video_decoder_key, decoder_key))) {
+    if (ctx->video_decoder && (!h3_cache_target(ctx, H3_CACHE_DECODER) ||
+        !ctx->video_decoder_key || strcmp(ctx->video_decoder_key, decoder_key))) {
         h3_video_vae_decoder_free(ctx->video_decoder);
         ctx->video_decoder = NULL;
         free(ctx->video_decoder_key);
         ctx->video_decoder_key = NULL;
     }
-    if (ctx->cache_enabled && ctx->dit &&
-        (!ctx->dit_key || strcmp(ctx->dit_key, prepared_key))) {
+    if (ctx->dit && (!h3_cache_target(ctx, H3_CACHE_DIT) ||
+        !ctx->dit_key || strcmp(ctx->dit_key, prepared_key))) {
         h3_dit_free(ctx->dit);
         ctx->dit = NULL;
         free(ctx->dit_key);
         ctx->dit_key = NULL;
     }
-    conditioning_hit = ctx->cache_enabled && ctx->conditioning_key &&
+    if (ctx->conditioning_key && !h3_cache_target(ctx, H3_CACHE_CONDITIONING))
+        h3_conditioning_cache_clear(ctx);
+    conditioning_hit = h3_cache_target(ctx, H3_CACHE_CONDITIONING) &&
+        ctx->conditioning_key &&
         !strcmp(ctx->conditioning_key, conditioning_key);
     char detail[512];
     if (conditioning_hit) {
@@ -1632,7 +1656,7 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
         }
     }
     conditioned = visual_count != 0 || condition_audio_elements != 0;
-    if (ctx->cache_enabled) {
+    if (h3_cache_target(ctx, H3_CACHE_CONDITIONING)) {
         if (!h3_conditioning_cache_store(
                 ctx, conditioning_key, &text,
                 condition_video_rows, condition_video_elements,
@@ -1678,7 +1702,7 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
     }
     float spatial_rope_scale = !params->use_reference_rope &&
         render_width == 256 && render_height == 256 ? 0.5f : 1.0f;
-    if (ctx->cache_enabled && ctx->dit && ctx->dit_key &&
+    if (h3_cache_target(ctx, H3_CACHE_DIT) && ctx->dit && ctx->dit_key &&
         !strcmp(ctx->dit_key, prepared_key)) {
         dit = ctx->dit;
         dit_is_cached = 1;
@@ -1737,7 +1761,7 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
         h3_set_error(ctx, "%s", detail);
         goto cleanup;
     }
-    if (ctx->cache_enabled && !dit_is_cached) {
+    if (h3_cache_target(ctx, H3_CACHE_DIT) && !dit_is_cached) {
         char *key_copy = strdup(prepared_key);
         if (!key_copy) {
             fprintf(stderr, "h3: warning: could not retain prepared DiT key\n");
@@ -1832,7 +1856,7 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
     free(audio);
     audio = NULL;
     if (progress.cancelled) goto cleanup;
-    if (!preview_decoder && ctx->cache_enabled) {
+    if (!preview_decoder && h3_cache_target(ctx, H3_CACHE_DECODER)) {
         h3_progress_emit(&progress, "video VAE load", 0, 36);
         preview_decoder = h3_acquire_video_decoder(
             ctx, decoder_key, vae_path, latent_h, latent_w,

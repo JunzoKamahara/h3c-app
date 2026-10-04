@@ -220,7 +220,22 @@ const h3_device_info *h3_device(const h3_ctx *ctx);
 const h3_model_info *h3_model(const h3_ctx *ctx);
 
 /* Interactive-session reuse. Disabled by default so one-shot callers retain
- * the original phase-by-phase memory lifetime. */
+ * the original phase-by-phase memory lifetime. Each target is kept for the
+ * next h3_generate call whose request matches its key, one entry each:
+ *   CONDITIONING  text/reference conditioning; host memory, a few MB.
+ *                 Hit when only the seed (or DiT/decoder settings) changed.
+ *   DIT           the prepared DiT; ~1.5 GiB more held between calls, and
+ *                 its key does not cover the int8 attention-cache file or
+ *                 LoRA file contents (only their environment/path).
+ *   DECODER       the video VAE decoder; ~2.7 GiB held between calls.
+ * h3_cache_set_enabled(ctx, 1) is all three; turning a target off frees it. */
+enum {
+    H3_CACHE_CONDITIONING = 1u << 0,
+    H3_CACHE_DIT = 1u << 1,
+    H3_CACHE_DECODER = 1u << 2,
+    H3_CACHE_ALL = H3_CACHE_CONDITIONING | H3_CACHE_DIT | H3_CACHE_DECODER
+};
+void h3_cache_set_targets(h3_ctx *ctx, unsigned targets);
 void h3_cache_set_enabled(h3_ctx *ctx, int enabled);
 void h3_cache_clear(h3_ctx *ctx);
 void h3_cache_get_info(const h3_ctx *ctx, h3_cache_info *info);

@@ -319,6 +319,14 @@ public final class H3Engine: @unchecked Sendable {
             throw H3EngineError.loadFailed("h3_load_dir returned NULL")
         }
         self.ctx = ctx
+        // Keep only the prompt/reference conditioning between generations:
+        // a few MB of host memory, and a seed-only rerun (or the next item
+        // of a batch) skips the text encoder, Qwen vision and the reference
+        // VAE encoder - measured 400s -> 388s for Ref2VA 512x512 5s. The
+        // prepared DiT and VAE decoder would save ~13s more but hold ~5.8 GiB
+        // between runs and raise the peak by ~2.9 GiB (SPEEDUP_ROADMAP.md
+        // item 7), too much for a 24 GB Mac.
+        h3_cache_set_targets(ctx, UInt32(H3_CACHE_CONDITIONING))
     }
 
     deinit {

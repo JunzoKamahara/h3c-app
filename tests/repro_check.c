@@ -6,7 +6,7 @@
  *
  * The default request is a short Ref2VA clip with one reference image: its
  * long Qwen sequence is what exposed the GQA threadgroup race. The
- * generation cache (h3_cache_set_enabled) is off unless a run asks for it,
+ * generation cache (h3_cache_set_targets) is off unless a run asks for it,
  * so the text encoder runs every time; the int8 attention cache is a
  * separate setting and is used as the app uses it.
  *
@@ -46,7 +46,7 @@ typedef struct {
     int core_reuse;
     int fast;
     uint64_t seed;
-    int cache;
+    unsigned cache; /* H3_CACHE_* targets */
 } request;
 
 typedef struct {
@@ -206,13 +206,33 @@ static void usage(void) {
         "usage: h3_repro_check [--model DIR] [--ref PATH|none] [--runs N]\n"
         "         [--size N] [--frames N] [--steps N] [--reuse N] [--layers N]\n"
         "         [--core-reuse N] [--fast 0|1] [--seed N] [--prompt TEXT]\n"
-        "         [--cache 0|1] [--run 'key=value;key=value' ...]\n"
+        "         [--cache 0|1|LIST] [--run 'key=value;key=value' ...]\n"
         "  --run adds one run with the base request overridden by the given\n"
         "  keys (prompt, ref, size, frames, steps, reuse, layers, core_reuse,\n"
         "  fast, seed, cache); without --run the base request runs N times.\n"
+        "  cache: 0, 1 (all) or a comma list of conditioning, dit, decoder.\n"
         "  Defaults: Ref2VA with a generated 512x512 reference image, 512x512,\n"
         "  25 frames, 8 steps, reuse 2, seed 7, 3 runs, generation cache off.\n");
     exit(2);
+}
+
+/* "0", "1" (all) or a comma list of conditioning, dit, decoder. */
+static int parse_cache(const char *value, unsigned *targets) {
+    if (!strcmp(value, "0")) { *targets = 0; return 1; }
+    if (!strcmp(value, "1")) { *targets = H3_CACHE_ALL; return 1; }
+    unsigned result = 0;
+    char *copy = strdup(value);
+    char *save = NULL;
+    for (char *item = strtok_r(copy, ",", &save); item;
+         item = strtok_r(NULL, ",", &save)) {
+        if (!strcmp(item, "conditioning")) result |= H3_CACHE_CONDITIONING;
+        else if (!strcmp(item, "dit")) result |= H3_CACHE_DIT;
+        else if (!strcmp(item, "decoder")) result |= H3_CACHE_DECODER;
+        else { free(copy); return 0; }
+    }
+    free(copy);
+    *targets = result;
+    return 1;
 }
 
 static int set_key(request *req, const char *key, const char *value) {
@@ -229,7 +249,7 @@ static int set_key(request *req, const char *key, const char *value) {
         req->core_reuse = atoi(value);
     else if (!strcmp(key, "fast")) req->fast = atoi(value);
     else if (!strcmp(key, "seed")) req->seed = strtoull(value, NULL, 10);
-    else if (!strcmp(key, "cache")) req->cache = atoi(value);
+    else if (!strcmp(key, "cache")) return parse_cache(value, &req->cache);
     else return 0;
     return 1;
 }
@@ -260,12 +280,17 @@ static int same_request(const request *a, const request *b) {
 }
 
 static void describe(const request *req, char *out, size_t size) {
-    snprintf(out, size, "%s %dx%d %dfr %dst reuse%d seed%llu%s%s cache%d \"%.40s\"",
+    snprintf(out, size, "%s %dx%d %dfr %dst reuse%d seed%llu%s%s cache%s%s%s%s "
+             "\"%.40s\"",
              req->reference[0] ? "Ref2VA" : "T2V", req->size, req->size,
              req->frames, req->steps, req->reuse,
              (unsigned long long)req->seed,
              req->fast ? " fast" : "",
-             req->layers != 50 ? " layers<50" : "", req->cache, req->prompt);
+             req->layers != 50 ? " layers<50" : "",
+             req->cache ? "" : " off",
+             req->cache & H3_CACHE_CONDITIONING ? " conditioning" : "",
+             req->cache & H3_CACHE_DIT ? " dit" : "",
+             req->cache & H3_CACHE_DECODER ? " decoder" : "", req->prompt);
 }
 
 static void run_one(h3_ctx *ctx, run_result *r, const char *home) {
@@ -277,7 +302,7 @@ static void run_one(h3_ctx *ctx, run_result *r, const char *home) {
     setenv("H3_ATTENTION_CACHE", cache_path, 1);
     setenv("H3_INT8_STREAM_MLP", "1", 1);
     if (!getenv("H3_QWEN_PREFETCH_DEPTH")) setenv("H3_QWEN_PREFETCH_DEPTH", "1", 1);
-    h3_cache_set_enabled(ctx, req->cache);
+    h3_cache_set_targets(ctx, req->cache);
 
     h3_reference reference = {H3_REFERENCE_IMAGE, req->reference, NULL, 0};
     h3_params params = H3_PARAMS_DEFAULT;
