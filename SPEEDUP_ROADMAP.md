@@ -1308,6 +1308,11 @@ Next, in order: (1) instrument `rows` and the scratch sizes/lifetimes
 the +4.6 GiB and free the scratch after the DiT; (3) re-measure with a
 quiesced machine and with the per-phase (load/DiT/VAE) sampling above.
 
+*Superseded (2026-10-04):* (1) and the post-DiT release were done in
+Stage ⑧; the +4.6 GiB of FP16 cast copies went away with the direct path
+in Stage ⑨, which is what the app's fast mode uses. What remains is ccv's
+own int8 scratch (~1.26 GiB) during the DiT, and (3), a quiesced re-measure.
+
 ### Stage ⑧ — ccv memory breakdown (measured) and post-DiT release
 
 `H3_CCV_MEMLOG=1` (diagnostic, in `h3_gpu_ccv_attention.mm`) prints the
@@ -1911,27 +1916,9 @@ PSNR; (4) if clean, 15s at 20 steps (existing A / ccv_dense 20-step videos
 are valid references with the same model, sampler and settings). Before
 app adoption, direct must also be run from H3Spike/the Swift app: the
 earlier Swift-runtime/ccv problem is a separate, unexplained issue.
-
-Scratch sources, **not committed** (existed only under a session scratchpad
-directory — rewrite from this description if resuming):
-
-- `flash_attn.metal` / `flash_test.m` — v1, naive scalar kernel.
-- `flash_v2.metal` / `flash_test2.m` — v2, nax-based dense 3-pass.
-  `flash_v2.metal` also grew `h3_block_means_bf16` /
-  `h3_block_dot_means_bf16` / `h3_linear_bf16_nax_r128_masked` /
-  `h3_softmax_rows_masked_bf16` for QK^T sparsity, and the per-row_tile and
-  batched-across-row_tiles gather/transpose/matmul kernel pairs for the PV
-  compaction attempts.
-- `flash_test3.m` — v3, QK^T-only sparsity, properly batched (the
-  1.19–1.26x numbers).
-- `flash_test4.m` — PV compaction per-row_tile, invalid per-head-sync
-  comparison, superseded.
-- `flash_test5.m` — the same per-row_tile PV compaction properly batched —
-  the valid "PV sparsity loses badly" measurement, 0.66x.
-- `flash_test6.m` — PV compaction batched across row_tiles too — the
-  current, valid "PV sparsity still loses, less badly" measurement, 0.88x
-  (dense 48.6ms / QK-only 40.9ms (1.19x) / QK+PV 55.4ms (0.88x), `kept_max`
-  padding waste 1.41x).
+*All done (2026-10-04):* the direct path shipped as the app's opt-in fast
+mode and runs from the Swift app (see "Opt-in fast mode in the app" and the
+measured grid above).
 
 Scratch sources, **not committed** (existed only under a session scratchpad
 directory — rewrite from this description if resuming):
