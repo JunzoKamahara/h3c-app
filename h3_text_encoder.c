@@ -393,6 +393,37 @@ static void prefetch_slots_retire(text_prefetch_slot *slots, int count) {
         prefetch_slot_retire(&slots[index]);
 }
 
+/* H3_DEBUG_HASHES=1: log a hash of the hidden state after each layer (see
+ * h3_debug_hash in h3.c). */
+static int debug_hashes_enabled(void) {
+    static int enabled = -1;
+    if (enabled < 0) enabled = getenv("H3_DEBUG_HASHES") != NULL;
+    return enabled;
+}
+
+static void debug_hash_tensor(const h3_gpu_tensor *tensor, size_t count,
+                              int layer, const char *label) {
+    if (!debug_hashes_enabled()) return;
+    uint16_t *values = malloc(count * sizeof(*values));
+    if (!values) return;
+    if (h3_gpu_tensor_read_bf16(tensor, values, count)) {
+        uint64_t hash = 1469598103934665603ULL;
+        const unsigned char *bytes = (const unsigned char *)values;
+        for (size_t i = 0; i < count * sizeof(*values); i++) {
+            hash ^= bytes[i];
+            hash *= 1099511628211ULL;
+        }
+        fprintf(stderr, "h3: hash qwen layer %d %s %016llx\n", layer, label,
+                (unsigned long long)hash);
+    }
+    free(values);
+}
+
+static void debug_hash_hidden(const h3_gpu_tensor *hidden, size_t count,
+                              int layer) {
+    debug_hash_tensor(hidden, count, layer, "out");
+}
+
 static int gpu_operation(h3_gpu *gpu, int ok, char *error, size_t error_size,
                          const char *operation, int layer) {
     if (ok) return 1;
@@ -685,6 +716,7 @@ static int text_encode_bf16_impl(
             prefetch_slots_retire(slots, prefetch_depth);
             goto cleanup;
         }
+        debug_hash_hidden(hidden, tokens * TEXT_HIDDEN, layer);
         if (progress) progress(layer + 1, TEXT_LAYERS, progress_opaque);
         if (layer + 1 >= layer_count) continue;
 
