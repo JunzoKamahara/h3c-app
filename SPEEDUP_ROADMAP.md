@@ -1829,6 +1829,80 @@ from request to finished file, fast mode off / on:
 Videos, results.csv/json and a contact sheet:
 `~/Movies/H3cApp-grid/2026-10-02/` (not in the repo).
 
+**Same request and seed gave different videos - Fixed / verified under
+supported application conditions**
+(2026-10-04, `feature/projects`; 256×256, 1 s, 3 steps, int8 cache,
+standard, fast mode off). While testing projects, about 1 run in 7 of a
+fixed request and seed came out as a different video (~30 dB PSNR, a
+different sample). Engine params as logged were identical.
+
+Steps that did *not* explain it: H3Engine ended its event stream inside
+the generation's autorelease pool, so a batch could start the next run
+during the previous run's Metal teardown - fixed (the stream now ends
+after the pool drains) and every generation and cache build now runs on
+one process-wide serial queue, but a 50-run check afterwards still gave 6
+differing seeds (FL2VA singles: 10 runs, 10 different videos). The int8
+cache prefetch is correctly ordered (`h3_gpu_submit` waits, then the
+reader thread is joined before the slot is reused; partial reads loop).
+
+Located with `H3_DEBUG_HASHES=1` (new, off by default): FNV hashes of the
+text embedding, condition video/audio, vision outputs, initial noise,
+each Qwen layer's output, the denoised latents and every RGB chunk handed
+to the writer. Vision outputs, conditions and noise always matched; the
+Qwen text embedding did not, and per-op hashes in a layer (with a GPU
+wait after each op) showed `h3_gqa_causal_bf16` returning different output
+for byte-identical Q/K/V. Cause: a missing `threadgroup_barrier` - all
+threads read the max from `reductions[0]`, then reuse `reductions` for
+the sum with no barrier in between, so a fast thread 0 could overwrite
+the max with its partial sum before slower threads read it. Longer
+sequences (FL2VA/Ref2VA add vision tokens) and GPU load made it more
+likely. `h3_vae_encoder_group_norm_silu_f32` had the same mean/variance
+hazard; both now have the barrier, and a scan of every threadgroup array
+for "broadcast read, then write without a barrier" found no others.
+
+After the fix: FL2VA singles 10/10 identical (were 10/10 different); two
+hashed T2V batches of 20 seeds: denoised latents 20/20 and pre-encode RGB
+frames 20/20 identical. The MP4s still differed for 2 of 20 seeds at
+57-58 dB PSNR - the hardware H.264 encoder (AVFoundation/VideoToolbox)
+isn't bit-reproducible; the frames it was given were identical. So a
+project video can be regenerated exactly up to that invisible encoder
+difference. The earlier small cross-process difference with fast mode
+(61 dB, 0.3.0 release check) fits the same encoder explanation.
+
+Production-condition check after the fix (2026-10-04/05, the app via its
+API with `H3_DEBUG_HASHES=1`, int8 attention cache, 20 steps, reuse 2, seed
+7, five runs each in one process): C1 Ref2VA with one 512×512 reference
+image, 512×512, 5 s (421-456 s per run) and C2 T2V 512×512, 15 s
+(1959-2094 s per run). In both, every stage hash was identical across all
+five runs - text embedding, condition and vision outputs (C1), noise,
+denoised video/audio latents and the RGB frames handed to the encoder.
+(The RGB hash now also covers the monolithic decode path, which 512×512
+takes when no decoder is cached; it had only been in the streamed path.)
+Status: fixed. Under the app's supported conditions (512×512, Ref2VA 5 s
+and T2V 15 s, 20 steps, reuse 2, int8 cache), five generations of the same
+seed matched bit for bit up to the RGB frames handed to the encoder.
+768×768 is not an app resolution and is out of scope for this check.
+
+Rules going forward: reproducibility is judged on the RGB frames handed to
+the encoder (`h3: hash rgb chunk` under `H3_DEBUG_HASHES=1`; noise, text
+conditioning and denoised-latent hashes locate a divergence), never on the
+MP4's own hash, which is a reference value only. In Metal shaders, every
+`threadgroup` array must follow write → barrier → read → barrier →
+reuse/write; a "broadcast read" of one slot (`x = shared[0]`) followed by
+any thread writing that array again needs a barrier in between. GPU race
+detectors rarely catch this, so it is a review item for any kernel that
+uses threadgroup memory.
+
+Still to do: a regression test that runs a fixed request a few times with
+`H3_DEBUG_HASHES=1` (a Ref2VA case, since its long Qwen sequence exposed
+the race) and fails unless the RGB hashes match, plus the threadgroup
+review rule above for every new or changed kernel.
+
+Not done (from the review of this issue): pass the cache path and MLP
+streaming as generation parameters instead of process-wide `setenv`, and
+keep ccv's attention state per GPU context instead of one global
+`g_state` - both safe today only because generations are serialized.
+
 Earlier plan (kept for the record): (1) done — Makefile relinks `h3_generate_cli` when `libccv.a`
 changes; (2) done — replay above; (3) done for seed 7 — direct at 20
 steps on the short clip — detail, the foreground net, temporal flicker,

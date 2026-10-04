@@ -103,6 +103,18 @@ to skip that step and stream the original BF16 weights instead.
   attention kernel - about 1.44x faster for a 15 s clip at 20 steps, little
   or no gain for short clips; off by default. See
   [Fast mode](#fast-mode-experimental).
+- **Projects**: a project is a folder (by default `~/Movies/H3cApp/<name>`)
+  holding `project.json` (the prompt and every setting), `references/`
+  (copies of the images, videos and audio used) and each generated video,
+  named `<date>-<time>_seed<seed>.mp4` with a `.json` record of its exact
+  request. Videos stay until you delete them (to the Trash). Opening a
+  project restores its form; Restore Settings on a video pins its seed to
+  make it again. Generated videos can be used as references, and with a
+  project open the composer's count makes several videos in a row with
+  different seeds (a fixed seed counts up). Without a project the result
+  is a temp file, as before. The same request and seed give the same
+  frames, bit for bit; the H.264 file itself can still differ invisibly
+  (around 57-60 dB PSNR) because the hardware encoder isn't bit-exact.
 - **Window**: a full-window preview with the prompt in a floating panel over
   it (Enter generates, Shift+Enter adds a line, Tab takes the suggested
   prompt; the panel collapses while generating, and clicking its prompt
@@ -427,6 +439,13 @@ plain filesystem paths, not uploads.
 | `GET` | `/api/result/video` | Streams the current result as `video/mp4`; `404` if none, or once the next job's `generate()` call deletes it. |
 | `GET` | `/api/models` | Registered H3 model directories (id, name, path, whether active). |
 | `GET` | `/api/loras` | Registered LoRA files (id, name, path, strength, recommended steps, whether enabled). |
+| `GET` | `/api/project` | The open project: name, path, count, and its videos (file, seed, completion time, generation time). |
+| `POST` | `/api/project/new` | `{"name", "directory"?}` creates a project from the current form (default directory `~/Movies/H3cApp`) and opens it. |
+| `POST` | `/api/project/open` | `{"path"}` opens a project folder; the form takes its saved state. |
+| `POST` | `/api/project/close` | Closes it; results are temp files again. |
+| `POST` | `/api/project/restore` | `{"video"}` puts that video's request into the form with its seed fixed. |
+| `POST` | `/api/project/use-as-reference` | `{"video"}` adds that video to the form as a reference video. |
+| `POST` | `/api/project/delete-video` | `{"video"}` moves the video and its record to the Trash. |
 
 `POST /api/generate` body fields, all optional except `prompt`:
 
@@ -446,6 +465,8 @@ plain filesystem paths, not uploads.
 | `reference_paths` | `[]` | Ordered Ref2VA references; image/video/audio is auto-detected per path. At least one image or video is required if any audio path is included. |
 | `loras` | `[]` | The LoRA stack for this job: names from `GET /api/loras`, or `{"name": ..., "strength": 0.8}` objects (strength multiplies the adapter's trained scale; omitted keeps the entry's saved strength). Omitting it means no LoRA, even if some are switched on in the window. |
 | `lora_name` / `lora_scale` | none | Older single-LoRA form of `loras`; ignored when `loras` is given. |
+| `count` | `1` | 1–20 videos in a row with different seeds; above 1 needs an open project. |
+| `from_form` | `false` | `true` generates from the form as it is (e.g. after `/api/project/restore`); only `count` may accompany it. |
 
 A value outside its range, or of the wrong type (`true`, `"5"` or `2.5`
 where an integer is expected), is a `400` naming the allowed range; nothing
