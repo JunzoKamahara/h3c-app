@@ -260,6 +260,9 @@ struct CreationFormView: View {
                     aspectMenu
                     sizeMenu
                     durationMenu
+                    // Several videos per press only with a project, where
+                    // they are kept.
+                    if viewModel.project != nil { batchMenu }
                     Spacer(minLength: 0)
                     generateButton
                 }
@@ -345,6 +348,25 @@ struct CreationFormView: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .help("長さ")
+    }
+
+    private var batchMenu: some View {
+        Menu {
+            Picker("本数", selection: $viewModel.batchCount) {
+                ForEach([1, 2, 3, 4, 5, 6, 8, 10, 15, 20], id: \.self) { value in
+                    Text("\(value) 本").tag(value)
+                }
+            }
+            .pickerStyle(.inline)
+        } label: {
+            composerChip(systemImage: "square.stack.3d.down.right",
+                         text: String(localized: "\(viewModel.batchCount)本"))
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("同じプロンプトと設定で、シードを変えて続けて生成し、プロジェクトに保存します（シード固定のときは1ずつ増やします）")
     }
 
     private func composerChip(systemImage: String, text: String) -> some View {

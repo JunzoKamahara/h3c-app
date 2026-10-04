@@ -67,6 +67,9 @@ struct ContentView: View {
         // The window title (WindowGroup in H3cApp.swift) already names the
         // app; a toolbar title next to it showed the name twice.
         .toolbar {
+            ToolbarItem(placement: .navigation) {
+                ProjectMenu(viewModel: viewModel)
+            }
             ToolbarItem(placement: .automatic) {
                 Button {
                     showingModelManager = true
@@ -80,6 +83,21 @@ struct ContentView: View {
                     showingModelManager: $showingModelManager
                 )
             }
+        }
+        .navigationTitle(viewModel.project.map { "\($0.name) — H3cApp" } ?? "H3cApp")
+        .sheet(isPresented: $viewModel.showingNewProject) {
+            NewProjectSheet(viewModel: viewModel, isPresented: $viewModel.showingNewProject)
+        }
+        .sheet(isPresented: $viewModel.showingProjectVideos) {
+            ProjectVideosSheet(viewModel: viewModel, isPresented: $viewModel.showingProjectVideos)
+        }
+        .alert("プロジェクト", isPresented: Binding(
+            get: { viewModel.projectMessage != nil && !viewModel.showingNewProject },
+            set: { if !$0 { viewModel.projectMessage = nil } }
+        )) {
+            Button("OK") { viewModel.projectMessage = nil }
+        } message: {
+            Text(viewModel.projectMessage ?? "")
         }
         .sheet(isPresented: $showingModelManager) {
             ModelManagerView(library: viewModel.library) { id in
@@ -105,7 +123,9 @@ struct ContentView: View {
         .focusedSceneObject(viewModel)
         .onAppear {
             viewModel.loadModel()
-            viewModel.applyLastUsedPreset()
+            // The first window reopens the project open at the last quit;
+            // otherwise the form starts from the preset used last.
+            if !viewModel.reopenLastProjectIfAny() { viewModel.applyLastUsedPreset() }
         }
         .onChange(of: viewModel.engineState) { newValue in
             if case .failed = newValue, !hasOfferedDownloadWizard {

@@ -26,7 +26,10 @@ struct H3cApp: App {
         WindowGroup("H3cApp") {
             ContentView()
         }
-        .commands { AdvancedSettingsCommand() }
+        .commands {
+            AdvancedSettingsCommand()
+            ProjectCommands()
+        }
         // Design spec section 3: 1180x780 initial content area, 920x640
         // minimum. .automatic lets the window be resized by hand within
         // that range instead of being pinned to one exact size.
@@ -37,6 +40,25 @@ struct H3cApp: App {
         // development the window had drifted low enough to push its bottom
         // (Save As...) past the dock. Centering keeps it reachable.
         .defaultPosition(.center)
+    }
+}
+
+/// The プロジェクト menu in the menu bar, acting on the frontmost window
+/// (each window has its own project). Same items as the toolbar menu;
+/// disabled while that window is generating.
+struct ProjectCommands: Commands {
+    @FocusedObject private var viewModel: GenerationViewModel?
+
+    var body: some Commands {
+        CommandMenu("プロジェクト") {
+            if let viewModel {
+                ProjectMenuItems(viewModel: viewModel, store: ProjectStore.shared)
+                    .disabled(viewModel.isGenerating)
+            } else {
+                Button("新規プロジェクト…") {}.disabled(true)
+                Button("プロジェクトを開く…") {}.disabled(true)
+            }
+        }
     }
 }
 
