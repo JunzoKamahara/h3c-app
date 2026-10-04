@@ -3,12 +3,15 @@
 #include "h3_lora.h"
 #include "h3_metal.h"
 #include "h3_safetensors.h"
+#include "h3_weights.h"
 
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 static int tests_run;
@@ -294,6 +297,97 @@ static void test_safetensors(void) {
     CHECK(unlink(path) == 0);
 }
 
+/* A minimal valid shard (one F32 tensor) followed by `padding` extra
+ * bytes, with a fixed mtime, so tests control exactly what the weight
+ * fingerprint sees. */
+static void write_fake_shard(const char *path, size_t padding, time_t mtime) {
+    FILE *file = fopen(path, "wb");
+    CHECK(file != NULL);
+    const char header_json[] =
+        "{\"x\":{\"dtype\":\"F32\",\"shape\":[1],\"data_offsets\":[0,4]}}";
+    uint64_t length = sizeof(header_json) - 1;
+    unsigned char prefix[8];
+    for (unsigned index = 0; index < 8; index++) prefix[index] = (unsigned char)(length >> (8 * index));
+    CHECK(fwrite(prefix, sizeof(prefix), 1, file) == 1);
+    CHECK(fwrite(header_json, (size_t)length, 1, file) == 1);
+    for (size_t index = 0; index < 4 + padding; index++) CHECK(fputc(0, file) != EOF);
+    CHECK(fclose(file) == 0);
+    struct timeval times[2] = {{mtime, 0}, {mtime, 0}};
+    CHECK(utimes(path, times) == 0);
+}
+
+static void fingerprint_directory(const char *directory, uint8_t id[32],
+                                  uint8_t legacy[32]) {
+    char error[256];
+    h3_weight_store *store = h3_weight_store_open(directory, error, sizeof(error));
+    CHECK(store != NULL);
+    CHECK(h3_weight_store_shards(store) == 2);
+    h3_weight_store_fingerprint(store, id);
+    h3_weight_store_fingerprint_legacy(store, legacy);
+    h3_weight_store_free(store);
+}
+
+static void test_weight_fingerprint(void) {
+    char root[] = "/tmp/h3_fingerprint_XXXXXX";
+    CHECK(mkdtemp(root) != NULL);
+    char first[256], second[256], transformer[256];
+    char shard1[320], shard2[320], renamed[320];
+    snprintf(first, sizeof(first), "%s/models-a", root);
+    snprintf(second, sizeof(second), "%s/models-b", root);
+    snprintf(transformer, sizeof(transformer), "%s/transformer", first);
+    CHECK(mkdir(first, 0700) == 0);
+    CHECK(mkdir(transformer, 0700) == 0);
+    snprintf(shard1, sizeof(shard1), "%s/model-00001-of-00002.safetensors", transformer);
+    snprintf(shard2, sizeof(shard2), "%s/model-00002-of-00002.safetensors", transformer);
+    write_fake_shard(shard1, 0, 1700000000);
+    write_fake_shard(shard2, 16, 1700000100);
+
+    uint8_t original[32], original_legacy[32], id[32], legacy[32];
+    fingerprint_directory(transformer, original, original_legacy);
+    static const uint8_t zero[32];
+    CHECK(memcmp(original, zero, 32) != 0);
+    /* The two formats never collide: legacy ids are zero past byte 8. */
+    CHECK(memcmp(original + 8, zero, 24) != 0);
+    CHECK(memcmp(original_legacy + 8, zero, 24) == 0);
+    CHECK(memcmp(original, original_legacy, 32) != 0);
+
+    /* Same directory again: both ids are stable. */
+    fingerprint_directory(transformer, id, legacy);
+    CHECK(memcmp(id, original, 32) == 0);
+    CHECK(memcmp(legacy, original_legacy, 32) == 0);
+
+    /* Move the whole model folder: the new id survives, the legacy one
+     * (what pre-2026-10-05 caches hold) does not. */
+    CHECK(rename(first, second) == 0);
+    snprintf(transformer, sizeof(transformer), "%s/transformer", second);
+    snprintf(shard1, sizeof(shard1), "%s/model-00001-of-00002.safetensors", transformer);
+    snprintf(shard2, sizeof(shard2), "%s/model-00002-of-00002.safetensors", transformer);
+    fingerprint_directory(transformer, id, legacy);
+    CHECK(memcmp(id, original, 32) == 0);
+    CHECK(memcmp(legacy, original_legacy, 32) != 0);
+
+    /* Different weights must still change it: an mtime, a size, a name. */
+    write_fake_shard(shard2, 16, 1700000101);
+    fingerprint_directory(transformer, id, legacy);
+    CHECK(memcmp(id, original, 32) != 0);
+    write_fake_shard(shard2, 17, 1700000100);
+    fingerprint_directory(transformer, id, legacy);
+    CHECK(memcmp(id, original, 32) != 0);
+    write_fake_shard(shard2, 16, 1700000100);
+    fingerprint_directory(transformer, id, legacy);
+    CHECK(memcmp(id, original, 32) == 0);
+    snprintf(renamed, sizeof(renamed), "%s/model-00002-of-00003.safetensors", transformer);
+    CHECK(rename(shard2, renamed) == 0);
+    fingerprint_directory(transformer, id, legacy);
+    CHECK(memcmp(id, original, 32) != 0);
+
+    CHECK(unlink(shard1) == 0);
+    CHECK(unlink(renamed) == 0);
+    CHECK(rmdir(transformer) == 0);
+    CHECK(rmdir(second) == 0);
+    CHECK(rmdir(root) == 0);
+}
+
 static void test_rng_and_solver(void) {
     h3_rng a, b;
     h3_rng_seed(&a, 42);
@@ -476,6 +570,7 @@ int main(void) {
     test_layout_fl2va();
     test_layout_ref2va();
     test_safetensors();
+    test_weight_fingerprint();
     test_rng_and_solver();
     test_rgb_resize();
     test_dit_row_conversions();

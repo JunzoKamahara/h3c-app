@@ -137,16 +137,44 @@ static uint64_t fingerprint_fnv1a64(uint64_t hash, const void *data,
     return hash;
 }
 
+static int64_t fingerprint_mtime(const char *path) {
+    struct stat status;
+    if (path && stat(path, &status) == 0) return (int64_t)status.st_mtime;
+    return 0;
+}
+
+/* Marks bytes 8..15 of a path-independent fingerprint, so it can never
+ * equal a legacy one (whose bytes 8..31 are all zero). */
+static const char fingerprint_v2_tag[8] = "h3fp-v2";
+
 void h3_weight_store_fingerprint(const h3_weight_store *store, uint8_t out[32]) {
     memset(out, 0, 32);
     if (!store) return;
     uint64_t hash = 1469598103934665603ull;
     for (size_t index = 0; index < store->count; index++) {
         const char *path = store->headers[index].path;
+        const char *slash = path ? strrchr(path, '/') : NULL;
+        const char *name = slash ? slash + 1 : (path ? path : "");
         uint64_t size = store->headers[index].file_size;
-        int64_t mtime = 0;
-        struct stat status;
-        if (path && stat(path, &status) == 0) mtime = (int64_t)status.st_mtime;
+        int64_t mtime = fingerprint_mtime(path);
+        /* The terminating NUL separates one name from the next field. */
+        hash = fingerprint_fnv1a64(hash, name, strlen(name) + 1);
+        hash = fingerprint_fnv1a64(hash, &size, sizeof(size));
+        hash = fingerprint_fnv1a64(hash, &mtime, sizeof(mtime));
+    }
+    memcpy(out, &hash, sizeof(hash));
+    memcpy(out + 8, fingerprint_v2_tag, sizeof(fingerprint_v2_tag));
+}
+
+void h3_weight_store_fingerprint_legacy(const h3_weight_store *store,
+                                        uint8_t out[32]) {
+    memset(out, 0, 32);
+    if (!store) return;
+    uint64_t hash = 1469598103934665603ull;
+    for (size_t index = 0; index < store->count; index++) {
+        const char *path = store->headers[index].path;
+        uint64_t size = store->headers[index].file_size;
+        int64_t mtime = fingerprint_mtime(path);
         hash = fingerprint_fnv1a64(hash, path, path ? strlen(path) : 0);
         hash = fingerprint_fnv1a64(hash, &size, sizeof(size));
         hash = fingerprint_fnv1a64(hash, &mtime, sizeof(mtime));

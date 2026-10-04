@@ -17,13 +17,22 @@ void h3_weight_store_free(h3_weight_store *store);
 size_t h3_weight_store_shards(const h3_weight_store *store);
 
 /* A lightweight, non-cryptographic fingerprint of this store's shards
- * (each shard's path, file size, and mtime, hashed together) - cheap
- * enough to recompute at every run (a stat() per shard, no payload
- * reads), unlike hashing the ~18GB of actual weight bytes. Meant for
- * staleness detection (a cache built against different/rewritten
- * weights), not as a security property. Always fills all 32 bytes of
- * `out` (zero-padded beyond the 8 bytes the hash occupies). */
+ * (each shard's file name - not its directory - file size, and mtime,
+ * hashed together) - cheap enough to recompute at every run (a stat() per
+ * shard, no payload reads), unlike hashing the ~18GB of actual weight
+ * bytes. Moving the model folder keeps it (mv preserves mtime); a copy
+ * that does not preserve mtime changes it. Meant for staleness detection
+ * (a cache built against different/rewritten weights), not as a security
+ * property. Always fills all 32 bytes of `out`: the hash in bytes 0..7, a
+ * format tag in 8..15, zeros beyond. */
 void h3_weight_store_fingerprint(const h3_weight_store *store, uint8_t out[32]);
+
+/* The fingerprint attention caches carried before 2026-10-05: the same
+ * hash but over each shard's full path instead of its file name (bytes
+ * 8..31 zero), so it only matches while the model stays where the cache
+ * was built. Kept so those caches still validate without a rebuild. */
+void h3_weight_store_fingerprint_legacy(const h3_weight_store *store,
+                                        uint8_t out[32]);
 
 const h3_st_tensor *h3_weight_find(const h3_weight_store *store,
                                    const char *name,

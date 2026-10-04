@@ -939,10 +939,15 @@ static const char *cache_model_kind_name(h3_cache_model_kind kind) {
  * detect_model_kind()) - the model_kind check is then skipped entirely,
  * same as a cache whose own model_kind is UNKNOWN (written by a tool that
  * predates this field, or given a non-standard transformer directory
- * itself). expected_model_id may be NULL to skip the fingerprint check. */
+ * itself). expected_model_id may be NULL to skip the fingerprint check;
+ * legacy_model_id (may be NULL) is the path-based fingerprint caches were
+ * written with before 2026-10-05 (h3_weight_store_fingerprint_legacy()),
+ * also accepted so those caches keep validating without a rebuild while
+ * the model stays at the path they were built from. */
 static int attention_cache_validate(const char *path, int need_mlp,
                                     h3_cache_model_kind expected_kind,
                                     const uint8_t *expected_model_id,
+                                    const uint8_t *legacy_model_id,
                                     char *error, size_t error_size) {
     FILE *file = fopen(path, "rb");
     if (!file) {
@@ -991,7 +996,9 @@ static int attention_cache_validate(const char *path, int need_mlp,
     }
     if (expected_model_id &&
         memcmp(header.model_id, (const uint8_t[32]){0}, 32) != 0 &&
-        memcmp(header.model_id, expected_model_id, 32) != 0) {
+        memcmp(header.model_id, expected_model_id, 32) != 0 &&
+        !(legacy_model_id &&
+          memcmp(header.model_id, legacy_model_id, 32) == 0)) {
         /* A validation/benchmark run comparing against real captured
          * activations must not silently proceed on a stale cache - set
          * H3_ATTENTION_CACHE_STRICT=1 to turn this into a hard failure
@@ -2172,11 +2179,12 @@ static h3_dit *load_dit(const char *weight_directory,
             free(selected_cache_path);
             goto failed;
         }
-        uint8_t expected_model_id[32];
+        uint8_t expected_model_id[32], legacy_model_id[32];
         h3_weight_store_fingerprint(dit->weights, expected_model_id);
+        h3_weight_store_fingerprint_legacy(dit->weights, legacy_model_id);
         if (!attention_cache_validate(attention_cache_path, want_mlp_stream,
-                                      model_kind, expected_model_id, error,
-                                      error_size)) {
+                                      model_kind, expected_model_id,
+                                      legacy_model_id, error, error_size)) {
             free(selected_cache_path);
             goto failed;
         }

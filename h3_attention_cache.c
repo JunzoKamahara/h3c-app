@@ -15,8 +15,10 @@
  *
  * The v3 header adds model_kind (FL2VA=1/Ref2VA=2, matching h3_dit.c's
  * h3_cache_model_kind) and model_id (h3_weight_store_fingerprint() of the
- * transformer directory quantized) so h3_dit.c can refuse a cache built
- * for the wrong model rather than silently streaming mismatched weights -
+ * transformer directory quantized: shard names, sizes and mtimes, not
+ * their absolute paths, so moving the model folder keeps the cache valid)
+ * so h3_dit.c can refuse a cache built for the wrong model rather than
+ * silently streaming mismatched weights -
  * a v2 cache (no such tagging) simply fails h3_dit.c's version check and
  * must be rebuilt. */
 #include "h3.h"

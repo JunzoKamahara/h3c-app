@@ -1961,6 +1961,32 @@ invalidates every int8 cache's fingerprint although the weights are
 unchanged, and rebuilding means 19.3 GB per cache. Start by dropping the
 absolute path: identify by model kind + shard file name (relative) + size
 + mtime. Hashing the ~65 GB of shards on every load is not practical.
+*Done (2026-10-05):* `h3_weight_store_fingerprint()` now hashes each
+shard's file name (no directory), size and mtime, and tags bytes 8-15 of
+`model_id` with `"h3fp-v2"` so a new id can never equal an old one (old
+ids are zero past byte 8); the model kind stays the header's separate
+`model_kind` field, checked as before. New caches from
+`build_attention_cache` get the new id. `attention_cache_validate()`
+accepts either the new id or the legacy path-based one
+(`h3_weight_store_fingerprint_legacy()`, computed for the directory being
+loaded), so both existing caches validate without a rebuild; header format
+and version unchanged. STRICT still refuses anything else.
+Checks: `tests/test_h3.c` `test_weight_fingerprint` (two fake shards in a
+temp dir: the id survives renaming the parent folder while the legacy id
+changes; a changed mtime, size or shard name changes it); both real caches
+under `H3_ATTENTION_CACHE_STRICT=1 H3_PROFILE=1 h3_repro_check --runs 2`
+(Ref2VA and `--ref none`): no warning, 90.1 GiB int8 stream, runs
+identical; with sparse copies of the T2V cache header under a temporary
+`HOME` (no disk used): a flipped id byte is refused under STRICT (warning
+without it), and the new id computed independently in Python validates
+under STRICT. The Python re-implementation also reproduced the on-disk
+legacy id `28118324f70bb4ae` of `dit_int8_v2.cache`.
+Remaining limits: the two existing caches still carry legacy ids, so they
+still break if the model folder moves before they are next rebuilt with
+`build_attention_cache` (not done: 19.3 GB each, needs the owner's
+go-ahead; patching the id bytes by hand stays ruled out). A copy that
+does not preserve mtime (plain `cp` without `-p`) changes the id by
+design.
 
 Not done (from the review of this issue): pass the cache path and MLP
 streaming as generation parameters instead of process-wide `setenv`, and
