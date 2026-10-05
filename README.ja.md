@@ -425,8 +425,10 @@ MLXフィクスチャが`misc/fixtures/`に配置されていれば、Metalソ�
 集計するカーネルを繰り返し実行し、ビット単位で一致することを確認）が
 含まれます。公開済みの重みがあれば、`make h3_repro_check CCV_DIR=...`の後に
 `./h3_repro_check`を実行すると、短いRef2VA動画を3回生成し（約4分）、
-エンコーダーに渡すRGBフレームが一致しなければ失敗します。`--run`で実行ごとに
-条件を変えられます（例：`--run cache=0 --run 'cache=conditioning;seed=8'`）。
+エンコーダーに渡すRGBフレームとデコード後の音声が一致しなければ失敗します。
+`--run`で実行ごとに条件を変えられ、`cache`以外が同じ実行どうしを比較します
+（例：`--run cache=0 --run cache=conditioning --run cache=conditioning`で、
+キャッシュなし・初回・再利用を比べます）。
 
 ## API
 

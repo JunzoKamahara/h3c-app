@@ -421,9 +421,11 @@ Same-seed reproducibility: `make test` includes `h3_determinism_tests`
 (repeat runs of the threadgroup-reduction kernels must match bit for bit).
 With the released weights installed, `make h3_repro_check CCV_DIR=...` and
 `./h3_repro_check` generate a short Ref2VA clip three times (~4 min) and
-fail unless the RGB frames handed to the encoder are identical; `--run`
-overrides the request per run, for example `--run cache=0 --run
-'cache=conditioning;seed=8'`.
+fail unless the RGB frames and the decoded audio handed to the encoder are
+identical. `--run` overrides the request per run, and runs with the same
+request (ignoring `cache`) are compared - for example `--run cache=0 --run
+cache=conditioning --run cache=conditioning` checks cache off, a miss and a
+hit against each other.
 
 ## API
 
