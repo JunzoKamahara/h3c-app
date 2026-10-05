@@ -40,7 +40,8 @@ enum { MAX_RUNS = 64, MAX_FRAMES = 1024, MAX_PHASES = 24 };
 typedef struct {
     char prompt[512];
     char reference[1024]; /* empty = T2V */
-    int size;
+    int width;
+    int height;
     int frames;
     int steps;
     int reuse;
@@ -269,8 +270,9 @@ static void usage(void) {
         "         [--core-reuse N] [--fast 0|1] [--seed N] [--prompt TEXT]\n"
         "         [--cache 0|1|LIST] [--run 'key=value;key=value' ...]\n"
         "  --run adds one run with the base request overridden by the given\n"
-        "  keys (prompt, ref, size, frames, steps, reuse, layers, core_reuse,\n"
-        "  fast, seed, cache); without --run the base request runs N times.\n"
+        "  keys (prompt, ref, size or width/height, frames, steps, reuse,\n"
+        "  layers, core_reuse, fast, seed, cache); without --run the base\n"
+        "  request runs N times.\n"
         "  cache: 0, 1 (all) or a comma list of conditioning, dit, decoder,\n"
         "  refined, adaln.\n"
         "  Defaults: Ref2VA with a generated 512x512 reference image, 512x512,\n"
@@ -304,7 +306,9 @@ static int set_key(request *req, const char *key, const char *value) {
     else if (!strcmp(key, "ref"))
         snprintf(req->reference, sizeof(req->reference), "%s",
                  strcmp(value, "none") ? value : "");
-    else if (!strcmp(key, "size")) req->size = atoi(value);
+    else if (!strcmp(key, "size")) req->width = req->height = atoi(value);
+    else if (!strcmp(key, "width")) req->width = atoi(value);
+    else if (!strcmp(key, "height")) req->height = atoi(value);
     else if (!strcmp(key, "frames")) req->frames = atoi(value);
     else if (!strcmp(key, "steps")) req->steps = atoi(value);
     else if (!strcmp(key, "reuse")) req->reuse = atoi(value);
@@ -337,7 +341,8 @@ static void parse_run(request *req, const char *spec) {
 /* Everything that determines the output; `cache` deliberately excluded. */
 static int same_request(const request *a, const request *b) {
     return !strcmp(a->prompt, b->prompt) && !strcmp(a->reference, b->reference) &&
-           a->size == b->size && a->frames == b->frames && a->steps == b->steps &&
+           a->width == b->width && a->height == b->height &&
+           a->frames == b->frames && a->steps == b->steps &&
            a->reuse == b->reuse && a->layers == b->layers &&
            a->core_reuse == b->core_reuse && a->fast == b->fast &&
            a->seed == b->seed;
@@ -346,7 +351,7 @@ static int same_request(const request *a, const request *b) {
 static void describe(const request *req, char *out, size_t size) {
     snprintf(out, size, "%s %dx%d %dfr %dst reuse%d seed%llu%s%s cache%s%s%s%s%s%s "
              "\"%.40s\"",
-             req->reference[0] ? "Ref2VA" : "T2V", req->size, req->size,
+             req->reference[0] ? "Ref2VA" : "T2V", req->width, req->height,
              req->frames, req->steps, req->reuse,
              (unsigned long long)req->seed,
              req->fast ? " fast" : "",
@@ -372,8 +377,8 @@ static void run_one(h3_ctx *ctx, run_result *r, const char *home) {
 
     h3_reference reference = {H3_REFERENCE_IMAGE, req->reference, NULL, 0};
     h3_params params = H3_PARAMS_DEFAULT;
-    params.width = req->size;
-    params.height = req->size;
+    params.width = req->width;
+    params.height = req->height;
     params.frames = req->frames;
     params.steps = req->steps;
     params.seed = req->seed;
@@ -387,8 +392,11 @@ static void run_one(h3_ctx *ctx, run_result *r, const char *home) {
         params.reference_count = 1;
     }
     char output[1024];
+    /* H3_REPRO_KEEP_DIR keeps each run's video there (to look at it). */
+    const char *keep = getenv("H3_REPRO_KEEP_DIR");
     snprintf(output, sizeof(output), "%s/h3_repro_%d.mp4",
-             getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp", (int)(r - results));
+             keep ? keep : getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp",
+             (int)(r - results));
     params.output_path = output;
     params.on_progress = on_progress;
     params.on_frame = on_frame;
@@ -412,7 +420,7 @@ static void run_one(h3_ctx *ctx, run_result *r, const char *home) {
     }
     if (result->frames > r->frames_expected) r->frames_expected = result->frames;
     h3_result_free(result);
-    unlink(output);
+    if (!keep) unlink(output);
     if (r->error[0]) return;
     if (r->frames_expected <= 0 || r->frames_expected > MAX_FRAMES) {
         snprintf(r->error, sizeof(r->error), "bad frame count %d",
@@ -446,7 +454,7 @@ int main(int argc, char **argv) {
     request base = {0};
     snprintf(base.prompt, sizeof(base.prompt), "%s",
              "A cat playing with a ball of yarn.");
-    base.size = 512;
+    base.width = base.height = 512;
     base.frames = 25;
     base.steps = 8;
     base.reuse = 2;
