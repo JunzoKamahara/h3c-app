@@ -431,12 +431,16 @@ While `H3cApp.app` is running it serves a plain JSON API on
 `http://127.0.0.1:8420` — implemented over raw POSIX sockets (see
 [HTTPServer.swift](native/H3Spike/Sources/H3cApp/HTTPServer.swift)), not
 Network.framework or any third-party server, and with no separate process
-to start or stop. It drives the exact same `GenerationViewModel`/engine
-instance the window does (see
+to start or stop. It drives the app's primary `GenerationViewModel`/engine
+instance — the one the first window shows (see
+[AppModels.swift](native/H3Spike/Sources/H3cApp/AppModels.swift) and
 [GenerationViewModel+API.swift](native/H3Spike/Sources/H3cApp/GenerationViewModel+API.swift)).
-There is only ever one job at a time, shared with the UI — pressing the
-generate button in the window and a `POST /api/generate` compete for the
-same slot, and whichever loses gets a clear `409`.
+It keeps answering with every window closed, as long as the app runs;
+closing a window closes its project, so open one with
+`POST /api/project/open` when needed. There is only ever one job at a time,
+shared with the window showing that instance — pressing its generate button
+and a `POST /api/generate` compete for the same slot, and whichever loses
+gets a clear `409`.
 
 Because the client and server are always on the same Mac, media inputs are
 plain filesystem paths, not uploads.

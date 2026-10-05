@@ -434,12 +434,15 @@ MLXフィクスチャが`misc/fixtures/`に配置されていれば、Metalソ�
 JSON APIを提供します — 生のPOSIXソケットで実装されており
 （[HTTPServer.swift](native/H3Spike/Sources/H3cApp/HTTPServer.swift)参照）、
 Network.frameworkやサードパーティ製サーバーは使っていません。別プロセスの
-起動・停止も不要です。このAPIはウィンドウと全く同じ`GenerationViewModel`/
-エンジンのインスタンスを操作します
-（[GenerationViewModel+API.swift](native/H3Spike/Sources/H3cApp/GenerationViewModel+API.swift)参照）。
-ジョブは常に1つだけで、UIと共有されます — ウィンドウの生成ボタンを押すのと
-`POST /api/generate`は同じ枠を奪い合い、負けた方には明確な`409`が
-返ります。
+起動・停止も不要です。このAPIは、アプリの主となる`GenerationViewModel`/
+エンジンのインスタンス（最初のウィンドウが表示するもの）を操作します
+（[AppModels.swift](native/H3Spike/Sources/H3cApp/AppModels.swift)、
+[GenerationViewModel+API.swift](native/H3Spike/Sources/H3cApp/GenerationViewModel+API.swift)参照）。
+アプリが起動していれば、ウィンドウをすべて閉じても受け付けます。ウィンドウを
+閉じるとそのプロジェクトも閉じるので、必要なら`POST /api/project/open`で
+開いてください。ジョブは常に1つだけで、そのインスタンスを表示している
+ウィンドウと共有されます — 生成ボタンを押すのと`POST /api/generate`は同じ枠を
+奪い合い、負けた方には明確な`409`が返ります。
 
 クライアントとサーバーは常に同じMac上にあるため、メディア入力はアップ
 ロードではなく、単なるファイルシステムパスです。
