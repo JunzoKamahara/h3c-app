@@ -2174,6 +2174,36 @@ request, `count` 3): 404.2 / 384.2 / 385.5 s per item.
 
 ---
 
+## 8. Custom sizes (planned) - 960x544 measured
+
+Toward a custom-size setting with a time/memory warning, and later an X2
+VAE decode (community MiniMax-H3-X2-Detail-VAE: a fine-tuned decoder whose
+`proj_out` emits 12 packed channels per pixel, then PixelShuffle x2; not a
+drop-in for the released decoder's 3072x2048 `proj_out`).
+
+960x544 (multiples of 32, 522k pixels, within the 768x1344 limit; 510 DiT
+tokens per latent frame vs 256 at 512x512), M5 24 GB, `h3_repro_check`
+(T2V, int8 cache, seed 7):
+
+| run | per evaluated step | video VAE | peak footprint | total |
+|---|---|---|---|---|
+| 512x512, 1 s, 2 steps, reuse 1 | 6.7 s | 13.3 s | 6.2 GiB | 44.6 s |
+| 960x544, 1 s, 2 steps, reuse 1 | 14.9 s | 26.4 s | 7.2 GiB | 73.9 s |
+| 512x512, 5 s, 2 steps, reuse 1 | 27.2 s | 38.4 s | 6.5 GiB | 110.7 s |
+| 960x544, 5 s, 2 steps, reuse 1 | 79.9 s | 84.1 s | 7.1 GiB | 262.1 s |
+| 960x544, 5 s, 20 steps, reuse 2 | (denoise 822 s) | 83 s | 6.3 GiB | 15:23 |
+| 960x544, 10 s, 20 steps, reuse 2 | (denoise 2664 s) | 163 s | 7.0 GiB | 47:26 |
+| 960x544, 15 s, 20 steps, reuse 2 | (denoise 5822 s) | 241 s | 9.7 GiB | 1:41:23 |
+
+Swap stayed at 1100 MiB through all of them (minimum free memory 32%), so
+960x544 fits up to 15 s; the denoise grows 3.2x / 7.1x for 2x / 3x the
+length, the decode about linearly. The earlier "768x768 15 s swaps
+heavily" figure (Stage 7) came from an older build in the ccv evaluation
+and overstated the risk here. Mid frames of all three videos looked
+normal (one frame each checked; `~/Movies/H3cApp-grid/2026-10-05-960x544/`).
+`h3_repro_check` gained `width`/`height` keys and `H3_REPRO_KEEP_DIR`
+(keep each run's video) for these runs.
+
 ## Lower priority, noted but not planned
 
 MATLOWAI's fused model approximates Ref2VA as FL2VA + rank-1024 SVD delta so
