@@ -14,7 +14,7 @@ struct h3_ctx {
     char error[512];
     h3_device_info device;
     h3_model_info model;
-    int cache_enabled;
+    unsigned cache_targets; /* H3_CACHE_* bits */
     char *conditioning_key;
     size_t conditioning_tokens;
     size_t conditioning_width;
@@ -29,6 +29,9 @@ struct h3_ctx {
     int conditioning_present;
     char *dit_key;
     struct h3_dit *dit;
+    /* Token refiner output / AdaLN schedule (H3_CACHE_REFINED_TEXT,
+     * H3_CACHE_ADALN), created when one of them is first enabled. */
+    struct h3_dit_prep *dit_prep;
     char *video_decoder_key;
     struct h3_video_vae_decoder *video_decoder;
 };

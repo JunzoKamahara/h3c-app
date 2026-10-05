@@ -1,4 +1,5 @@
 import H3Engine
+import QuickLook
 import SwiftUI
 
 // Shown in grey while the prompt is empty; Tab turns it into real text.
@@ -16,6 +17,8 @@ struct CreationFormView: View {
     var bounds: CGSize
     @Environment(\.colorScheme) private var colorScheme
     @State private var dragBase: CGSize?
+    /// The input file shown in Quick Look (clicking its name).
+    @State private var quickLookURL: URL?
 
     private var palette: H3Palette { H3Palette(colorScheme) }
 
@@ -40,6 +43,7 @@ struct CreationFormView: View {
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(palette.border, lineWidth: 1))
         .shadow(color: .black.opacity(0.25), radius: 18, y: 6)
+        .quickLookPreview($quickLookURL)
     }
 
     // MARK: 移動・折りたたみ
@@ -147,17 +151,6 @@ struct CreationFormView: View {
             .labelsHidden()
             .frame(width: 200)
 
-            if viewModel.creationMethod == .image {
-                Picker("画像の使い方", selection: $viewModel.imageInputMode) {
-                    ForEach(ImageInputMode.allCases) { mode in
-                        Text(mode.label).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .fixedSize()
-            }
-
             Spacer(minLength: 0)
 
             presetMenu
@@ -176,12 +169,25 @@ struct CreationFormView: View {
 
     private var imageInputSection: some View {
         VStack(alignment: .leading, spacing: H3Spacing.sm) {
+            // Here rather than next to 文章から・画像から: both segmented
+            // pickers plus プリセット and 詳細設定 were wider than the panel,
+            // and the fixed-size row pushed out past both edges.
+            Picker("画像の使い方", selection: $viewModel.imageInputMode) {
+                ForEach(ImageInputMode.allCases) { mode in
+                    Text(mode.label).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
             switch viewModel.imageInputMode {
             case .firstLastFrame:
                 Text("この画像から動き始めます。").font(.caption).foregroundStyle(palette.textSecondary)
-                ImagePickerRow(label: String(localized: "最初の画像"), path: $viewModel.firstFramePath, choose: viewModel.pickFirstFrame)
+                ImagePickerRow(label: String(localized: "最初の画像"), path: $viewModel.firstFramePath,
+                               choose: viewModel.pickFirstFrame) { quickLookURL = $0 }
                 if viewModel.lastFramePath != nil {
-                    ImagePickerRow(label: String(localized: "最後の画像"), path: $viewModel.lastFramePath, choose: viewModel.pickLastFrame)
+                    ImagePickerRow(label: String(localized: "最後の画像"), path: $viewModel.lastFramePath,
+                                   choose: viewModel.pickLastFrame) { quickLookURL = $0 }
                 } else {
                     Button("最後の画像も指定…") { viewModel.pickLastFrame() }
                         .font(.caption)
@@ -202,10 +208,8 @@ struct CreationFormView: View {
                             HStack {
                                 Image(systemName: referenceIcon(for: reference.kind))
                                     .foregroundStyle(palette.textSecondary)
-                                Text("\(index + 1). \(URL(fileURLWithPath: reference.path).lastPathComponent)")
-                                    .font(.caption)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
+                                Text(verbatim: "\(index + 1).").font(.caption)
+                                FileLink(path: reference.path) { quickLookURL = $0 }
                                 Spacer()
                                 Button("取り除く") {
                                     viewModel.removeReferenceImages(at: IndexSet(integer: index))
@@ -260,6 +264,9 @@ struct CreationFormView: View {
                     aspectMenu
                     sizeMenu
                     durationMenu
+                    // Several videos per press only with a project, where
+                    // they are kept.
+                    if viewModel.project != nil { batchMenu }
                     Spacer(minLength: 0)
                     generateButton
                 }
@@ -345,6 +352,25 @@ struct CreationFormView: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .help("長さ")
+    }
+
+    private var batchMenu: some View {
+        Menu {
+            Picker("本数", selection: $viewModel.batchCount) {
+                ForEach([1, 2, 3, 4, 5, 6, 8, 10, 15, 20], id: \.self) { value in
+                    Text("\(value) 本").tag(value)
+                }
+            }
+            .pickerStyle(.inline)
+        } label: {
+            composerChip(systemImage: "square.stack.3d.down.right",
+                         text: String(localized: "\(viewModel.batchCount)本"))
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("同じプロンプトと設定で、シードを変えて続けて生成し、プロジェクトに保存します（シード固定のときは1ずつ増やします）")
     }
 
     private func composerChip(systemImage: String, text: String) -> some View {
@@ -449,19 +475,48 @@ private struct ImagePickerRow: View {
     let label: String
     @Binding var path: String?
     let choose: () -> Void
+    let preview: (URL) -> Void
 
     var body: some View {
         HStack {
             Text(label).font(.caption).frame(width: 84, alignment: .leading)
-            Text(path.map { URL(fileURLWithPath: $0).lastPathComponent } ?? String(localized: "未選択"))
-                .font(.caption)
-                .lineLimit(1)
-                .truncationMode(.middle)
+            if let path {
+                FileLink(path: path, preview: preview)
+            } else {
+                Text("未選択").font(.caption)
+            }
             Spacer()
             Button("変更…", action: choose)
             if path != nil {
                 Button("取り除く") { path = nil }
             }
         }
+    }
+}
+
+/// An input file's name as a link: clicking it shows the file in Quick
+/// Look (image, video or audio) without leaving the app.
+private struct FileLink: View {
+    let path: String
+    let preview: (URL) -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button {
+            preview(URL(fileURLWithPath: path))
+        } label: {
+            Text(URL(fileURLWithPath: path).lastPathComponent)
+                .font(.caption)
+                .underline(hovering)
+                .foregroundStyle(Color.accentColor)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .buttonStyle(.plain)
+        .onHover { inside in
+            hovering = inside
+            if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+        }
+        .help("クリックで内容を確認")
     }
 }

@@ -1,0 +1,243 @@
+import AppKit
+import AVFoundation
+import SwiftUI
+
+/// Toolbar menu: the open project's name, and everything to do with
+/// projects (the same items as the menu bar's プロジェクト menu).
+struct ProjectMenu: View {
+    @ObservedObject var viewModel: GenerationViewModel
+
+    var body: some View {
+        Menu {
+            ProjectMenuItems(viewModel: viewModel, store: ProjectStore.shared, inMenuBar: false)
+        } label: {
+            Label(viewModel.project?.name ?? String(localized: "プロジェクトなし"), systemImage: "folder")
+        }
+        .disabled(viewModel.isGenerating)
+        .help("プロンプトと設定、参照ファイル、生成した動画をフォルダにまとめて保存します")
+    }
+}
+
+/// The project items, shared by the toolbar menu and the menu bar.
+struct ProjectMenuItems: View {
+    @ObservedObject var viewModel: GenerationViewModel
+    @ObservedObject var store: ProjectStore
+    /// Shortcuts belong to the menu bar only, so they aren't registered twice.
+    var inMenuBar = true
+
+    var body: some View {
+        Button("新規プロジェクト…") { viewModel.showingNewProject = true }
+            .keyboardShortcut(inMenuBar ? KeyboardShortcut("n", modifiers: [.command, .shift]) : nil)
+        Button("プロジェクトを開く…") { viewModel.chooseAndOpenProject() }
+            .keyboardShortcut(inMenuBar ? KeyboardShortcut("o", modifiers: .command) : nil)
+        let recents = store.existingRecents.filter { $0.standardizedFileURL != viewModel.project?.url.standardizedFileURL }
+        Menu("最近のプロジェクト") {
+            ForEach(recents, id: \.self) { url in
+                Button(url.lastPathComponent) { viewModel.openProject(at: url) }
+            }
+        }
+        .disabled(recents.isEmpty)
+        Divider()
+        Button("プロジェクトの動画…") { viewModel.showingProjectVideos = true }
+            .disabled(viewModel.project == nil)
+        Button("表示中の動画を参照に使う") {
+            if let url = viewModel.resultURL { viewModel.useVideoAsReference(url) }
+        }
+        .disabled(viewModel.resultURL == nil)
+        Button("プロジェクトをFinderで表示") {
+            if let url = viewModel.project?.url { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+        }
+        .disabled(viewModel.project == nil)
+        Divider()
+        Button("プロジェクトを閉じる") { viewModel.closeProject() }
+            .disabled(viewModel.project == nil)
+    }
+}
+
+struct NewProjectSheet: View {
+    @ObservedObject var viewModel: GenerationViewModel
+    @Binding var isPresented: Bool
+    @State private var name = ""
+    @State private var parent = ProjectStore.defaultParentDirectory
+
+    private var folder: URL {
+        let folderName = ProjectFiles.folderName(for: name)
+        return parent.appendingPathComponent(folderName.isEmpty ? "…" : folderName)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: H3Spacing.md) {
+            Text("新規プロジェクト").font(.headline)
+            TextField("プロジェクト名", text: $name)
+                .textFieldStyle(.roundedBorder)
+            HStack(alignment: .firstTextBaseline) {
+                Text("保存先").foregroundStyle(.secondary)
+                Text(folder.path)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+                Spacer()
+                Button("変更…") { chooseParent() }
+            }
+            .font(.callout)
+            Text("今のプロンプトと設定、参照ファイルがプロジェクトに入ります。生成した動画はこのフォルダに保存され、削除するまで残ります。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let message = viewModel.projectMessage {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack {
+                Spacer()
+                Button("キャンセル") {
+                    viewModel.projectMessage = nil
+                    isPresented = false
+                }
+                    .keyboardShortcut(.cancelAction)
+                Button("作成") {
+                    viewModel.projectMessage = nil
+                    viewModel.createProject(name: name, parent: parent)
+                    if viewModel.project != nil { isPresented = false }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(H3Spacing.lg)
+        .frame(width: 480)
+    }
+
+    private func chooseParent() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.directoryURL = parent
+        if panel.runModal() == .OK, let url = panel.url { parent = url }
+    }
+}
+
+/// The open project's videos, newest first.
+struct ProjectVideosSheet: View {
+    @ObservedObject var viewModel: GenerationViewModel
+    @Binding var isPresented: Bool
+    @State private var pendingDelete: ProjectVideo?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: H3Spacing.md) {
+            HStack {
+                Text(viewModel.project?.name ?? "").font(.headline)
+                Text("\(viewModel.projectVideos.count)本").foregroundStyle(.secondary)
+                Spacer()
+                Button("閉じる") { isPresented = false }
+                    .keyboardShortcut(.cancelAction)
+            }
+            if viewModel.projectVideos.isEmpty {
+                Text("まだ動画はありません。生成した動画はここに保存されます。")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List(viewModel.projectVideos) { video in
+                    row(video)
+                }
+            }
+        }
+        .padding(H3Spacing.lg)
+        .frame(width: 720, height: 520)
+        .onAppear { viewModel.reloadProjectVideos() }
+        .confirmationDialog("この動画を削除しますか？", isPresented: Binding(
+            get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }
+        ), presenting: pendingDelete) { video in
+            Button("ゴミ箱に移動", role: .destructive) { viewModel.deleteProjectVideo(video) }
+        } message: { _ in
+            Text("動画と設定の記録をゴミ箱に移動します。")
+        }
+    }
+
+    private func row(_ video: ProjectVideo) -> some View {
+        HStack(spacing: H3Spacing.md) {
+            VideoThumbnail(url: video.url)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(video.url.lastPathComponent)
+                    .font(.callout.monospaced())
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if let record = video.record {
+                    Text(summary(record)).font(.caption).foregroundStyle(.secondary)
+                    Text(record.draft.prompt)
+                        .font(.caption)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                } else {
+                    Text("設定の記録がありません").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            Button("表示") {
+                viewModel.showProjectVideo(video)
+                isPresented = false
+            }
+            .disabled(viewModel.isGenerating)
+            Button("設定を戻す") {
+                viewModel.restoreProjectVideo(video)
+                isPresented = false
+            }
+            .disabled(video.record == nil)
+            .help("この動画のプロンプトと設定をシード固定でパネルに戻します。そのまま生成すると同じ動画になります")
+            Menu("その他") {
+                Button("参照に使う") {
+                    viewModel.useVideoAsReference(video.url)
+                    isPresented = false
+                }
+                Button("Finderで表示") { NSWorkspace.shared.activateFileViewerSelecting([video.url]) }
+                Divider()
+                Button("削除…", role: .destructive) { pendingDelete = video }
+            }
+            .fixedSize()
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func summary(_ record: ProjectVideoRecord) -> String {
+        let draft = record.draft
+        var parts: [String] = []
+        if let profile = SizeProfile(rawValue: draft.sizeProfile) { parts.append(profile.label) }
+        parts.append(String(localized: "\(draft.seconds)秒"))
+        if let speed = SpeedMode(rawValue: draft.speedMode) { parts.append(speed.summaryLabel) }
+        if draft.fastAttention { parts.append(String(localized: "高速モード（試験的）")) }
+        parts.append(String(localized: "シード \(record.seed)"))
+        parts.append(String(localized: "生成時間 \(formatElapsed(record.generationSeconds))"))
+        return parts.joined(separator: summarySeparator)
+    }
+}
+
+/// A still from one second into the video.
+struct VideoThumbnail: View {
+    let url: URL
+    @State private var image: NSImage?
+
+    var body: some View {
+        ZStack {
+            Color.black
+            if let image {
+                Image(nsImage: image).resizable().scaledToFit()
+            }
+        }
+        .frame(width: 72, height: 72)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .task(id: url) { image = await Self.thumbnail(for: url) }
+    }
+
+    private static func thumbnail(for url: URL) async -> NSImage? {
+        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: 216, height: 216)
+        guard let (image, _) = try? await generator.image(at: CMTime(seconds: 1, preferredTimescale: 600)) else {
+            return nil
+        }
+        return NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
+    }
+}

@@ -21,7 +21,7 @@ let defaultReuse = 2
 // lowest-gate DiT blocks; 45 was found to break the audio (2026-10-01).
 let ditLayersRange = 35 ... 50
 let defaultDitLayers = 50
-private let defaultSizeProfile: SizeProfile = .square
+let defaultSizeProfile: SizeProfile = .square
 
 extension Comparable {
     func clamped(to range: ClosedRange<Self>) -> Self {
@@ -321,9 +321,27 @@ final class GenerationViewModel: ObservableObject {
     private var elapsedTimerTask: Task<Void, Never>?
 
     // MARK: Result - immutable once set, independent of the live draft.
-    @Published private(set) var resultURL: URL?
-    @Published private(set) var resultAspectRatio: CGFloat = 1
-    @Published private(set) var lastResult: ResolvedResult?
+    // Set from Projects.swift too (showing a saved project video).
+    @Published var resultURL: URL?
+    @Published var resultAspectRatio: CGFloat = 1
+    @Published var lastResult: ResolvedResult?
+
+    // MARK: Project (see Projects.swift) - nil: results are temp files.
+    @Published var project: OpenProject?
+    @Published var projectVideos: [ProjectVideo] = []
+    /// 本数: videos per press of generate while a project is open.
+    @Published var batchCount: Int = 1
+    @Published var batchProgress: BatchProgress?
+    @Published var projectMessage: String?
+    // The new-project dialog and the video list, opened from the toolbar
+    // menu and from the menu bar's プロジェクト menu.
+    @Published var showingNewProject = false
+    @Published var showingProjectVideos = false
+    var projectAutosave: AnyCancellable?
+    var lastSavedProjectFile: ProjectFile?
+    /// Outside references being copied into the project (startReferenceImport).
+    var referenceImportTask: Task<Void, Never>?
+    private var batchState: BatchState?
 
     private var engine: H3Engine?
     private var generationTask: Task<Void, Never>?
@@ -331,8 +349,9 @@ final class GenerationViewModel: ObservableObject {
     // MARK: Local automation API (see GenerationViewModel+API.swift) -
     // replaces the old Python gui/server.py entirely: while this app runs,
     // the same job/state a person drives through the form is also reachable
-    // over HTTP, with no separate process or dependency to install.
-    var apiServer: HTTPServer?
+    // over HTTP, with no separate process or dependency to install. One
+    // server for the app (APIHost); this is what it says about this window,
+    // set when a window shows this model (AppModels).
     @Published var apiServerStatus: String = String(localized: "起動しています…")
 
     init() {
@@ -344,11 +363,11 @@ final class GenerationViewModel: ObservableObject {
             forName: NSApplication.willTerminateNotification, object: nil, queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
-                self?.deleteCurrentPreview()
-                self?.apiServer?.stop()
+                self?.saveProjectIfChanged()
+                self?.deleteTemporaryPreview()
+                APIHost.shared.stop()
             }
         }
-        startAPIServer()
         followTurboLoRASteps()
     }
 
@@ -386,8 +405,10 @@ final class GenerationViewModel: ObservableObject {
         }
     }
 
-    private func deleteCurrentPreview() {
-        if let resultURL {
+    /// Deletes the shown result if it is a temp file; a video saved in a
+    /// project stays until the user deletes it.
+    func deleteTemporaryPreview() {
+        if let resultURL, isTemporaryResult(resultURL) {
             try? FileManager.default.removeItem(at: resultURL)
         }
     }
@@ -558,43 +579,88 @@ final class GenerationViewModel: ObservableObject {
 
     // MARK: Generation
 
-    func generate() {
-        guard let engine, canGenerate else { return }
+    /// Everything one generation needs, captured from the form once: a
+    /// batch reuses it for every video, changing only the seed, so editing
+    /// the form mid-batch doesn't change the rest of the batch.
+    struct GenerationRequest {
+        var params: H3GenerationParams
+        var prompt: String
+        var creationMethod: CreationMethod
+        var imageInputMode: ImageInputMode?
+        var sizeProfile: SizeProfile
+        var requestedSeconds: Int
+        var requestedFrames: Int
+        var steps: Int
+        var denoiseReuse: Int
+        var effectiveDenoiseReuse: Int
+        var ditLayers: Int
+        var computeMode: ComputeMode
+        var speedMode: SpeedMode
+        var loras: [ResolvedLoRA]
+        var referenceNames: [String]
+        var deviceLine: String
+        var shape: ProgressEstimator.Shape
+        /// Where the videos go: the project open when the batch started.
+        var projectURL: URL?
+        /// The form for the video records (paths relative to the project).
+        var draft: ProjectDraft
+    }
 
-        deleteCurrentPreview()
-        isGenerating = true
-        isCancelling = false
-        errorMessage = nil
-        resultURL = nil
-        phase = ""
+    private struct BatchState {
+        var total: Int
+        /// The fixed seed of the first video (the next ones count up from
+        /// it), or nil for a new random seed each time.
+        var baseSeed: UInt64?
+        var request: GenerationRequest
+    }
 
-        let outputPath = NSTemporaryDirectory() + "h3c-app_\(Int(Date().timeIntervalSince1970)).mp4"
+    /// Starts generating. With a project open, `count` videos (default: the
+    /// form's 本数) are made one after another with the same request and
+    /// different seeds; without one, a single video.
+    func generate(count: Int? = nil) {
+        guard engine != nil, canGenerate else { return }
+        // A project first gets copies of the references and the form saved,
+        // so the request points at files inside it. Copying runs in the
+        // background; wait for it rather than block the window.
+        saveProjectIfChanged()
+        if let copying = referenceImportTask {
+            isGenerating = true
+            isCancelling = false
+            phase = String(localized: "参照ファイルをプロジェクトにコピーしています")
+            Task {
+                await copying.value
+                let cancelled = self.isCancelling
+                self.isGenerating = false
+                self.isCancelling = false
+                self.phase = ""
+                if !cancelled { self.startGenerating(count: count) }
+            }
+            return
+        }
+        startGenerating(count: count)
+    }
+
+    private func startGenerating(count: Int?) {
+        guard engine != nil, canGenerate else { return }
+        saveProjectIfChanged(importingReferences: false)
+        let total = project == nil ? 1 : (count ?? batchCount).clamped(to: batchCountRange)
+        batchState = BatchState(total: total, baseSeed: seedFixed ? UInt64(seedText) : nil,
+                                request: makeRequest())
+        // Items after the first reuse the AdaLN schedule (released below
+        // when the batch ends).
+        if total > 1 { engine?.setBatchReuse(true) }
+        runBatchItem(index: 1)
+    }
+
+    private func makeRequest() -> GenerationRequest {
         let dimensions = sizeProfile.dimensions
         let requestedSeconds = seconds.clamped(to: secondsRange)
         let requestedFrames = Int(h3AlignedFrameCount(seconds: Double(requestedSeconds)))
-        let seedWasRandom = !seedFixed
-
         // Which resolution the DiT actually runs at (the upscaled profiles
         // generate at renderWidth x renderHeight, then upscale).
         let ditPixels = dimensions.renderWidth > 0
             ? Double(dimensions.renderWidth) * Double(dimensions.renderHeight)
             : Double(dimensions.width) * Double(dimensions.height)
-        estimator = ProgressEstimator(
-            shape: ProgressEstimator.Shape(
-                steps: steps.clamped(to: stepsRange),
-                reuse: effectiveDenoiseReuse,
-                totalFrames: requestedFrames,
-                ditUnits: Double(requestedFrames) * ditPixels,
-                decodeUnits: Double(requestedFrames) * Double(dimensions.width) * Double(dimensions.height)),
-            calibration: TimingCalibration.load(for: computeMode, speed: speedMode,
-                                                fastAttention: useFastAttention,
-                                                ditLayers: ditLayers.clamped(to: ditLayersRange)),
-            start: Date())
-        publishTiming()
-        startElapsedTimer()
-        // validationMessage guarantees a parsable seed when it's fixed.
-        let resolvedSeed = (seedFixed ? UInt64(seedText) : nil)
-            ?? UInt64.random(in: UInt64.min ... UInt64.max)
 
         // Design spec invariant #4: only the image state matching the
         // *current* mode reaches the engine - the rest stays in the draft,
@@ -611,14 +677,13 @@ final class GenerationViewModel: ObservableObject {
         params.frames = Int32(requestedFrames)
         params.steps = Int32(steps.clamped(to: stepsRange))
         params.denoiseReuse = Int32(effectiveDenoiseReuse)
-        params.seed = resolvedSeed
         params.firstFrame = effectiveFirstFrame
         params.lastFrame = effectiveLastFrame
         params.references = effectiveReferences
         params.ssdStreaming = computeMode == .ssdStreaming
         params.attentionCachePath = computeMode == .attentionCache ? currentAttentionCachePath : nil
-        let capturedLoRAs = effectiveLoRAs
-        params.loras = capturedLoRAs.map { H3LoRAInput(path: $0.path, strength: $0.strength) }
+        let loras = effectiveLoRAs
+        params.loras = loras.map { H3LoRAInput(path: $0.path, strength: $0.strength) }
         let speed = speedSettings
         params.ditLayers = speed.ditLayers
         params.coreReuse = speed.coreReuse
@@ -627,23 +692,73 @@ final class GenerationViewModel: ObservableObject {
         // params, so later toggles in the form can't affect a running job.
         params.fastAttention = useFastAttention
 
-        let promptCopy = prompt
-        let capturedMode = creationMethod
-        let capturedImageMode = creationMethod == .image ? imageInputMode : nil
-        let capturedSizeProfile = sizeProfile
-        let capturedSteps = steps.clamped(to: stepsRange)
-        let capturedReuse = denoiseReuse.clamped(to: reuseRange)
-        let capturedEffectiveReuse = effectiveDenoiseReuse
-        let capturedLayers = ditLayers.clamped(to: ditLayersRange)
-        let capturedComputeMode = computeMode
-        let capturedSpeedMode = speedMode
+        var draft = currentDraft()
+        if let projectURL = project?.url {
+            draft.firstFrame = draft.firstFrame.map { ProjectFiles.stored($0, in: projectURL) }
+            draft.lastFrame = draft.lastFrame.map { ProjectFiles.stored($0, in: projectURL) }
+            draft.references = draft.references.map { .init(kind: $0.kind, path: ProjectFiles.stored($0.path, in: projectURL)) }
+        }
+        draft.fastAttention = params.fastAttention
+
+        return GenerationRequest(
+            params: params,
+            prompt: prompt,
+            creationMethod: creationMethod,
+            imageInputMode: creationMethod == .image ? imageInputMode : nil,
+            sizeProfile: sizeProfile,
+            requestedSeconds: requestedSeconds,
+            requestedFrames: requestedFrames,
+            steps: steps.clamped(to: stepsRange),
+            denoiseReuse: denoiseReuse.clamped(to: reuseRange),
+            effectiveDenoiseReuse: effectiveDenoiseReuse,
+            ditLayers: ditLayers.clamped(to: ditLayersRange),
+            computeMode: computeMode,
+            speedMode: speedMode,
+            loras: loras,
+            referenceNames: referenceNames(draft),
+            deviceLine: deviceLine,
+            shape: ProgressEstimator.Shape(
+                steps: steps.clamped(to: stepsRange),
+                reuse: effectiveDenoiseReuse,
+                totalFrames: requestedFrames,
+                ditUnits: Double(requestedFrames) * ditPixels,
+                decodeUnits: Double(requestedFrames) * Double(dimensions.width) * Double(dimensions.height)),
+            projectURL: project?.url,
+            draft: draft)
+    }
+
+    private func runBatchItem(index: Int) {
+        guard let engine, let batch = batchState else { return }
+        let request = batch.request
+        let seed = batch.baseSeed.map { $0 &+ UInt64(index - 1) } ?? UInt64.random(in: UInt64.min ... UInt64.max)
+        let seedWasRandom = batch.baseSeed == nil
+        batchProgress = batch.total > 1 ? BatchProgress(index: index, total: batch.total) : nil
+
+        deleteTemporaryPreview()
+        isGenerating = true
+        isCancelling = false
+        errorMessage = nil
+        resultURL = nil
+        phase = ""
+
+        let outputPath = NSTemporaryDirectory() + "h3c-app_\(Int(Date().timeIntervalSince1970))_\(index).mp4"
+        estimator = ProgressEstimator(
+            shape: request.shape,
+            calibration: TimingCalibration.load(for: request.computeMode, speed: request.speedMode,
+                                                fastAttention: request.params.fastAttention,
+                                                ditLayers: request.ditLayers),
+            start: Date())
+        publishTiming()
+        startElapsedTimer()
+
+        var params = request.params
+        params.seed = seed
         let startedAt = Date()
-        let capturedFastAttention = params.fastAttention
-        let capturedDeviceLine = deviceLine
 
         generationTask = Task {
+            var succeeded = false
             do {
-                for try await event in engine.generate(prompt: promptCopy, outputPath: outputPath, params: params) {
+                for try await event in engine.generate(prompt: request.prompt, outputPath: outputPath, params: params) {
                     switch event {
                     case .progress(let phase, let completed, let total):
                         self.phase = phase
@@ -654,45 +769,8 @@ final class GenerationViewModel: ObservableObject {
                     case .preview:
                         break
                     case .finished(let result):
-                        Self.lastUsedSeed = result.seed
-                        self.phase = String(localized: "できあがりました")
-                        self.estimator?.finishedCalibration(now: Date())
-                            // Keyed by the path that actually ran, not the
-                            // checkbox: a diagnostic H3_ATTENTION_BACKEND can
-                            // route through ccv even with it off.
-                            .save(for: capturedComputeMode, speed: capturedSpeedMode,
-                                  fastAttention: result.ccvAttentionCalls > 0,
-                                  ditLayers: capturedLayers)
-                        let url = URL(fileURLWithPath: result.outputPath)
-                        self.resultURL = url
-                        self.resultAspectRatio = CGFloat(dimensions.width) / CGFloat(dimensions.height)
-                        self.lastResult = ResolvedResult(
-                            prompt: promptCopy,
-                            creationMethod: capturedMode,
-                            imageInputMode: capturedImageMode,
-                            sizeProfile: capturedSizeProfile,
-                            requestedSeconds: requestedSeconds,
-                            requestedFrames: requestedFrames,
-                            actualFrameCount: result.frames,
-                            fps: result.fps,
-                            actualDurationSeconds: nil,
-                            steps: capturedSteps,
-                            denoiseReuse: capturedReuse,
-                            effectiveDenoiseReuse: capturedEffectiveReuse,
-                            ditLayers: capturedLayers,
-                            computeMode: capturedComputeMode,
-                            speedMode: capturedSpeedMode,
-                            fastAttention: capturedFastAttention,
-                            ccvAttentionCalls: result.ccvAttentionCalls,
-                            ccvAttentionDirectCalls: result.ccvAttentionDirectCalls,
-                            seed: result.seed,
-                            seedWasRandom: seedWasRandom,
-                            loras: capturedLoRAs,
-                            deviceLine: capturedDeviceLine,
-                            completedAt: Date(),
-                            generationSeconds: Date().timeIntervalSince(startedAt)
-                        )
-                        self.loadActualDuration(for: url)
+                        self.finish(result, request: request, seedWasRandom: seedWasRandom, startedAt: startedAt)
+                        succeeded = true
                     }
                 }
             } catch is CancellationError {
@@ -707,13 +785,84 @@ final class GenerationViewModel: ObservableObject {
             self.isGenerating = false
             self.isCancelling = false
             self.stopElapsedTimer()
+            // Next video of the batch, unless this one failed or the batch
+            // was cancelled.
+            if succeeded, index < batch.total, self.batchState != nil, self.engineState == .ready {
+                self.runBatchItem(index: index + 1)
+            } else {
+                if batch.total > 1 { engine.setBatchReuse(false) }
+                self.batchState = nil
+                self.batchProgress = nil
+            }
         }
+    }
+
+    private func finish(_ result: H3GenerationResult, request: GenerationRequest,
+                        seedWasRandom: Bool, startedAt: Date) {
+        Self.lastUsedSeed = result.seed
+        phase = String(localized: "できあがりました")
+        estimator?.finishedCalibration(now: Date())
+            // Keyed by the path that actually ran, not the checkbox: a
+            // diagnostic H3_ATTENTION_BACKEND can route through ccv even
+            // with it off.
+            .save(for: request.computeMode, speed: request.speedMode,
+                  fastAttention: result.ccvAttentionCalls > 0,
+                  ditLayers: request.ditLayers)
+        let completedAt = Date()
+        let generationSeconds = completedAt.timeIntervalSince(startedAt)
+        var url = URL(fileURLWithPath: result.outputPath)
+        if let projectURL = request.projectURL {
+            var draft = request.draft
+            draft.seed = String(result.seed)
+            let record = ProjectVideoRecord(
+                video: "", completedAt: completedAt, seed: String(result.seed),
+                seedWasRandom: seedWasRandom, generationSeconds: generationSeconds,
+                actualFrameCount: result.frames, fps: result.fps,
+                effectiveDenoiseReuse: request.effectiveDenoiseReuse,
+                ccvAttentionCalls: result.ccvAttentionCalls,
+                ccvAttentionDirectCalls: result.ccvAttentionDirectCalls,
+                deviceLine: request.deviceLine, appVersion: Self.appVersion, draft: draft)
+            if let stored = storeInProject(videoAt: url, projectURL: projectURL, record: record,
+                                           completedAt: completedAt, seed: result.seed) {
+                url = stored
+            }
+        }
+        let dimensions = request.sizeProfile.dimensions
+        resultURL = url
+        resultAspectRatio = CGFloat(dimensions.width) / CGFloat(dimensions.height)
+        lastResult = ResolvedResult(
+            prompt: request.prompt,
+            creationMethod: request.creationMethod,
+            imageInputMode: request.imageInputMode,
+            sizeProfile: request.sizeProfile,
+            requestedSeconds: request.requestedSeconds,
+            requestedFrames: request.requestedFrames,
+            actualFrameCount: result.frames,
+            fps: result.fps,
+            actualDurationSeconds: nil,
+            steps: request.steps,
+            denoiseReuse: request.denoiseReuse,
+            effectiveDenoiseReuse: request.effectiveDenoiseReuse,
+            ditLayers: request.ditLayers,
+            computeMode: request.computeMode,
+            speedMode: request.speedMode,
+            fastAttention: request.params.fastAttention,
+            ccvAttentionCalls: result.ccvAttentionCalls,
+            ccvAttentionDirectCalls: result.ccvAttentionDirectCalls,
+            seed: result.seed,
+            seedWasRandom: seedWasRandom,
+            loras: request.loras,
+            references: request.referenceNames,
+            deviceLine: request.deviceLine,
+            completedAt: completedAt,
+            generationSeconds: generationSeconds)
+        loadActualDuration(for: url)
     }
 
     // 指定秒数と実際のメディア長は一致するとは限らない（design spec 7章:
     // 「長さの不一致」）ため、生成結果のフレーム数/fpsからの概算ではなく、
     // 実際に書き出されたファイルをAVFoundationで読んで確認する。
-    private func loadActualDuration(for url: URL) {
+    func loadActualDuration(for url: URL) {
         Task {
             let asset = AVURLAsset(url: url)
             if let duration = try? await asset.load(.duration) {
@@ -736,6 +885,8 @@ final class GenerationViewModel: ObservableObject {
 
     func cancel() {
         guard isGenerating else { return }
+        // Stops the rest of a batch too.
+        batchState = nil
         isCancelling = true
         engine?.cancelCurrentGeneration()
     }

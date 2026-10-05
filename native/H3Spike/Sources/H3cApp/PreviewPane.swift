@@ -41,12 +41,21 @@ struct PreviewPane: View {
 
     private var statusLabel: String {
         if viewModel.isCancelling { return String(localized: "中止しています") }
-        if viewModel.isGenerating { return String(localized: "動画を生成しています") }
-        if viewModel.resultURL != nil {
-            if let seconds = viewModel.lastResult?.generationSeconds {
-                return String(localized: "できあがりました ・ 生成時間 \(formatElapsed(seconds))")
+        if viewModel.isGenerating {
+            if let batch = viewModel.batchProgress {
+                return String(localized: "動画を生成しています（\(batch.index)/\(batch.total)本目）")
             }
-            return String(localized: "できあがりました")
+            return String(localized: "動画を生成しています")
+        }
+        if let url = viewModel.resultURL {
+            var label = String(localized: "できあがりました")
+            if let seconds = viewModel.lastResult?.generationSeconds {
+                label = String(localized: "できあがりました ・ 生成時間 \(formatElapsed(seconds))")
+            }
+            if !viewModel.isTemporaryResult(url) {
+                label += summarySeparator + url.lastPathComponent
+            }
+            return label
         }
         if let message = viewModel.errorMessage { return message }
         return ""
@@ -60,6 +69,10 @@ struct PreviewPane: View {
                                  CGSize(width: CGFloat($0.sizeProfile.dimensions.width),
                                         height: CGFloat($0.sizeProfile.dimensions.height))
                              } ?? .zero)
+                // The player is created once per view; a new identity per
+                // video makes showing another saved video (or a new result)
+                // load it instead of keeping the previous one.
+                .id(url)
         } else if viewModel.isGenerating {
             generatingView
         } else {
@@ -146,6 +159,14 @@ private struct ResultActionsView: View {
                             showingSettings = false
                         }
                     }
+
+                if let url = viewModel.resultURL {
+                    Button("参照に使う") { viewModel.useVideoAsReference(url) }
+                        .help("この動画を参照動画としてパネルに追加します")
+                    if !viewModel.isTemporaryResult(url) {
+                        Button("Finderで表示") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+                    }
+                }
 
                 Spacer()
 

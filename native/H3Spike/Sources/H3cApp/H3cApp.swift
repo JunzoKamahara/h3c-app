@@ -16,6 +16,10 @@ struct H3cApp: App {
         // picks the right cache (default/Ref2VA/Turbo) per job and passes it
         // through H3GenerationParams.attentionCachePath instead, since which
         // one is correct depends on that job's mode.
+
+        // The primary model and the HTTP API exist from launch, independent
+        // of windows (see AppModels).
+        _ = AppModels.shared
     }
 
     var body: some Scene {
@@ -23,10 +27,13 @@ struct H3cApp: App {
         // window's title, the app/menu-bar name from Info.plist, the
         // bundle and executable filenames from package_app.sh. Only the
         // repository (and internal identifiers) are h3c-app.
-        WindowGroup("H3cApp") {
-            ContentView()
+        WindowGroup("H3cApp", id: mainWindowID) {
+            WindowRoot()
         }
-        .commands { AdvancedSettingsCommand() }
+        .commands {
+            AdvancedSettingsCommand()
+            ProjectCommands()
+        }
         // Design spec section 3: 1180x780 initial content area, 920x640
         // minimum. .automatic lets the window be resized by hand within
         // that range instead of being pinned to one exact size.
@@ -37,6 +44,43 @@ struct H3cApp: App {
         // development the window had drifted low enough to push its bottom
         // (Save As...) past the dock. Centering keeps it reachable.
         .defaultPosition(.center)
+    }
+}
+
+let mainWindowID = "main"
+
+/// The プロジェクト menu in the menu bar, acting on the frontmost window
+/// (each window has its own project). Same items as the toolbar menu;
+/// disabled while that window is generating. With no window open, creating
+/// or opening a project opens a new window for it.
+struct ProjectCommands: Commands {
+    @FocusedObject private var viewModel: GenerationViewModel?
+    @Environment(\.openWindow) private var openWindow
+    @ObservedObject private var store = ProjectStore.shared
+
+    var body: some Commands {
+        CommandMenu("プロジェクト") {
+            if let viewModel {
+                ProjectMenuItems(viewModel: viewModel, store: store)
+                    .disabled(viewModel.isGenerating)
+            } else {
+                Button("新規プロジェクト…") { openWindow(for: .new) }
+                    .keyboardShortcut("n", modifiers: [.command, .shift])
+                Button("プロジェクトを開く…") { openWindow(for: .choose) }
+                    .keyboardShortcut("o", modifiers: .command)
+                Menu("最近のプロジェクト") {
+                    ForEach(store.existingRecents.filter { !store.isOpen($0) }, id: \.self) { url in
+                        Button(url.lastPathComponent) { openWindow(for: .open(url)) }
+                    }
+                }
+                .disabled(store.existingRecents.allSatisfy { store.isOpen($0) })
+            }
+        }
+    }
+
+    private func openWindow(for action: PendingProjectAction) {
+        store.pendingAction = action
+        openWindow(id: mainWindowID)
     }
 }
 

@@ -1308,6 +1308,11 @@ Next, in order: (1) instrument `rows` and the scratch sizes/lifetimes
 the +4.6 GiB and free the scratch after the DiT; (3) re-measure with a
 quiesced machine and with the per-phase (load/DiT/VAE) sampling above.
 
+*Superseded (2026-10-04):* (1) and the post-DiT release were done in
+Stage ⑧; the +4.6 GiB of FP16 cast copies went away with the direct path
+in Stage ⑨, which is what the app's fast mode uses. What remains is ccv's
+own int8 scratch (~1.26 GiB) during the DiT, and (3), a quiesced re-measure.
+
 ### Stage ⑧ — ccv memory breakdown (measured) and post-DiT release
 
 `H3_CCV_MEMLOG=1` (diagnostic, in `h3_gpu_ccv_attention.mm`) prints the
@@ -1829,6 +1834,171 @@ from request to finished file, fast mode off / on:
 Videos, results.csv/json and a contact sheet:
 `~/Movies/H3cApp-grid/2026-10-02/` (not in the repo).
 
+**Same request and seed gave different videos - Fixed / verified under
+supported application conditions**
+(2026-10-04, `feature/projects`; 256×256, 1 s, 3 steps, int8 cache,
+standard, fast mode off). While testing projects, about 1 run in 7 of a
+fixed request and seed came out as a different video (~30 dB PSNR, a
+different sample). Engine params as logged were identical.
+
+Steps that did *not* explain it: H3Engine ended its event stream inside
+the generation's autorelease pool, so a batch could start the next run
+during the previous run's Metal teardown - fixed (the stream now ends
+after the pool drains) and every generation and cache build now runs on
+one process-wide serial queue, but a 50-run check afterwards still gave 6
+differing seeds (FL2VA singles: 10 runs, 10 different videos). The int8
+cache prefetch is correctly ordered (`h3_gpu_submit` waits, then the
+reader thread is joined before the slot is reused; partial reads loop).
+
+Located with `H3_DEBUG_HASHES=1` (new, off by default): FNV hashes of the
+text embedding, condition video/audio, vision outputs, initial noise,
+each Qwen layer's output, the denoised latents and every RGB chunk handed
+to the writer. Vision outputs, conditions and noise always matched; the
+Qwen text embedding did not, and per-op hashes in a layer (with a GPU
+wait after each op) showed `h3_gqa_causal_bf16` returning different output
+for byte-identical Q/K/V. Cause: a missing `threadgroup_barrier` - all
+threads read the max from `reductions[0]`, then reuse `reductions` for
+the sum with no barrier in between, so a fast thread 0 could overwrite
+the max with its partial sum before slower threads read it. Longer
+sequences (FL2VA/Ref2VA add vision tokens) and GPU load made it more
+likely. `h3_vae_encoder_group_norm_silu_f32` had the same mean/variance
+hazard; both now have the barrier, and a scan of every threadgroup array
+for "broadcast read, then write without a barrier" found no others.
+
+After the fix: FL2VA singles 10/10 identical (were 10/10 different); two
+hashed T2V batches of 20 seeds: denoised latents 20/20 and pre-encode RGB
+frames 20/20 identical. The MP4s still differed for 2 of 20 seeds at
+57-58 dB PSNR - the hardware H.264 encoder (AVFoundation/VideoToolbox)
+isn't bit-reproducible; the frames it was given were identical. So a
+project video can be regenerated exactly up to that invisible encoder
+difference. The earlier small cross-process difference with fast mode
+(61 dB, 0.3.0 release check) fits the same encoder explanation.
+
+Production-condition check after the fix (2026-10-04/05, the app via its
+API with `H3_DEBUG_HASHES=1`, int8 attention cache, 20 steps, reuse 2, seed
+7, five runs each in one process): C1 Ref2VA with one 512×512 reference
+image, 512×512, 5 s (421-456 s per run) and C2 T2V 512×512, 15 s
+(1959-2094 s per run). In both, every stage hash was identical across all
+five runs - text embedding, condition and vision outputs (C1), noise,
+denoised video/audio latents and the RGB frames handed to the encoder.
+(The RGB hash now also covers the monolithic decode path, which 512×512
+takes when no decoder is cached; it had only been in the streamed path.)
+Status: fixed. Under the app's supported conditions (512×512, Ref2VA 5 s
+and T2V 15 s, 20 steps, reuse 2, int8 cache), five generations of the same
+seed matched bit for bit up to the RGB frames handed to the encoder.
+768×768 is not an app resolution and is out of scope for this check.
+
+Rules going forward: reproducibility is judged on the RGB frames handed to
+the encoder (`h3: hash rgb video` under `H3_DEBUG_HASHES=1`, one hash over
+all frames in order, so streamed and monolithic decoding compare alike; it
+replaced the per-chunk `rgb chunk` lines on 2026-10-04; noise, text
+conditioning and denoised-latent hashes locate a divergence), never on the
+MP4's own hash, which is a reference value only. In Metal shaders, every
+`threadgroup` array must follow write → barrier → read → barrier →
+reuse/write; a "broadcast read" of one slot (`x = shared[0]`) followed by
+any thread writing that array again needs a barrier in between. GPU race
+detectors rarely catch this, so it is a review item for any kernel that
+uses threadgroup memory.
+
+Regression checks (added 2026-10-04, `65c8d90`):
+
+- `h3_determinism_tests`, part of `make test` (~4 s, no weights): the causal
+  GQA and the VAE-encoder GroupNorm kernels, 50 runs each on fixed random
+  input; every output must equal the first bit for bit. With the two
+  barriers removed it failed in 5 of 5 invocations (GQA 14-49 of 50 runs
+  differed, GroupNorm 10-49 of 50 at the test's shape; a 3x64x64 GroupNorm
+  shape only caught it ~1 in 150, hence 512 planes of 16x16).
+- `h3_repro_check` (needs the weights; ~4 min; `make h3_repro_check`):
+  Ref2VA with a generated 512x512 reference, 512x512, 25 frames (39
+  delivered), 8 steps, reuse 2, int8 cache as the app sets it, generation
+  cache off, 3 runs in one process. Each frame delivered through
+  `on_frame` (the same buffer the encoder gets) is hashed on its own; a
+  failed run, a missing frame or a short frame count also fails. Fixed
+  shaders: 3/3 identical. Barriers removed: 5/5 runs differed, from the
+  text-encoder hash on. Runs can override the request (`--run
+  'seed=8;cache=1'`), which item 7 uses for cache on/off comparisons.
+
+Still to do: the threadgroup review rule above for every new or changed
+kernel (the kernel test only covers the two kernels that were fixed).
+
+Ref2VA int8 cache fingerprint warning (2026-10-05). Every Ref2VA run had
+logged that `~/models/cache/dit_int8_v2_ref2va.cache`'s model fingerprint
+did not match - including the production check above, so it had to be
+ruled out as a cause or a confound. The fingerprint
+(`h3_weight_store_fingerprint`) hashes each shard's *path*, size and
+mtime, not its contents. The cache's kind was Ref2VA and its stored id
+`9893f6f715fe5803` equals the fingerprint of today's Ref2VA shards (same
+names, sizes, mtimes to the second) under their earlier location
+`~/Library/Application Support/h3c-analysis/MiniMax-H3/Ref2VA/transformer`;
+the model folder was moved to `~/models` on 2026-09-26 (the FL2VA cache,
+rebuilt 2026-09-28, already matched). Contents check: `build_attention_
+cache` from the model the app loads, streamed through a FIFO into `cmp`
+against the old file (no free space for a second 19.3 GB copy): only the 8
+id bytes (offsets 28-35) differed, so every quantized weight was identical
+and earlier Ref2VA results used the right weights. The cache was then
+rebuilt in place (payload SHA-256 `8b3d8945...29a5b1` before and after,
+id now `20c5298b23bef972` = the current fingerprint); the id was not
+patched by hand.
+
+Re-check after that, clean build of `de4d6a5` (shader SHA-256
+`3329182726ff...e234`, the app bundle's copy identical; H3cApp
+`26999aa176a9...8c86`; h3_repro_check `0e1bffd40a8c...998a`; ccv-mfa
+`6a611be` with the three `tools/ccv_eval` patches), with
+`H3_ATTENTION_CACHE_STRICT=1` and `H3_PROFILE=1`: no fingerprint warning;
+every run read 90.1 GiB from the int8 cache ("attention int8 stream");
+`h3_determinism_tests` 0 of 50 differing for both kernels;
+`h3_repro_check` 3/3 identical; generation cache off / conditioning miss /
+conditioning hit 3/3 identical. RGB video hash `fe287b88aebec03b`, the same
+as before the rebuild.
+
+Closed: a false positive of the path-based fingerprint, not a weight
+mismatch; the earlier reproducibility checks stand. Operating rule: normal
+use keeps the warning; regression and release validation run with
+`H3_ATTENTION_CACHE_STRICT=1`, so a stale cache stops the run.
+
+Follow-up (small, not scheduled): moving or copying the model folder
+invalidates every int8 cache's fingerprint although the weights are
+unchanged, and rebuilding means 19.3 GB per cache. Start by dropping the
+absolute path: identify by model kind + shard file name (relative) + size
++ mtime. Hashing the ~65 GB of shards on every load is not practical.
+*Done (2026-10-05):* `h3_weight_store_fingerprint()` now hashes each
+shard's file name (no directory), size and mtime, and tags bytes 8-15 of
+`model_id` with `"h3fp-v2"` so a new id can never equal an old one (old
+ids are zero past byte 8); the model kind stays the header's separate
+`model_kind` field, checked as before. New caches from
+`build_attention_cache` get the new id. `attention_cache_validate()`
+accepts either the new id or the legacy path-based one
+(`h3_weight_store_fingerprint_legacy()`, computed for the directory being
+loaded), so both existing caches validate without a rebuild; header format
+and version unchanged. STRICT still refuses anything else.
+Checks: `tests/test_h3.c` `test_weight_fingerprint` (two fake shards in a
+temp dir: the id survives renaming the parent folder while the legacy id
+changes; a changed mtime, size or shard name changes it); both real caches
+under `H3_ATTENTION_CACHE_STRICT=1 H3_PROFILE=1 h3_repro_check --runs 2`
+(Ref2VA and `--ref none`): no warning, 90.1 GiB int8 stream, runs
+identical; with sparse copies of the T2V cache header under a temporary
+`HOME` (no disk used): a flipped id byte is refused under STRICT (warning
+without it), and the new id computed independently in Python validates
+under STRICT. The Python re-implementation also reproduced the on-disk
+legacy id `28118324f70bb4ae` of `dit_int8_v2.cache`.
+Both caches were then rebuilt in place with `build_attention_cache` from
+`7900c86` (owner's go-ahead; not patched by hand). Payload SHA-256 (bytes
+after the 64-byte header) unchanged: FL2VA `a4f4697ef75b...dee2d84`,
+Ref2VA `8b3d8945b30d...3129a5b1`. id bytes on disk, before -> after: FL2VA
+`28118324f70bb4ae` -> `ee60019d04e52c70` + tag, Ref2VA `72f9be238b29c520`
+(= the `20c5298b23bef972` above, printed as a little-endian uint64) ->
+`f96a035117b504d3` + tag. Re-check with `H3_ATTENTION_CACHE_STRICT=1
+H3_PROFILE=1 h3_repro_check --runs 2`: no warning, 90.1 GiB int8 stream,
+runs identical, video hashes the same as before the rebuild (Ref2VA
+`d55429d37cc8455b`, T2V `05e986d2cf5a8673`). The legacy-id acceptance
+stays for caches elsewhere. A copy that does not preserve mtime (plain
+`cp` without `-p`) changes the id by design.
+
+Not done (from the review of this issue): pass the cache path and MLP
+streaming as generation parameters instead of process-wide `setenv`, and
+keep ccv's attention state per GPU context instead of one global
+`g_state` - both safe today only because generations are serialized.
+
 Earlier plan (kept for the record): (1) done — Makefile relinks `h3_generate_cli` when `libccv.a`
 changes; (2) done — replay above; (3) done for seed 7 — direct at 20
 steps on the short clip — detail, the foreground net, temporal flicker,
@@ -1837,27 +2007,9 @@ PSNR; (4) if clean, 15s at 20 steps (existing A / ccv_dense 20-step videos
 are valid references with the same model, sampler and settings). Before
 app adoption, direct must also be run from H3Spike/the Swift app: the
 earlier Swift-runtime/ccv problem is a separate, unexplained issue.
-
-Scratch sources, **not committed** (existed only under a session scratchpad
-directory — rewrite from this description if resuming):
-
-- `flash_attn.metal` / `flash_test.m` — v1, naive scalar kernel.
-- `flash_v2.metal` / `flash_test2.m` — v2, nax-based dense 3-pass.
-  `flash_v2.metal` also grew `h3_block_means_bf16` /
-  `h3_block_dot_means_bf16` / `h3_linear_bf16_nax_r128_masked` /
-  `h3_softmax_rows_masked_bf16` for QK^T sparsity, and the per-row_tile and
-  batched-across-row_tiles gather/transpose/matmul kernel pairs for the PV
-  compaction attempts.
-- `flash_test3.m` — v3, QK^T-only sparsity, properly batched (the
-  1.19–1.26x numbers).
-- `flash_test4.m` — PV compaction per-row_tile, invalid per-head-sync
-  comparison, superseded.
-- `flash_test5.m` — the same per-row_tile PV compaction properly batched —
-  the valid "PV sparsity loses badly" measurement, 0.66x.
-- `flash_test6.m` — PV compaction batched across row_tiles too — the
-  current, valid "PV sparsity still loses, less badly" measurement, 0.88x
-  (dense 48.6ms / QK-only 40.9ms (1.19x) / QK+PV 55.4ms (0.88x), `kept_max`
-  padding waste 1.41x).
+*All done (2026-10-04):* the direct path shipped as the app's opt-in fast
+mode and runs from the Swift app (see "Opt-in fast mode in the app" and the
+measured grid above).
 
 Scratch sources, **not committed** (existed only under a session scratchpad
 directory — rewrite from this description if resuming):
@@ -1934,6 +2086,91 @@ other item here. Needs a size-aware eligibility/eviction policy, not
 as the existing "resident" compute mode). Not started. Small-to-medium
 effort — the reuse mechanism itself already exists and works; the work is
 deciding the eviction policy.
+
+**Status: partly adopted 2026-10-04 - conditioning only.** `h3_cache_set_
+targets(ctx, H3_CACHE_*)` now enables the three retained parts separately
+(`h3_cache_set_enabled(ctx, 1)` = all three, as before); H3cApp's engine
+turns on `H3_CACHE_CONDITIONING` only. Each part keeps one entry and is
+dropped when the next request's key differs.
+
+Measured with `h3_repro_check` (M5, 24 GB, int8 cache, reuse 2, seed 7,
+one process; "held" is the process footprint between generations, "peak"
+the sampled footprint during one):
+
+| request | cache | first run | seed-only rerun | held | peak |
+|---|---|---|---|---|---|
+| Ref2VA 512, 25 fr, 8 st | off | 78-80 s | 78-80 s | ~0.5 GiB | 6.0-7.4 GiB |
+| | conditioning | 78 s | 63.5 s | +2.9 MB | 6.6 GiB |
+| | + decoder | 78 s | 60.8 s | ~3.2 GiB | 4.6 GiB |
+| | + DiT (all) | 78-81 s | 52-54 s | ~4.7 GiB | 5.0 GiB; 8.0-9.1 GiB on a miss with the others held |
+| T2V 512, 25 fr, 8 st | conditioning | 66 s | 58 s | +92 KB | 6.6 GiB (off: 6.1) |
+| Ref2VA 512, 5 s, 20 st | off | 400 s | 400-402 s | - | 6.0-6.5 GiB |
+| | conditioning | 400 s | 388 s | +2.9 MB | 6.6 GiB |
+| | all | 400 s (peak 8.9) | 376 s | ~5.8 GiB | 6.3 GiB; 8.6 GiB on a prompt change |
+| T2V 512, 5 s, 20 st | all | 372 s (peak 9.1, off 6.2) | 353 s | ~5.7 GiB | 6.2 GiB |
+
+What each part saves on a hit: conditioning skips tokenizer, reference
+VAE encoder, Qwen vision and the text encoder (Ref2VA ~14.5 s, T2V ~8 s);
+the DiT skips the AdaLN precompute and core load (~8.5 s); the decoder
+skips its load (~3 s). A prompt change misses conditioning and the DiT
+(the DiT key contains the prompt), so only the decoder hits there (~3-4 s).
+Footprint peaks vary by about ±0.7 GiB between identical runs; the
+held/peak increases above for DiT and decoder are larger than that.
+
+Correctness (every comparison bit-identical on the RGB handed to the
+encoder): off vs on (on switches decoding from monolithic to streamed);
+seed 7 -> 8 -> 7 with every part hit; prompt A -> B -> A; and after each of
+fast mode on, denoise reuse 1, steps 6, 45 layers, T2V, 256x256 the cached
+result equalled a fresh cache-off run, and returning to the first request
+reproduced it. Fast mode and denoise reuse are not in the DiT key, but they
+are applied per run to a reused DiT, so that is correct.
+
+Not adopted: the DiT and decoder. They add ~13 s on a 400 s generation
+but hold ~5.8 GiB between generations and raise the first/prompt-change
+peak by ~2.5-2.9 GiB, which on this 24 GB Mac is the difference between
+running clean and swapping on longer clips. Before enabling the DiT in
+any form its key must also cover the int8 attention-cache file and
+`H3_INT8_STREAM_MLP` (read from the environment at preparation, so the
+app's attentionCache <-> resident switch would reuse a stale DiT today),
+and LoRA file contents (only path and strength are in the key now). Not
+measured: 15 s clips with the cache on, and reference video/audio inputs.
+
+In the packaged app (T2V, 512x512, 1 s, 8 steps, a 2-item batch with seeds
+7 and 8 into a project): item 1 logged a conditioning miss and took 66.5 s,
+item 2 a hit and 57.8 s - the same as the CLI measurement above. Batches
+(seeds count up from a fixed seed) and seed-only reruns get this for free.
+
+**Token refiner output and AdaLN schedule, for batches (2026-10-05).** Two
+more targets that keep only seed-independent preparation, not the DiT:
+`H3_CACHE_REFINED_TEXT` (the token refiner's BF16 output plus a copy of
+its input embedding: 5.5 MiB for the Ref2VA test prompt, 0.2 MiB T2V; key:
+model, exact input embedding, row count, each LoRA's path/strength/file
+size+mtime - LoRA rounding is seeded per block, not by the generation
+seed) and `H3_CACHE_ADALN` (the unpruned AdaLN schedule as host BF16: 111 /
+148 / 370 MiB at 6 / 8 / 20 steps; key: model, exact sigma schedule, which
+conditions are present - not the prompt, seed or LoRA, since `adaln_proj`
+is not LoRA-patched). Both are uploaded into each new DiT's own GPU
+context; layer pruning runs on the uploaded copy. Noise, condition
+augmentation and all step state are still made per run. H3cApp keeps the
+refiner output always (with the conditioning) and the AdaLN schedule only
+from the first to the last item of a batch.
+
+Correctness (`h3_repro_check`, now also comparing the decoded audio PCM
+via `h3: hash audio waveform`, `H3_ATTENTION_CACHE_STRICT=1`): cache off vs
+on, seed 7 -> 8 -> 7, and after a prompt change (refiner recomputed, AdaLN
+reused), a step change (AdaLN recomputed, refiner reused), 45 layers
+(pruning the reused schedule), T2V and back - every cached result equal to
+a fresh cache-off run in RGB and audio.
+
+Time: the two phases cost 0.7 s (refine text) + 7.8-8.4 s (precompute
+AdaLN, reading ~25 GB of `adaln_proj` weights) per item; on a hit both drop
+to ~0.1 s. Short Ref2VA (512, 25 frames, 8 steps): batch item 63.5 s with
+conditioning only -> 55.7-56.6 s. Ref2VA 512, 5 s, 20 steps, one process:
+conditioning-only item 391.8 s vs all hit 390.7 s - the 8.5 s saved in
+preparation was hidden by the denoise loop drifting upward over the session
+(341 -> 343 -> 346 -> 351 -> 348 s, the last with the cache off), so at
+this length the gain is ~2% and within run-to-run noise. In the app (same
+request, `count` 3): 404.2 / 384.2 / 385.5 s per item.
 
 ---
 

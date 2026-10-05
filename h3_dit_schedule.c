@@ -348,6 +348,126 @@ void h3_dit_schedule_free(h3_dit_schedule *schedule) {
     free(schedule);
 }
 
+struct h3_dit_schedule_host {
+    int steps;
+    uint32_t time_rows;
+    uint32_t *video_rows;
+    uint32_t *audio_rows;
+    uint32_t *visual_condition_rows;
+    uint32_t *audio_condition_rows;
+    uint16_t *blocks[H3_DIT_BLOCKS];
+    uint16_t *final;
+};
+
+void h3_dit_schedule_host_free(h3_dit_schedule_host *host) {
+    if (!host) return;
+    for (unsigned block = 0; block < H3_DIT_BLOCKS; block++)
+        free(host->blocks[block]);
+    free(host->final);
+    free(host->video_rows);
+    free(host->audio_rows);
+    free(host->visual_condition_rows);
+    free(host->audio_condition_rows);
+    free(host);
+}
+
+static uint32_t *copy_rows(const uint32_t *rows, int steps) {
+    if (!rows) return NULL;
+    uint32_t *copy = malloc((size_t)steps * sizeof(*copy));
+    if (copy) memcpy(copy, rows, (size_t)steps * sizeof(*copy));
+    return copy;
+}
+
+h3_dit_schedule_host *h3_dit_schedule_export(const h3_dit_schedule *schedule) {
+    if (!schedule) return NULL;
+    h3_dit_schedule_host *host = calloc(1, sizeof(*host));
+    if (!host) return NULL;
+    host->steps = schedule->steps;
+    host->time_rows = schedule->time_rows;
+    host->video_rows = copy_rows(schedule->video_rows, schedule->steps);
+    host->audio_rows = copy_rows(schedule->audio_rows, schedule->steps);
+    host->visual_condition_rows =
+        copy_rows(schedule->visual_condition_rows, schedule->steps);
+    host->audio_condition_rows =
+        copy_rows(schedule->audio_condition_rows, schedule->steps);
+    int ok = host->video_rows && host->audio_rows &&
+             (!schedule->visual_condition_rows || host->visual_condition_rows) &&
+             (!schedule->audio_condition_rows || host->audio_condition_rows);
+    size_t block_count = (size_t)schedule->time_rows * BLOCK_OUTPUT;
+    for (unsigned block = 0; ok && block < H3_DIT_BLOCKS; block++) {
+        host->blocks[block] = malloc(block_count * sizeof(uint16_t));
+        ok = schedule->blocks[block] && host->blocks[block] &&
+             h3_gpu_tensor_read_bf16(schedule->blocks[block],
+                                     host->blocks[block], block_count);
+    }
+    size_t final_count = (size_t)schedule->time_rows * FINAL_OUTPUT;
+    if (ok) {
+        host->final = malloc(final_count * sizeof(uint16_t));
+        ok = host->final &&
+             h3_gpu_tensor_read_bf16(schedule->final, host->final, final_count);
+    }
+    if (!ok) {
+        h3_dit_schedule_host_free(host);
+        return NULL;
+    }
+    return host;
+}
+
+h3_dit_schedule *h3_dit_schedule_import(const h3_dit_schedule_host *host,
+                                        h3_gpu *gpu, char *error,
+                                        size_t error_size) {
+    if (error && error_size) error[0] = '\0';
+    if (!host || !gpu) {
+        fail(error, error_size, "invalid AdaLN schedule import arguments");
+        return NULL;
+    }
+    h3_dit_schedule *schedule = calloc(1, sizeof(*schedule));
+    if (!schedule) {
+        fail(error, error_size, "out of memory creating AdaLN schedule");
+        return NULL;
+    }
+    schedule->gpu = gpu;
+    schedule->steps = host->steps;
+    schedule->time_rows = host->time_rows;
+    schedule->video_rows = copy_rows(host->video_rows, host->steps);
+    schedule->audio_rows = copy_rows(host->audio_rows, host->steps);
+    schedule->visual_condition_rows =
+        copy_rows(host->visual_condition_rows, host->steps);
+    schedule->audio_condition_rows =
+        copy_rows(host->audio_condition_rows, host->steps);
+    int ok = schedule->video_rows && schedule->audio_rows &&
+             (!host->visual_condition_rows || schedule->visual_condition_rows) &&
+             (!host->audio_condition_rows || schedule->audio_condition_rows);
+    size_t block_count = (size_t)host->time_rows * BLOCK_OUTPUT;
+    for (unsigned block = 0; ok && block < H3_DIT_BLOCKS; block++) {
+        schedule->blocks[block] =
+            h3_gpu_tensor_from_bf16(gpu, host->blocks[block], block_count);
+        ok = schedule->blocks[block] != NULL;
+    }
+    if (ok) {
+        schedule->final = h3_gpu_tensor_from_bf16(
+            gpu, host->final, (size_t)host->time_rows * FINAL_OUTPUT);
+        ok = schedule->final != NULL;
+    }
+    if (!ok) {
+        fail(error, error_size, "cannot restore AdaLN schedule: %s",
+             h3_gpu_error(gpu));
+        h3_dit_schedule_free(schedule);
+        return NULL;
+    }
+    return schedule;
+}
+
+size_t h3_dit_schedule_host_bytes(const h3_dit_schedule_host *host) {
+    if (!host) return 0;
+    size_t rows = (size_t)host->time_rows;
+    size_t bytes = (rows * BLOCK_OUTPUT * H3_DIT_BLOCKS + rows * FINAL_OUTPUT) *
+                   sizeof(uint16_t);
+    size_t maps = 2 + (host->visual_condition_rows != NULL) +
+                  (host->audio_condition_rows != NULL);
+    return bytes + maps * (size_t)host->steps * sizeof(uint32_t);
+}
+
 int h3_dit_schedule_steps(const h3_dit_schedule *schedule) {
     return schedule ? schedule->steps : 0;
 }

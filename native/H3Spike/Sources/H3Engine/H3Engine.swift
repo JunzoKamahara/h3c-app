@@ -301,6 +301,15 @@ private let h3FrameTrampoline: h3_frame_callback = { framePtr, opaque in
 }
 
 public final class H3Engine: @unchecked Sendable {
+    /// Every generation and cache build in the process runs on this one
+    /// serial queue, so two can never overlap - not from a batch starting
+    /// its next video, not from two windows (each has its own H3Engine).
+    /// The engine's process-wide state (H3_* environment variables, the
+    /// ccv attention backend's single global state, GPU memory) assumes one
+    /// generation at a time; UI-level "is generating" checks don't cover
+    /// other entry points.
+    private static let workQueue = DispatchQueue(label: "h3.engine.work", qos: .userInitiated)
+
     private let ctx: OpaquePointer
     private var currentCancelFlag: CancelFlag?
     private var currentCacheBuildCancelFlag: CancelFlag?
@@ -310,6 +319,30 @@ public final class H3Engine: @unchecked Sendable {
             throw H3EngineError.loadFailed("h3_load_dir returned NULL")
         }
         self.ctx = ctx
+        h3_cache_set_targets(ctx, Self.cacheTargets(batch: false))
+    }
+
+    /// What the engine keeps between generations. Always the prompt/
+    /// reference conditioning and the token refiner's output (a few MB): a
+    /// seed-only rerun or the next batch item skips the text encoder, Qwen
+    /// vision, the reference VAE encoder and the refiner. During a batch
+    /// also the AdaLN schedule (~150-400 MB, ~8 s per item). The prepared
+    /// DiT and VAE decoder would save a little more but hold ~5.8 GiB
+    /// between runs and raise the peak by ~2.9 GiB (SPEEDUP_ROADMAP.md
+    /// item 7), too much for a 24 GB Mac.
+    private static func cacheTargets(batch: Bool) -> UInt32 {
+        var targets = UInt32(H3_CACHE_CONDITIONING) | UInt32(H3_CACHE_REFINED_TEXT)
+        if batch { targets |= UInt32(H3_CACHE_ADALN) }
+        return targets
+    }
+
+    /// Call with true before the first video of a batch and false after the
+    /// last (or a cancel). Queued behind any generation in flight.
+    public func setBatchReuse(_ batch: Bool) {
+        let targets = Self.cacheTargets(batch: batch)
+        // Holds the engine (and so its context) until the block has run -
+        // a job ahead of it can outlast the window that owns the engine.
+        Self.workQueue.async { [self] in h3_cache_set_targets(self.ctx, targets) }
     }
 
     deinit {
@@ -338,15 +371,17 @@ public final class H3Engine: @unchecked Sendable {
 
     public func generate(prompt: String, outputPath: String,
                           params: H3GenerationParams) -> AsyncThrowingStream<H3GenerationEvent, Error> {
-        let ctx = self.ctx
         return AsyncThrowingStream { continuation in
             let cancelFlag = CancelFlag()
             self.currentCancelFlag = cancelFlag
             let bridge = GenerationBridge(continuation: continuation, cancelFlag: cancelFlag)
             let bridgeHandle = Unmanaged.passRetained(bridge)
 
-            DispatchQueue.global(qos: .userInitiated).async {
+            Self.workQueue.async { [self] in
                 defer { bridgeHandle.release() }
+                // Read through self, so the engine - and the context h3_free
+                // releases in deinit - lives until this job has finished.
+                let ctx = self.ctx
 
                 // A GUI app that's occluded or in the background is eligible
                 // for App Nap, which lowers CPU/disk I/O priority - measured
@@ -380,6 +415,11 @@ public final class H3Engine: @unchecked Sendable {
                 if getenv("H3_QWEN_PREFETCH_DEPTH") == nil {
                     setenv("H3_QWEN_PREFETCH_DEPTH", "1", 1)
                 }
+
+                // The stream ends only after the pool below has drained, so a
+                // caller that starts the next generation as soon as this one
+                // ends (a batch) never overlaps its teardown.
+                var endStream: () -> Void = { continuation.finish() }
 
                 // One pool per generation, inside the background closure: a
                 // system global queue sets up no per-item autorelease pool
@@ -452,11 +492,11 @@ public final class H3Engine: @unchecked Sendable {
                           params.fastAttention ? "yes" : "no", path,
                           genResult.ccvAttentionCalls, genResult.ccvAttentionDirectCalls)
                     continuation.yield(.finished(genResult))
-                    continuation.finish()
                 } else {
                     let message = h3_last_error(ctx).map { String(cString: $0) } ?? "unknown error"
-                    continuation.finish(throwing: cancelFlag.isCancelled
-                        ? H3EngineError.cancelled : H3EngineError.generationFailed(message))
+                    let error = cancelFlag.isCancelled
+                        ? H3EngineError.cancelled : H3EngineError.generationFailed(message)
+                    endStream = { continuation.finish(throwing: error) }
                 }
                 }
                 // After the pool has drained: what is still allocated on the
@@ -465,6 +505,7 @@ public final class H3Engine: @unchecked Sendable {
                     NSLog("h3: device allocated after generation: %.3f GiB",
                           Double(device.currentAllocatedSize) / 1_073_741_824)
                 }
+                endStream()
             }
         }
     }
@@ -487,7 +528,7 @@ public final class H3Engine: @unchecked Sendable {
             let bridge = AttentionCacheBridge(continuation: continuation, cancelFlag: cancelFlag)
             let bridgeHandle = Unmanaged.passRetained(bridge)
 
-            DispatchQueue.global(qos: .userInitiated).async {
+            Self.workQueue.async {
                 defer { bridgeHandle.release() }
                 let activity = ProcessInfo.processInfo.beginActivity(
                     options: [.userInitiated, .idleSystemSleepDisabled],

@@ -211,6 +211,8 @@ struct ResolvedResult {
     let seed: UInt64
     let seedWasRandom: Bool
     let loras: [ResolvedLoRA]
+    /// File names of the images/videos/audio the mode used.
+    let references: [String]
     let deviceLine: String
     let completedAt: Date
     // Wall-clock time from pressing generate to the finished file.
@@ -263,6 +265,9 @@ struct ResolvedResult {
             lines.append(lora.strength == 1
                 ? String(localized: "追加モデル（LoRA）: \(file)")
                 : String(localized: "追加モデル（LoRA）: \(file)（強さ \(strength)）"))
+        }
+        if !references.isEmpty {
+            lines.append(String(localized: "参照: \(references.joined(separator: ", "))"))
         }
         lines.append(String(localized: "動作環境: \(deviceLine)"))
         return lines.joined(separator: "\n")

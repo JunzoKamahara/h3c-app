@@ -16,22 +16,45 @@ import H3Engine
 /// current result until the next generate() call deletes it.
 let h3APIPort: UInt16 = 8420
 
-extension GenerationViewModel {
-    func startAPIServer() {
-        let server = HTTPServer(port: h3APIPort) { [weak self] request in
-            guard let self else { return .error(500, "app is shutting down") }
-            return await self.handleAPIRequest(request)
+/// The app's one API server, started at launch and kept until quit. It
+/// always talks to the primary model (AppModels), which outlives its window,
+/// so the API keeps working with every window closed while the app runs.
+@MainActor
+final class APIHost {
+    static let shared = APIHost()
+
+    private var server: HTTPServer?
+    private var startError: String?
+
+    func start() {
+        guard server == nil, startError == nil else { return }
+        let server = HTTPServer(port: h3APIPort) { request in
+            await AppModels.shared.primary.handleAPIRequest(request)
         }
         do {
             try server.start()
-            apiServer = server
-            apiServerStatus = "http://127.0.0.1:\(h3APIPort)"
+            self.server = server
         } catch {
-            let detail = String(describing: error)
-            apiServerStatus = String(localized: "起動できませんでした（\(detail)）")
+            startError = String(describing: error)
         }
     }
 
+    func stop() {
+        server?.stop()
+        server = nil
+    }
+
+    /// What 「APIサーバー」 says in `model`'s window.
+    func status(for model: GenerationViewModel) -> String {
+        if let startError { return String(localized: "起動できませんでした（\(startError)）") }
+        guard server != nil else { return String(localized: "起動しています…") }
+        let address = "http://127.0.0.1:\(h3APIPort)"
+        return model === AppModels.shared.primary
+            ? address : String(localized: "\(address)（別のウィンドウで受け付け中）")
+    }
+}
+
+extension GenerationViewModel {
     func handleAPIRequest(_ request: HTTPRequest) async -> HTTPResponse {
         switch (request.method, request.path) {
         case ("GET", "/api/status"):
@@ -47,6 +70,12 @@ extension GenerationViewModel {
             return .json(200, library.models.map {
                 ["id": $0.id.uuidString, "name": $0.name, "path": $0.path, "active": $0.id == library.activeModelID]
             })
+        case ("GET", "/api/project"):
+            return projectResponse()
+        case ("POST", "/api/project/new"), ("POST", "/api/project/open"), ("POST", "/api/project/close"),
+             ("POST", "/api/project/restore"), ("POST", "/api/project/use-as-reference"),
+             ("POST", "/api/project/delete-video"):
+            return handleProjectRequest(request)
         case ("GET", "/api/loras"):
             return .json(200, library.loras.map {
                 ["id": $0.id.uuidString, "name": $0.name, "path": $0.path,
@@ -79,7 +108,66 @@ extension GenerationViewModel {
         if let estimatedRemainingSeconds { body["estimated_remaining_seconds"] = estimatedRemainingSeconds }
         if let progressBarFraction { body["progress_fraction"] = progressBarFraction }
         if let errorMessage { body["error_message"] = errorMessage }
+        if let project { body["project"] = project.name }
+        if let batchProgress { body["batch"] = ["index": batchProgress.index, "total": batchProgress.total] }
         return .json(200, body)
+    }
+
+    // MARK: Projects (see Projects.swift)
+
+    private func projectResponse() -> HTTPResponse {
+        guard let project else { return .json(200, ["open": false]) }
+        let formatter = ISO8601DateFormatter()
+        return .json(200, [
+            "open": true,
+            "name": project.name,
+            "path": project.url.path,
+            "batch_count": batchCount,
+            "videos": projectVideos.map { video -> [String: Any] in
+                var item: [String: Any] = ["file": video.url.lastPathComponent, "path": video.url.path]
+                if let record = video.record {
+                    item["seed"] = record.seed
+                    item["completed_at"] = formatter.string(from: record.completedAt)
+                    item["generation_seconds"] = record.generationSeconds
+                }
+                return item
+            },
+        ])
+    }
+
+    private func handleProjectRequest(_ request: HTTPRequest) -> HTTPResponse {
+        let json = ((try? JSONSerialization.jsonObject(with: request.body)) as? [String: Any]) ?? [:]
+        guard !isGenerating else { return .error(409, "a generation is running") }
+        projectMessage = nil
+        func video() -> ProjectVideo? {
+            guard let name = json["video"] as? String else { return nil }
+            return projectVideos.first { $0.url.lastPathComponent == name }
+        }
+        switch request.path {
+        case "/api/project/new":
+            guard let name = json["name"] as? String else { return .error(400, "\"name\" is required") }
+            let parent = (json["directory"] as? String).map { URL(fileURLWithPath: $0, isDirectory: true) }
+                ?? ProjectStore.defaultParentDirectory
+            createProject(name: name, parent: parent)
+        case "/api/project/open":
+            guard let path = json["path"] as? String else { return .error(400, "\"path\" is required") }
+            openProject(at: URL(fileURLWithPath: path, isDirectory: true))
+        case "/api/project/close":
+            closeProject()
+            return .json(200, ["ok": true])
+        default:
+            guard project != nil else { return .error(400, "no project is open") }
+            guard let video = video() else { return .error(400, "\"video\" must name a file listed by GET /api/project") }
+            switch request.path {
+            case "/api/project/restore": restoreProjectVideo(video)
+            case "/api/project/use-as-reference": useVideoAsReference(video.url)
+            default: deleteProjectVideo(video)
+            }
+        }
+        if let projectMessage, project == nil || request.path != "/api/project/restore" {
+            return .error(400, projectMessage)
+        }
+        return projectResponse()
     }
 
     private func resultVideoResponse() -> HTTPResponse {
@@ -90,6 +178,36 @@ extension GenerationViewModel {
     private func handleGenerateRequest(_ request: HTTPRequest) -> HTTPResponse {
         guard let json = (try? JSONSerialization.jsonObject(with: request.body)) as? [String: Any] else {
             return .error(400, "expected a JSON object body")
+        }
+        // "count": videos made one after another with different seeds
+        // (needs an open project, where they are kept).
+        var count = 1
+        if let value = json["count"] {
+            guard let value = jsonInteger(value), batchCountRange.contains(value) else {
+                return .error(400, "\"count\" must be an integer from \(batchCountRange.lowerBound) to \(batchCountRange.upperBound)")
+            }
+            guard value == 1 || project != nil else {
+                return .error(400, "\"count\" above 1 needs an open project (POST /api/project/new or /api/project/open)")
+            }
+            count = value
+        }
+        // "from_form": true generates from the form as it is (e.g. a
+        // project's saved form) instead of replacing it from this body.
+        if let value = json["from_form"] {
+            guard let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else {
+                return .error(400, "\"from_form\" must be true or false")
+            }
+            if number.boolValue {
+                let extra = Set(json.keys).subtracting(["from_form", "count"])
+                guard extra.isEmpty else {
+                    return .error(400, "\"from_form\" can't be combined with \(extra.sorted().joined(separator: ", "))")
+                }
+                guard canGenerate else {
+                    return .error(409, validationMessage ?? "a generation is already running")
+                }
+                generate(count: count)
+                return .json(202, ["ok": true])
+            }
         }
         guard let requestedPrompt = (json["prompt"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
               !requestedPrompt.isEmpty else {
@@ -262,7 +380,7 @@ extension GenerationViewModel {
         guard canGenerate else {
             return .error(409, validationMessage ?? "a generation is already running")
         }
-        generate()
+        generate(count: count)
         return .json(202, ["ok": true])
     }
 }
