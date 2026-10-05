@@ -2140,6 +2140,38 @@ In the packaged app (T2V, 512x512, 1 s, 8 steps, a 2-item batch with seeds
 item 2 a hit and 57.8 s - the same as the CLI measurement above. Batches
 (seeds count up from a fixed seed) and seed-only reruns get this for free.
 
+**Token refiner output and AdaLN schedule, for batches (2026-10-05).** Two
+more targets that keep only seed-independent preparation, not the DiT:
+`H3_CACHE_REFINED_TEXT` (the token refiner's BF16 output plus a copy of
+its input embedding: 5.5 MiB for the Ref2VA test prompt, 0.2 MiB T2V; key:
+model, exact input embedding, row count, each LoRA's path/strength/file
+size+mtime - LoRA rounding is seeded per block, not by the generation
+seed) and `H3_CACHE_ADALN` (the unpruned AdaLN schedule as host BF16: 111 /
+148 / 370 MiB at 6 / 8 / 20 steps; key: model, exact sigma schedule, which
+conditions are present - not the prompt, seed or LoRA, since `adaln_proj`
+is not LoRA-patched). Both are uploaded into each new DiT's own GPU
+context; layer pruning runs on the uploaded copy. Noise, condition
+augmentation and all step state are still made per run. H3cApp keeps the
+refiner output always (with the conditioning) and the AdaLN schedule only
+from the first to the last item of a batch.
+
+Correctness (`h3_repro_check`, now also comparing the decoded audio PCM
+via `h3: hash audio waveform`, `H3_ATTENTION_CACHE_STRICT=1`): cache off vs
+on, seed 7 -> 8 -> 7, and after a prompt change (refiner recomputed, AdaLN
+reused), a step change (AdaLN recomputed, refiner reused), 45 layers
+(pruning the reused schedule), T2V and back - every cached result equal to
+a fresh cache-off run in RGB and audio.
+
+Time: the two phases cost 0.7 s (refine text) + 7.8-8.4 s (precompute
+AdaLN, reading ~25 GB of `adaln_proj` weights) per item; on a hit both drop
+to ~0.1 s. Short Ref2VA (512, 25 frames, 8 steps): batch item 63.5 s with
+conditioning only -> 55.7-56.6 s. Ref2VA 512, 5 s, 20 steps, one process:
+conditioning-only item 391.8 s vs all hit 390.7 s - the 8.5 s saved in
+preparation was hidden by the denoise loop drifting upward over the session
+(341 -> 343 -> 346 -> 351 -> 348 s, the last with the cache off), so at
+this length the gain is ~2% and within run-to-run noise. In the app (same
+request, `count` 3): 404.2 / 384.2 / 385.5 s per item.
+
 ---
 
 ## Lower priority, noted but not planned
