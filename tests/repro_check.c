@@ -3,6 +3,8 @@
  * frames. Each delivered frame is hashed on its own, so the result does not
  * depend on whether the decoder ran streamed (chunked) or monolithic. A
  * failed generation, a missing frame or a frame-count shortfall also fails.
+ * The decoded audio (PCM handed to the encoder) must match too; its hash
+ * comes from H3_DEBUG_HASHES, which this tool turns on.
  *
  * The default request is a short Ref2VA clip with one reference image: its
  * long Qwen sequence is what exposed the GQA threadgroup race. The
@@ -16,8 +18,8 @@
  * and the peak process footprint (sampled), for evaluating the cache.
  *
  * Build: make h3_repro_check. Not part of `make test` (needs the released
- * weights and takes minutes). Set H3_DEBUG_HASHES=1 to also log the stage
- * hashes that locate where two runs diverge. */
+ * weights and takes minutes). The stage hashes H3_DEBUG_HASHES logs (also
+ * on stderr) locate where two runs diverge. */
 #include "h3.h"
 
 #include <CoreFoundation/CoreFoundation.h>
@@ -63,6 +65,8 @@ typedef struct {
     uint64_t frame_hash[MAX_FRAMES];
     int frame_seen[MAX_FRAMES];
     uint64_t video_hash;
+    uint64_t audio_hash; /* the decoded PCM, from H3_DEBUG_HASHES */
+    int audio_seen;
     double seconds;
     double peak_gib;
     double start_gib;
@@ -113,6 +117,63 @@ static uint64_t fnv1a(uint64_t hash, const void *data, size_t bytes) {
 }
 
 static run_result *current;
+
+/* stderr is read back through a pipe (and passed on unchanged) to pick up
+ * "h3: hash audio waveform": the audio is compared as the PCM handed to the
+ * encoder, since the AAC track itself is not bit-exact. */
+static int stderr_original = -1;
+static pthread_mutex_t stderr_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t stderr_cond = PTHREAD_COND_INITIALIZER;
+static unsigned long stderr_marks_seen;
+
+static void *stderr_reader(void *opaque) {
+    FILE *in = fdopen((int)(intptr_t)opaque, "r");
+    char line[8192];
+    while (in && fgets(line, sizeof(line), in)) {
+        unsigned long mark;
+        if (sscanf(line, "h3_repro_mark %lu", &mark) == 1) {
+            pthread_mutex_lock(&stderr_lock);
+            stderr_marks_seen = mark;
+            pthread_cond_broadcast(&stderr_cond);
+            pthread_mutex_unlock(&stderr_lock);
+            continue;
+        }
+        if (write(stderr_original, line, strlen(line)) < 0) {}
+        const char *hash = strstr(line, "h3: hash audio waveform ");
+        if (hash) {
+            pthread_mutex_lock(&stderr_lock);
+            if (current) {
+                current->audio_hash = strtoull(hash + 24, NULL, 16);
+                current->audio_seen = 1;
+            }
+            pthread_mutex_unlock(&stderr_lock);
+        }
+    }
+    return NULL;
+}
+
+static void start_stderr_reader(void) {
+    int fds[2];
+    if (pipe(fds) != 0) return;
+    stderr_original = dup(STDERR_FILENO);
+    dup2(fds[1], STDERR_FILENO);
+    close(fds[1]);
+    setvbuf(stderr, NULL, _IOLBF, 0);
+    pthread_t thread;
+    pthread_create(&thread, NULL, stderr_reader, (void *)(intptr_t)fds[0]);
+    pthread_detach(thread);
+}
+
+/* Waits until everything written to stderr so far has been read. */
+static void sync_stderr(void) {
+    static unsigned long mark;
+    if (stderr_original < 0) return;
+    fprintf(stderr, "h3_repro_mark %lu\n", ++mark);
+    fflush(stderr);
+    pthread_mutex_lock(&stderr_lock);
+    while (stderr_marks_seen < mark) pthread_cond_wait(&stderr_cond, &stderr_lock);
+    pthread_mutex_unlock(&stderr_lock);
+}
 static double run_start;
 static double phase_start;
 
@@ -210,7 +271,8 @@ static void usage(void) {
         "  --run adds one run with the base request overridden by the given\n"
         "  keys (prompt, ref, size, frames, steps, reuse, layers, core_reuse,\n"
         "  fast, seed, cache); without --run the base request runs N times.\n"
-        "  cache: 0, 1 (all) or a comma list of conditioning, dit, decoder.\n"
+        "  cache: 0, 1 (all) or a comma list of conditioning, dit, decoder,\n"
+        "  refined, adaln.\n"
         "  Defaults: Ref2VA with a generated 512x512 reference image, 512x512,\n"
         "  25 frames, 8 steps, reuse 2, seed 7, 3 runs, generation cache off.\n");
     exit(2);
@@ -228,6 +290,8 @@ static int parse_cache(const char *value, unsigned *targets) {
         if (!strcmp(item, "conditioning")) result |= H3_CACHE_CONDITIONING;
         else if (!strcmp(item, "dit")) result |= H3_CACHE_DIT;
         else if (!strcmp(item, "decoder")) result |= H3_CACHE_DECODER;
+        else if (!strcmp(item, "refined")) result |= H3_CACHE_REFINED_TEXT;
+        else if (!strcmp(item, "adaln")) result |= H3_CACHE_ADALN;
         else { free(copy); return 0; }
     }
     free(copy);
@@ -280,7 +344,7 @@ static int same_request(const request *a, const request *b) {
 }
 
 static void describe(const request *req, char *out, size_t size) {
-    snprintf(out, size, "%s %dx%d %dfr %dst reuse%d seed%llu%s%s cache%s%s%s%s "
+    snprintf(out, size, "%s %dx%d %dfr %dst reuse%d seed%llu%s%s cache%s%s%s%s%s%s "
              "\"%.40s\"",
              req->reference[0] ? "Ref2VA" : "T2V", req->size, req->size,
              req->frames, req->steps, req->reuse,
@@ -290,7 +354,9 @@ static void describe(const request *req, char *out, size_t size) {
              req->cache ? "" : " off",
              req->cache & H3_CACHE_CONDITIONING ? " conditioning" : "",
              req->cache & H3_CACHE_DIT ? " dit" : "",
-             req->cache & H3_CACHE_DECODER ? " decoder" : "", req->prompt);
+             req->cache & H3_CACHE_DECODER ? " decoder" : "",
+             req->cache & H3_CACHE_REFINED_TEXT ? " refined" : "",
+             req->cache & H3_CACHE_ADALN ? " adaln" : "", req->prompt);
 }
 
 static void run_one(h3_ctx *ctx, run_result *r, const char *home) {
@@ -333,6 +399,7 @@ static void run_one(h3_ctx *ctx, run_result *r, const char *home) {
     run_start = phase_start = now();
     h3_result *result = h3_generate(ctx, req->prompt, &params);
     double end = now();
+    sync_stderr();
     close_phase(end);
     r->seconds = end - run_start;
     r->peak_gib = atomic_load(&sampler_peak);
@@ -360,11 +427,17 @@ static void run_one(h3_ctx *ctx, run_result *r, const char *home) {
         video = fnv1a(video, &r->frame_hash[i], sizeof(r->frame_hash[i]));
     }
     r->video_hash = video;
+    if (!r->audio_seen) {
+        snprintf(r->error, sizeof(r->error), "no audio waveform hash");
+        return;
+    }
     r->ok = 1;
 }
 
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IOLBF, 0);
+    setenv("H3_DEBUG_HASHES", "1", 1);
+    start_stderr_reader();
     const char *home = getenv("HOME") ? getenv("HOME") : "";
     char model[1024];
     snprintf(model, sizeof(model), "%s/models/MiniMax-H3", home);
@@ -432,11 +505,15 @@ int main(int argc, char **argv) {
         h3_cache_get_info(ctx, &info);
         if (r->ok)
             printf("run %d: %.1fs, peak %.2f GiB (start %.2f), %d frames "
-                   "%dx%d, video %016llx; retained: conditioning %zu B, "
+                   "%dx%d, video %016llx, audio %016llx; retained: "
+                   "conditioning %zu B, refined %.1f MiB, AdaLN %.1f MiB, "
                    "DiT %d, decoder %d\n",
                    i + 1, r->seconds, r->peak_gib, r->start_gib,
                    r->frames_expected, r->width, r->height,
-                   (unsigned long long)r->video_hash, info.embedding_bytes,
+                   (unsigned long long)r->video_hash,
+                   (unsigned long long)r->audio_hash, info.embedding_bytes,
+                   (double)info.refined_text_bytes / (1024.0 * 1024.0),
+                   (double)info.adaln_bytes / (1024.0 * 1024.0),
                    info.prepared_dit, info.video_decoder);
         else
             printf("run %d: FAILED after %.1fs: %s\n", i + 1, r->seconds,
@@ -460,6 +537,11 @@ int main(int argc, char **argv) {
             if (same_request(&results[j].req, &results[i].req)) { first = j; break; }
         if (first == i || !results[first].ok) continue;
         run_result *a = &results[first], *b = &results[i];
+        if (a->audio_hash != b->audio_hash) {
+            printf("MISMATCH: run %d audio differs from run %d\n", i + 1,
+                   first + 1);
+            failures++;
+        }
         if (a->frames_expected != b->frames_expected || a->video_hash != b->video_hash) {
             int frame = -1;
             int frames = a->frames_expected < b->frames_expected
@@ -470,8 +552,8 @@ int main(int argc, char **argv) {
                    "first differing frame %d)\n", i + 1, first + 1,
                    b->frames_expected, a->frames_expected, frame);
             failures++;
-        } else {
-            printf("match: run %d == run %d\n", i + 1, first + 1);
+        } else if (a->audio_hash == b->audio_hash) {
+            printf("match: run %d == run %d (RGB and audio)\n", i + 1, first + 1);
         }
     }
     int groups = 0;

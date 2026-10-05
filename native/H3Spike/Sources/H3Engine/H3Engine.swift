@@ -319,14 +319,29 @@ public final class H3Engine: @unchecked Sendable {
             throw H3EngineError.loadFailed("h3_load_dir returned NULL")
         }
         self.ctx = ctx
-        // Keep only the prompt/reference conditioning between generations:
-        // a few MB of host memory, and a seed-only rerun (or the next item
-        // of a batch) skips the text encoder, Qwen vision and the reference
-        // VAE encoder - measured 400s -> 388s for Ref2VA 512x512 5s. The
-        // prepared DiT and VAE decoder would save ~13s more but hold ~5.8 GiB
-        // between runs and raise the peak by ~2.9 GiB (SPEEDUP_ROADMAP.md
-        // item 7), too much for a 24 GB Mac.
-        h3_cache_set_targets(ctx, UInt32(H3_CACHE_CONDITIONING))
+        h3_cache_set_targets(ctx, Self.cacheTargets(batch: false))
+    }
+
+    /// What the engine keeps between generations. Always the prompt/
+    /// reference conditioning and the token refiner's output (a few MB): a
+    /// seed-only rerun or the next batch item skips the text encoder, Qwen
+    /// vision, the reference VAE encoder and the refiner. During a batch
+    /// also the AdaLN schedule (~150-400 MB, ~8 s per item). The prepared
+    /// DiT and VAE decoder would save a little more but hold ~5.8 GiB
+    /// between runs and raise the peak by ~2.9 GiB (SPEEDUP_ROADMAP.md
+    /// item 7), too much for a 24 GB Mac.
+    private static func cacheTargets(batch: Bool) -> UInt32 {
+        var targets = UInt32(H3_CACHE_CONDITIONING) | UInt32(H3_CACHE_REFINED_TEXT)
+        if batch { targets |= UInt32(H3_CACHE_ADALN) }
+        return targets
+    }
+
+    /// Call with true before the first video of a batch and false after the
+    /// last (or a cancel). Queued behind any generation in flight.
+    public func setBatchReuse(_ batch: Bool) {
+        let ctx = self.ctx
+        let targets = Self.cacheTargets(batch: batch)
+        Self.workQueue.async { h3_cache_set_targets(ctx, targets) }
     }
 
     deinit {

@@ -25,6 +25,8 @@ typedef struct {
     size_t embedding_bytes;
     int prepared_dit;
     int video_decoder;
+    size_t refined_text_bytes;
+    size_t adaln_bytes;
 } h3_cache_info;
 
 typedef enum {
@@ -233,7 +235,16 @@ enum {
     H3_CACHE_CONDITIONING = 1u << 0,
     H3_CACHE_DIT = 1u << 1,
     H3_CACHE_DECODER = 1u << 2,
-    H3_CACHE_ALL = H3_CACHE_CONDITIONING | H3_CACHE_DIT | H3_CACHE_DECODER
+    H3_CACHE_ALL = H3_CACHE_CONDITIONING | H3_CACHE_DIT | H3_CACHE_DECODER,
+    /* Parts of preparing a DiT that don't depend on the seed, for when the
+     * DiT itself is not kept (e.g. the items of a batch):
+     *   REFINED_TEXT  the token refiner's output; a few MB of host memory.
+     *                 Same model, embedding and LoRA files/strengths.
+     *   ADALN         the AdaLN schedule, before layer pruning; time rows x
+     *                 50 blocks of BF16, a few hundred MB. Same model, steps
+     *                 and condition kinds - any prompt. */
+    H3_CACHE_REFINED_TEXT = 1u << 3,
+    H3_CACHE_ADALN = 1u << 4
 };
 void h3_cache_set_targets(h3_ctx *ctx, unsigned targets);
 void h3_cache_set_enabled(h3_ctx *ctx, int enabled);

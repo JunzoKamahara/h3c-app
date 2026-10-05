@@ -18,6 +18,23 @@ typedef int (*h3_dit_preview)(int completed_steps, int total_steps,
                               const float *video_latent,
                               size_t video_elements, void *opaque);
 
+/* Seed-independent preparation kept between loads: the token refiner's
+ * output (a few MB) and the AdaLN schedule (time rows x 50 blocks, a few
+ * hundred MB). A load reuses a part only when everything it was computed
+ * from matches exactly - the refiner: model, input embedding, row count and
+ * LoRA files/strengths; AdaLN: model, sigma schedule and which conditions
+ * are present - and stores what it computed for the next one. NULL, or a
+ * part switched off, computes it as before. */
+typedef struct h3_dit_prep h3_dit_prep;
+h3_dit_prep *h3_dit_prep_new(void);
+void h3_dit_prep_free(h3_dit_prep *prep);
+/* Which parts to keep; switching one off frees it. */
+void h3_dit_prep_set(h3_dit_prep *prep, int refined_text, int adaln);
+/* Drops what is held, keeping which parts are on. */
+void h3_dit_prep_clear(h3_dit_prep *prep);
+/* Host bytes held by the refiner part (adaln 0) or the AdaLN part (1). */
+size_t h3_dit_prep_bytes(const h3_dit_prep *prep, int adaln);
+
 /* Load a text-only FL2VA transformer. Text refinement and AdaLN precomputation
  * happen before the persistent core is loaded. SSD streaming retains only the
  * small block norms and two alternating BF16 matrix slots. */
@@ -43,6 +60,7 @@ h3_dit *h3_dit_load_t2va(const char *weight_directory,
                          int use_slower_grouped_quantizer,
                          int use_int8_row_fc2,
                          const h3_lora *loras, size_t lora_count,
+                         h3_dit_prep *prep,
                          h3_dit_progress progress, void *progress_opaque,
                          char *error, size_t error_size);
 
@@ -72,6 +90,7 @@ h3_dit *h3_dit_load_conditioned(
                          int use_slower_grouped_quantizer,
                          int use_int8_row_fc2,
                          const h3_lora *loras, size_t lora_count,
+                         h3_dit_prep *prep,
                          const float *condition_video_rows,
                          size_t condition_video_elements,
                          const float *condition_audio_rows,

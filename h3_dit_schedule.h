@@ -30,6 +30,17 @@ h3_dit_schedule *h3_dit_schedule_precompute(
     char *error, size_t error_size);
 void h3_dit_schedule_free(h3_dit_schedule *schedule);
 
+/* A host copy of a whole (unpruned) schedule, for rebuilding it on another
+ * GPU context without the 50 AdaLN projections: the values depend only on
+ * the weights, the sigma schedule and which conditions are present. */
+typedef struct h3_dit_schedule_host h3_dit_schedule_host;
+h3_dit_schedule_host *h3_dit_schedule_export(const h3_dit_schedule *schedule);
+h3_dit_schedule *h3_dit_schedule_import(const h3_dit_schedule_host *host,
+                                        h3_gpu *gpu, char *error,
+                                        size_t error_size);
+size_t h3_dit_schedule_host_bytes(const h3_dit_schedule_host *host);
+void h3_dit_schedule_host_free(h3_dit_schedule_host *host);
+
 int h3_dit_schedule_steps(const h3_dit_schedule *schedule);
 uint32_t h3_dit_schedule_time_rows(const h3_dit_schedule *schedule);
 uint32_t h3_dit_schedule_video_row(const h3_dit_schedule *schedule, int step);

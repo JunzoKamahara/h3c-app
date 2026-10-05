@@ -56,6 +56,7 @@ static void h3_conditioning_cache_clear(h3_ctx *ctx) {
 void h3_cache_clear(h3_ctx *ctx) {
     if (!ctx) return;
     h3_conditioning_cache_clear(ctx);
+    h3_dit_prep_clear(ctx->dit_prep);
     h3_dit_free(ctx->dit);
     ctx->dit = NULL;
     free(ctx->dit_key);
@@ -68,7 +69,11 @@ void h3_cache_clear(h3_ctx *ctx) {
 
 void h3_cache_set_targets(h3_ctx *ctx, unsigned targets) {
     if (!ctx) return;
-    targets &= H3_CACHE_ALL;
+    targets &= H3_CACHE_ALL | H3_CACHE_REFINED_TEXT | H3_CACHE_ADALN;
+    int refined = (targets & H3_CACHE_REFINED_TEXT) != 0;
+    int adaln = (targets & H3_CACHE_ADALN) != 0;
+    if ((refined || adaln) && !ctx->dit_prep) ctx->dit_prep = h3_dit_prep_new();
+    h3_dit_prep_set(ctx->dit_prep, refined, adaln);
     if (!(targets & H3_CACHE_CONDITIONING)) h3_conditioning_cache_clear(ctx);
     if (!(targets & H3_CACHE_DIT)) {
         h3_dit_free(ctx->dit);
@@ -110,6 +115,8 @@ void h3_cache_get_info(const h3_ctx *ctx, h3_cache_info *info) {
     }
     info->prepared_dit = ctx->dit != NULL;
     info->video_decoder = ctx->video_decoder != NULL;
+    info->refined_text_bytes = h3_dit_prep_bytes(ctx->dit_prep, 0);
+    info->adaln_bytes = h3_dit_prep_bytes(ctx->dit_prep, 1);
 }
 
 static int h3_key_append(h3_key *key, const char *format, ...) {
@@ -506,6 +513,7 @@ h3_ctx *h3_load_dir(const char *model_dir) {
 void h3_free(h3_ctx *ctx) {
     if (!ctx) return;
     h3_cache_clear(ctx);
+    h3_dit_prep_free(ctx->dit_prep);
     free(ctx->model_dir);
     free(ctx);
 }
@@ -1702,6 +1710,9 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
     }
     float spatial_rope_scale = !params->use_reference_rope &&
         render_width == 256 && render_height == 256 ? 0.5f : 1.0f;
+    h3_dit_prep *dit_prep =
+        h3_cache_target(ctx, H3_CACHE_REFINED_TEXT | H3_CACHE_ADALN)
+            ? ctx->dit_prep : NULL;
     if (h3_cache_target(ctx, H3_CACHE_DIT) && ctx->dit && ctx->dit_key &&
         !strcmp(ctx->dit_key, prepared_key)) {
         dit = ctx->dit;
@@ -1732,7 +1743,7 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
             params->use_slower_dynamic_fc1_k,
             params->use_slower_grouped_quantizer,
             params->use_int8_row_fc2,
-            params->loras, params->lora_count,
+            params->loras, params->lora_count, dit_prep,
             condition_video_rows, condition_video_elements,
             condition_audio_rows, condition_audio_elements,
             h3_dit_progress_bridge, &progress, detail, sizeof(detail));
@@ -1754,7 +1765,7 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
             params->use_slower_dynamic_fc1_k,
             params->use_slower_grouped_quantizer,
             params->use_int8_row_fc2,
-            params->loras, params->lora_count,
+            params->loras, params->lora_count, dit_prep,
             h3_dit_progress_bridge, &progress, detail, sizeof(detail));
     }
     if (!dit) {
@@ -1853,6 +1864,10 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
         h3_set_error(ctx, "%s", detail);
         goto cleanup;
     }
+    /* The PCM handed to the encoder (the AAC track itself is not bit-exact). */
+    h3_debug_hash("audio waveform", waveform.pcm,
+                  (size_t)waveform.channels * (size_t)waveform.samples *
+                      sizeof(*waveform.pcm));
     free(audio);
     audio = NULL;
     if (progress.cancelled) goto cleanup;

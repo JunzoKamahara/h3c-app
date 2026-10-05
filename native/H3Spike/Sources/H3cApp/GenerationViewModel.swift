@@ -623,6 +623,9 @@ final class GenerationViewModel: ObservableObject {
         let total = project == nil ? 1 : (count ?? batchCount).clamped(to: batchCountRange)
         batchState = BatchState(total: total, baseSeed: seedFixed ? UInt64(seedText) : nil,
                                 request: makeRequest())
+        // Items after the first reuse the AdaLN schedule (released below
+        // when the batch ends).
+        if total > 1 { engine?.setBatchReuse(true) }
         runBatchItem(index: 1)
     }
 
@@ -764,6 +767,7 @@ final class GenerationViewModel: ObservableObject {
             if succeeded, index < batch.total, self.batchState != nil, self.engineState == .ready {
                 self.runBatchItem(index: index + 1)
             } else {
+                if batch.total > 1 { engine.setBatchReuse(false) }
                 self.batchState = nil
                 self.batchProgress = nil
             }

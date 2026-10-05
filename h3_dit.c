@@ -5,6 +5,7 @@
 #include "h3_weights.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <math.h>
 #include <pthread.h>
 #include <stdarg.h>
@@ -2012,6 +2013,171 @@ static int allocate_activations(h3_dit *dit, char *error, size_t error_size) {
     return 1;
 }
 
+/* Seed-independent preparation kept between loads (see h3_dit.h). Each part
+ * is reused only when everything it was computed from matches exactly; the
+ * seed only enters later (noise, condition augmentation), and every run
+ * still gets fresh activations and step state. */
+struct h3_dit_prep {
+    int keep_refined;
+    int keep_adaln;
+    /* Token refiner: condition projection + 2 refiner blocks + final norm. */
+    char *refined_directory;
+    uint8_t refined_model[32];
+    char *refined_loras;
+    uint16_t *refined_input;
+    size_t refined_input_count;
+    uint32_t refined_rows;
+    uint16_t *refined_output;
+    /* AdaLN schedule, before gate-ranked pruning. */
+    char *adaln_directory;
+    uint8_t adaln_model[32];
+    h3_sigma_schedule adaln_sigmas;
+    int adaln_visual;
+    int adaln_audio;
+    h3_dit_schedule_host *adaln;
+};
+
+static void prep_clear_refined(h3_dit_prep *prep) {
+    free(prep->refined_directory);
+    free(prep->refined_loras);
+    free(prep->refined_input);
+    free(prep->refined_output);
+    prep->refined_directory = NULL;
+    prep->refined_loras = NULL;
+    prep->refined_input = NULL;
+    prep->refined_output = NULL;
+    prep->refined_input_count = 0;
+    prep->refined_rows = 0;
+}
+
+static void prep_clear_adaln(h3_dit_prep *prep) {
+    free(prep->adaln_directory);
+    prep->adaln_directory = NULL;
+    h3_dit_schedule_host_free(prep->adaln);
+    prep->adaln = NULL;
+}
+
+h3_dit_prep *h3_dit_prep_new(void) {
+    return calloc(1, sizeof(h3_dit_prep));
+}
+
+void h3_dit_prep_free(h3_dit_prep *prep) {
+    if (!prep) return;
+    prep_clear_refined(prep);
+    prep_clear_adaln(prep);
+    free(prep);
+}
+
+void h3_dit_prep_clear(h3_dit_prep *prep) {
+    if (!prep) return;
+    prep_clear_refined(prep);
+    prep_clear_adaln(prep);
+}
+
+void h3_dit_prep_set(h3_dit_prep *prep, int refined_text, int adaln) {
+    if (!prep) return;
+    prep->keep_refined = refined_text != 0;
+    prep->keep_adaln = adaln != 0;
+    if (!prep->keep_refined) prep_clear_refined(prep);
+    if (!prep->keep_adaln) prep_clear_adaln(prep);
+}
+
+size_t h3_dit_prep_bytes(const h3_dit_prep *prep, int adaln) {
+    if (!prep) return 0;
+    if (adaln) return h3_dit_schedule_host_bytes(prep->adaln);
+    if (!prep->refined_output) return 0;
+    return ((size_t)prep->refined_rows * HIDDEN + prep->refined_input_count) *
+           sizeof(uint16_t);
+}
+
+/* path, strength and the file's size and mtime for each adapter: a
+ * rewritten adapter file at the same path is a different refiner. */
+static char *lora_description(const h3_lora *loras, size_t count) {
+    size_t capacity = 64 + count * (PATH_MAX + 96);
+    char *text = malloc(capacity);
+    if (!text) return NULL;
+    size_t length = (size_t)snprintf(text, capacity, "%zu", count);
+    for (size_t index = 0; index < count && length < capacity; index++) {
+        struct stat status;
+        long long size = -1, seconds = 0, nanoseconds = 0;
+        if (loras[index].path && stat(loras[index].path, &status) == 0) {
+            size = (long long)status.st_size;
+            seconds = (long long)status.st_mtimespec.tv_sec;
+            nanoseconds = (long long)status.st_mtimespec.tv_nsec;
+        }
+        length += (size_t)snprintf(text + length, capacity - length,
+                                   "|%s@%.9g:%lld:%lld.%09lld",
+                                   loras[index].path ? loras[index].path : "",
+                                   (double)loras[index].strength, size,
+                                   seconds, nanoseconds);
+    }
+    return text;
+}
+
+static int same_text(const char *left, const char *right) {
+    return left && right && !strcmp(left, right);
+}
+
+/* refine_text(), or its stored result when the model, the input embedding,
+ * the row count and the LoRA set (the refiner's weights can be patched)
+ * all match. */
+static int refine_text_reusing(h3_dit *dit, const h3_text_embedding *text,
+                               h3_dit_prep *prep,
+                               const char *weight_directory,
+                               const h3_lora *loras, size_t lora_count,
+                               char *error, size_t error_size) {
+    if (!prep || !prep->keep_refined)
+        return refine_text(dit, text, error, error_size);
+    uint8_t model[32];
+    h3_weight_store_fingerprint(dit->weights, model);
+    char *lora_key = lora_description(loras, lora_count);
+    size_t input_count = text->tokens * TEXT_DIM;
+    size_t output_count = (size_t)dit->text_rows * HIDDEN;
+    if (lora_key && prep->refined_output &&
+        same_text(prep->refined_directory, weight_directory) &&
+        !memcmp(prep->refined_model, model, sizeof(model)) &&
+        same_text(prep->refined_loras, lora_key) &&
+        prep->refined_rows == dit->text_rows &&
+        prep->refined_input_count == input_count &&
+        !memcmp(prep->refined_input, text->values,
+                input_count * sizeof(uint16_t))) {
+        free(lora_key);
+        dit->refined_text = h3_gpu_tensor_from_bf16(
+            dit->gpu, prep->refined_output, output_count);
+        if (!dit->refined_text) {
+            fail(error, error_size, "cannot restore refined text: %s",
+                 h3_gpu_error(dit->gpu));
+            return 0;
+        }
+        fprintf(stderr, "h3: refined text cache hit\n");
+        return 1;
+    }
+    prep_clear_refined(prep);
+    if (!refine_text(dit, text, error, error_size)) {
+        free(lora_key);
+        return 0;
+    }
+    prep->refined_directory = strdup(weight_directory);
+    prep->refined_loras = lora_key;
+    prep->refined_input = malloc(input_count * sizeof(uint16_t));
+    prep->refined_output = malloc(output_count * sizeof(uint16_t));
+    if (!prep->refined_directory || !prep->refined_loras ||
+        !prep->refined_input || !prep->refined_output ||
+        !h3_gpu_tensor_read_bf16(dit->refined_text, prep->refined_output,
+                                 output_count)) {
+        prep_clear_refined(prep);
+        fprintf(stderr, "h3: warning: could not retain refined text\n");
+        return 1;
+    }
+    memcpy(prep->refined_input, text->values, input_count * sizeof(uint16_t));
+    memcpy(prep->refined_model, model, sizeof(model));
+    prep->refined_input_count = input_count;
+    prep->refined_rows = dit->text_rows;
+    fprintf(stderr, "h3: refined text cache miss; stored %.1f MiB\n",
+            (double)h3_dit_prep_bytes(prep, 0) / (1024.0 * 1024.0));
+    return 1;
+}
+
 typedef struct {
     h3_dit_progress callback;
     void *opaque;
@@ -2044,6 +2210,7 @@ static h3_dit *load_dit(const char *weight_directory,
                         int use_slower_grouped_quantizer,
                         int use_int8_row_fc2,
                         const h3_lora *loras, size_t lora_count,
+                        h3_dit_prep *prep,
                         const float *condition_video_rows,
                         size_t condition_video_elements,
                         const float *condition_audio_rows,
@@ -2223,15 +2390,49 @@ static h3_dit *load_dit(const char *weight_directory,
          getenv("H3_INT8_MLP_STAGE"));
     h3_gpu_profile_set_label(dit->gpu, "H3 DiT");
     report(progress, progress_opaque, "refine text", 0, 1);
-    if (!refine_text(dit, text, error, error_size)) goto failed;
+    if (!refine_text_reusing(dit, text, prep, weight_directory, loras,
+                             lora_count, error, error_size)) goto failed;
     for (int projection = 0; projection < H3_LORA_PROJECTIONS; projection++)
         h3_lora_set_release(dit->loras, 1, projection);
     report(progress, progress_opaque, "refine text", 1, 1);
     schedule_progress schedule_state = {progress, progress_opaque};
-    dit->schedule = h3_dit_schedule_precompute(
-        dit->weights, dit->gpu, sigmas, dit->video_condition_rows != 0,
-        dit->audio_condition_rows != 0, schedule_report, &schedule_state,
-        error, error_size);
+    int visual_condition = dit->video_condition_rows != 0;
+    int audio_condition = dit->audio_condition_rows != 0;
+    uint8_t model[32];
+    h3_weight_store_fingerprint(dit->weights, model);
+    if (prep && prep->keep_adaln && prep->adaln &&
+        same_text(prep->adaln_directory, weight_directory) &&
+        !memcmp(prep->adaln_model, model, sizeof(model)) &&
+        !memcmp(&prep->adaln_sigmas, sigmas, sizeof(*sigmas)) &&
+        prep->adaln_visual == visual_condition &&
+        prep->adaln_audio == audio_condition) {
+        /* Depends only on the weights, the sigma schedule and which
+         * conditions are present - not on the prompt or the seed. */
+        dit->schedule = h3_dit_schedule_import(prep->adaln, dit->gpu,
+                                               error, error_size);
+        if (dit->schedule) fprintf(stderr, "h3: AdaLN schedule cache hit\n");
+    } else {
+        if (prep) prep_clear_adaln(prep);
+        dit->schedule = h3_dit_schedule_precompute(
+            dit->weights, dit->gpu, sigmas, visual_condition,
+            audio_condition, schedule_report, &schedule_state,
+            error, error_size);
+        if (dit->schedule && prep && prep->keep_adaln) {
+            prep->adaln = h3_dit_schedule_export(dit->schedule);
+            prep->adaln_directory = strdup(weight_directory);
+            if (!prep->adaln || !prep->adaln_directory) {
+                prep_clear_adaln(prep);
+                fprintf(stderr, "h3: warning: could not retain AdaLN schedule\n");
+            } else {
+                memcpy(prep->adaln_model, model, sizeof(model));
+                prep->adaln_sigmas = *sigmas;
+                prep->adaln_visual = visual_condition;
+                prep->adaln_audio = audio_condition;
+                fprintf(stderr, "h3: AdaLN schedule cache miss; stored %.1f MiB\n",
+                        (double)h3_dit_prep_bytes(prep, 1) / (1024.0 * 1024.0));
+            }
+        }
+    }
     if (dit->schedule) {
         configure_gate_ranked_blocks(dit);
         h3_dit_schedule_prune(dit->schedule, dit->block_active,
@@ -2289,6 +2490,7 @@ h3_dit *h3_dit_load_t2va(const char *weight_directory,
                          int use_slower_grouped_quantizer,
                          int use_int8_row_fc2,
                          const h3_lora *loras, size_t lora_count,
+                         h3_dit_prep *prep,
                          h3_dit_progress progress, void *progress_opaque,
                          char *error, size_t error_size) {
     return load_dit(weight_directory, shader_source_path, text, layout, sigmas,
@@ -2304,7 +2506,7 @@ h3_dit *h3_dit_load_t2va(const char *weight_directory,
                     use_slower_uncached_int8_scales,
                     use_slower_dynamic_fc1_k,
                     use_slower_grouped_quantizer,
-                    use_int8_row_fc2, loras, lora_count,
+                    use_int8_row_fc2, loras, lora_count, prep,
                     NULL, 0, NULL, 0, progress, progress_opaque,
                     error, error_size);
 }
@@ -2332,6 +2534,7 @@ h3_dit *h3_dit_load_conditioned(
                          int use_slower_grouped_quantizer,
                          int use_int8_row_fc2,
                          const h3_lora *loras, size_t lora_count,
+                         h3_dit_prep *prep,
                          const float *condition_video_rows,
                          size_t condition_video_elements,
                          const float *condition_audio_rows,
@@ -2351,7 +2554,7 @@ h3_dit *h3_dit_load_conditioned(
                     use_slower_uncached_int8_scales,
                     use_slower_dynamic_fc1_k,
                     use_slower_grouped_quantizer,
-                    use_int8_row_fc2, loras, lora_count,
+                    use_int8_row_fc2, loras, lora_count, prep,
                     condition_video_rows, condition_video_elements,
                     condition_audio_rows, condition_audio_elements,
                     progress, progress_opaque, error, error_size);

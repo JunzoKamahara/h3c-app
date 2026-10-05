@@ -29,6 +29,9 @@ struct h3_ctx {
     int conditioning_present;
     char *dit_key;
     struct h3_dit *dit;
+    /* Token refiner output / AdaLN schedule (H3_CACHE_REFINED_TEXT,
+     * H3_CACHE_ADALN), created when one of them is first enabled. */
+    struct h3_dit_prep *dit_prep;
     char *video_decoder_key;
     struct h3_video_vae_decoder *video_decoder;
 };
