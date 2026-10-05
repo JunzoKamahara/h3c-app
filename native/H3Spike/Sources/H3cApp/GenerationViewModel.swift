@@ -339,6 +339,8 @@ final class GenerationViewModel: ObservableObject {
     @Published var showingProjectVideos = false
     var projectAutosave: AnyCancellable?
     var lastSavedProjectFile: ProjectFile?
+    /// Outside references being copied into the project (startReferenceImport).
+    var referenceImportTask: Task<Void, Never>?
     private var batchState: BatchState?
 
     private var engine: H3Engine?
@@ -618,8 +620,29 @@ final class GenerationViewModel: ObservableObject {
     func generate(count: Int? = nil) {
         guard engine != nil, canGenerate else { return }
         // A project first gets copies of the references and the form saved,
-        // so the request points at files inside it.
+        // so the request points at files inside it. Copying runs in the
+        // background; wait for it rather than block the window.
         saveProjectIfChanged()
+        if let copying = referenceImportTask {
+            isGenerating = true
+            isCancelling = false
+            phase = String(localized: "参照ファイルをプロジェクトにコピーしています")
+            Task {
+                await copying.value
+                let cancelled = self.isCancelling
+                self.isGenerating = false
+                self.isCancelling = false
+                self.phase = ""
+                if !cancelled { self.startGenerating(count: count) }
+            }
+            return
+        }
+        startGenerating(count: count)
+    }
+
+    private func startGenerating(count: Int?) {
+        guard engine != nil, canGenerate else { return }
+        saveProjectIfChanged(importingReferences: false)
         let total = project == nil ? 1 : (count ?? batchCount).clamped(to: batchCountRange)
         batchState = BatchState(total: total, baseSeed: seedFixed ? UInt64(seedText) : nil,
                                 request: makeRequest())

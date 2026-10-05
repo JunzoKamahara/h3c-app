@@ -339,9 +339,10 @@ public final class H3Engine: @unchecked Sendable {
     /// Call with true before the first video of a batch and false after the
     /// last (or a cancel). Queued behind any generation in flight.
     public func setBatchReuse(_ batch: Bool) {
-        let ctx = self.ctx
         let targets = Self.cacheTargets(batch: batch)
-        Self.workQueue.async { h3_cache_set_targets(ctx, targets) }
+        // Holds the engine (and so its context) until the block has run -
+        // a job ahead of it can outlast the window that owns the engine.
+        Self.workQueue.async { [self] in h3_cache_set_targets(self.ctx, targets) }
     }
 
     deinit {
@@ -370,15 +371,17 @@ public final class H3Engine: @unchecked Sendable {
 
     public func generate(prompt: String, outputPath: String,
                           params: H3GenerationParams) -> AsyncThrowingStream<H3GenerationEvent, Error> {
-        let ctx = self.ctx
         return AsyncThrowingStream { continuation in
             let cancelFlag = CancelFlag()
             self.currentCancelFlag = cancelFlag
             let bridge = GenerationBridge(continuation: continuation, cancelFlag: cancelFlag)
             let bridgeHandle = Unmanaged.passRetained(bridge)
 
-            Self.workQueue.async {
+            Self.workQueue.async { [self] in
                 defer { bridgeHandle.release() }
+                // Read through self, so the engine - and the context h3_free
+                // releases in deinit - lives until this job has finished.
+                let ctx = self.ctx
 
                 // A GUI app that's occluded or in the background is eligible
                 // for App Nap, which lowers CPU/disk I/O priority - measured

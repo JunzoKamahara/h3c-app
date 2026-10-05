@@ -393,7 +393,9 @@ static void run_one(h3_ctx *ctx, run_result *r, const char *home) {
     params.on_progress = on_progress;
     params.on_frame = on_frame;
 
+    pthread_mutex_lock(&stderr_lock); /* stderr_reader reads it */
     current = r;
+    pthread_mutex_unlock(&stderr_lock);
     r->start_gib = footprint_gib();
     atomic_store(&sampler_peak, r->start_gib);
     run_start = phase_start = now();

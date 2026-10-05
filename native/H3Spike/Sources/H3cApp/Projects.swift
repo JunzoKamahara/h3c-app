@@ -247,12 +247,21 @@ enum ProjectFiles {
         stored.hasPrefix("/") ? stored : projectURL.appendingPathComponent(stored).path
     }
 
+    /// Whether a path is already in the project's references folder.
+    static func isImported(_ path: String, in projectURL: URL) -> Bool {
+        let folder = projectURL.appendingPathComponent(referencesFolder, isDirectory: true)
+            .standardizedFileURL.path + "/"
+        return URL(fileURLWithPath: path).standardizedFileURL.path.hasPrefix(folder)
+    }
+
     /// Copies a file into the project's references folder (once: an identical
-    /// file already there is reused) and returns the copy's path. Files
-    /// already inside the project are left where they are.
+    /// file already there is reused) and returns the copy's path. Only files
+    /// already in references/ stay where they are - a generated video used as
+    /// a reference is copied too, so deleting the video doesn't break it (on
+    /// APFS the copy is a clone). Reads and copies files: call it off the
+    /// main actor.
     static func importReference(_ path: String, into projectURL: URL) throws -> String {
-        let root = projectURL.standardizedFileURL.path + "/"
-        if URL(fileURLWithPath: path).standardizedFileURL.path.hasPrefix(root) { return path }
+        if isImported(path, in: projectURL) { return path }
         let folder = projectURL.appendingPathComponent(referencesFolder, isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let source = URL(fileURLWithPath: path)
@@ -485,11 +494,12 @@ extension GenerationViewModel {
             }
     }
 
-    /// Copies references from outside into the project (pointing the form
-    /// at the copies) and writes project.json when something changed.
-    func saveProjectIfChanged(force: Bool = false) {
+    /// Writes project.json when something changed. References from outside
+    /// the project are copied into it in the background (startReferenceImport),
+    /// which saves again with the copies once done.
+    func saveProjectIfChanged(force: Bool = false, importingReferences: Bool = true) {
         guard let project, var file = lastSavedProjectFile else { return }
-        importReferencesIntoProject()
+        if importingReferences { startReferenceImport() }
         var draft = currentDraft()
         draft.firstFrame = draft.firstFrame.map { ProjectFiles.stored($0, in: project.url) }
         draft.lastFrame = draft.lastFrame.map { ProjectFiles.stored($0, in: project.url) }
@@ -506,23 +516,55 @@ extension GenerationViewModel {
         }
     }
 
-    private func importReferencesIntoProject() {
-        guard let project else { return }
-        func imported(_ path: String) -> String {
-            guard FileManager.default.fileExists(atPath: path) else { return path }
-            do {
-                return try ProjectFiles.importReference(path, into: project.url)
-            } catch {
-                projectMessage = String(localized: "参照ファイルをプロジェクトにコピーできませんでした（詳細: \(error.localizedDescription)）")
-                return path
-            }
+    /// The form's input files that still have to be copied into the project.
+    private func referencesToImport(for projectURL: URL) -> [String] {
+        var paths = [firstFramePath, lastFramePath].compactMap { $0 } + referenceImages.map(\.path)
+        paths = paths.filter {
+            !ProjectFiles.isImported($0, in: projectURL) && FileManager.default.fileExists(atPath: $0)
         }
-        if let path = firstFramePath, case let copy = imported(path), copy != path { firstFramePath = copy }
-        if let path = lastFramePath, case let copy = imported(path), copy != path { lastFramePath = copy }
-        for index in referenceImages.indices {
-            let path = referenceImages[index].path
-            let copy = imported(path)
-            if copy != path { referenceImages[index].path = copy }
+        return Array(Set(paths))
+    }
+
+    /// Copies outside references into the project off the main actor (large
+    /// videos would otherwise stall every window), then points the form at
+    /// the copies and saves. One copy job at a time; generate() waits for it.
+    func startReferenceImport() {
+        guard referenceImportTask == nil, let project else { return }
+        let projectURL = project.url
+        let paths = referencesToImport(for: projectURL)
+        guard !paths.isEmpty else { return }
+        referenceImportTask = Task { [weak self] in
+            let results = await Task.detached(priority: .userInitiated) { () -> [String: Result<String, Error>] in
+                var results: [String: Result<String, Error>] = [:]
+                for path in paths {
+                    results[path] = Result { try ProjectFiles.importReference(path, into: projectURL) }
+                }
+                return results
+            }.value
+            guard let self else { return }
+            self.referenceImportTask = nil
+            // Opened another project meanwhile: its own save handles it.
+            guard self.project?.url == projectURL else { return }
+            var failure: Error?
+            func copy(of path: String) -> String {
+                switch results[path] {
+                case .success(let copy)?: return copy
+                case .failure(let error)?: failure = error; return path
+                case nil: return path
+                }
+            }
+            if let path = self.firstFramePath, case let new = copy(of: path), new != path { self.firstFramePath = new }
+            if let path = self.lastFramePath, case let new = copy(of: path), new != path { self.lastFramePath = new }
+            for index in self.referenceImages.indices {
+                let path = self.referenceImages[index].path
+                let new = copy(of: path)
+                if new != path { self.referenceImages[index].path = new }
+            }
+            if let failure {
+                self.projectMessage = String(localized: "参照ファイルをプロジェクトにコピーできませんでした（詳細: \(failure.localizedDescription)）")
+            }
+            // Not importing again: a failed copy would just be retried.
+            self.saveProjectIfChanged(importingReferences: false)
         }
     }
 
@@ -534,16 +576,23 @@ extension GenerationViewModel {
         let destination = projectURL.appendingPathComponent(base + ".mp4")
         do {
             try FileManager.default.moveItem(at: tempURL, to: destination)
-            var stored = record
-            stored.video = destination.lastPathComponent
-            try ProjectFiles.encoder.encode(stored)
-                .write(to: projectURL.appendingPathComponent(base + ".json"), options: .atomic)
-            if project?.url == projectURL { reloadProjectVideos() }
-            return destination
         } catch {
             projectMessage = String(localized: "動画をプロジェクトに保存できませんでした（詳細: \(error.localizedDescription)）")
             return nil
         }
+        do {
+            var stored = record
+            stored.video = destination.lastPathComponent
+            try ProjectFiles.encoder.encode(stored)
+                .write(to: projectURL.appendingPathComponent(base + ".json"), options: .atomic)
+        } catch {
+            projectMessage = String(localized: "動画をプロジェクトに保存できませんでした（詳細: \(error.localizedDescription)）")
+            // Put the video back where the preview expects it; if even that
+            // fails, keep it in the project as a video without a record.
+            if (try? FileManager.default.moveItem(at: destination, to: tempURL)) != nil { return nil }
+        }
+        if project?.url == projectURL { reloadProjectVideos() }
+        return destination
     }
 
     // MARK: Project videos
