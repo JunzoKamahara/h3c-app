@@ -3,10 +3,13 @@ import SwiftUI
 // The preview fills the window; the composer (作り方, prompt, shape / size /
 // length, generate) floats in front of it at the bottom centre and can be
 // dragged elsewhere or collapsed. 詳細設定 is a separate dialog. Each window
-// has its own state: a new window starts like a fresh launch, from the
-// preset used last.
+// has its own state (see AppModels): a new window starts like a fresh launch,
+// from the preset used last, unless it picks up the primary model.
 struct ContentView: View {
-    @StateObject private var viewModel = GenerationViewModel()
+    @ObservedObject var viewModel: GenerationViewModel
+    /// False when this window picks up the primary model where its last
+    /// window left it.
+    let fresh: Bool
     @State private var composerOffset: CGSize = .zero
     @State private var composerCollapsed = false
     @State private var presetName = ""
@@ -122,16 +125,65 @@ struct ContentView: View {
         }
         .focusedSceneObject(viewModel)
         .onAppear {
-            viewModel.loadModel()
-            // The first window reopens the project open at the last quit;
-            // otherwise the form starts from the preset used last.
-            if !viewModel.reopenLastProjectIfAny() { viewModel.applyLastUsedPreset() }
+            let store = ProjectStore.shared
+            if fresh { viewModel.loadModel() }
+            if let action = store.pendingAction {
+                // Opened from the menu bar's プロジェクト menu with no window.
+                store.pendingAction = nil
+                store.didReopenAtLaunch = true
+                if fresh { viewModel.applyLastUsedPreset() }
+                switch action {
+                case .new: viewModel.showingNewProject = true
+                case .choose: DispatchQueue.main.async { viewModel.chooseAndOpenProject() }
+                case .open(let url): viewModel.openProject(at: url)
+                }
+            } else if fresh && !viewModel.reopenLastProjectIfAny() {
+                // The first window reopens the project open at the last
+                // quit; otherwise the form starts from the preset used last.
+                viewModel.applyLastUsedPreset()
+            }
         }
         .onChange(of: viewModel.engineState) { newValue in
             if case .failed = newValue, !hasOfferedDownloadWizard {
                 hasOfferedDownloadWizard = true
                 showingDownloadWizard = true
             }
+        }
+    }
+}
+
+/// Calls `onClose` when the window holding this view is about to close.
+struct WindowCloseObserver: NSViewRepresentable {
+    let onClose: () -> Void
+
+    func makeNSView(context: Context) -> ObserverView {
+        let view = ObserverView()
+        view.onClose = onClose
+        return view
+    }
+
+    func updateNSView(_ nsView: ObserverView, context: Context) {
+        nsView.onClose = onClose
+    }
+
+    final class ObserverView: NSView {
+        var onClose: (() -> Void)?
+        private var token: NSObjectProtocol?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let token { NotificationCenter.default.removeObserver(token) }
+            token = nil
+            guard let window else { return }
+            token = NotificationCenter.default.addObserver(
+                forName: NSWindow.willCloseNotification, object: window, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.onClose?() }
+            }
+        }
+
+        deinit {
+            if let token { NotificationCenter.default.removeObserver(token) }
         }
     }
 }

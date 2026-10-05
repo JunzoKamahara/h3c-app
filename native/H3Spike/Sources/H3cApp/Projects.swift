@@ -125,9 +125,19 @@ final class ProjectStore: ObservableObject {
     private static let maxRecents = 10
 
     @Published private(set) var recents: [URL]
-    private(set) var openPaths = Set<String>()
+    /// Open project folders and the window (view model) holding each. Weak,
+    /// so a window that went away without closing its project never keeps
+    /// the project locked.
+    private var openOwners: [String: WeakOwner] = [:]
     /// Only the first window reopens the last project at launch.
     var didReopenAtLaunch = false
+    /// A project action chosen in the menu bar while no window was open; the
+    /// window opened for it performs it (see ContentView).
+    var pendingAction: PendingProjectAction?
+
+    private struct WeakOwner {
+        weak var owner: GenerationViewModel?
+    }
 
     private init() {
         recents = (UserDefaults.standard.stringArray(forKey: Self.recentsKey) ?? [])
@@ -150,8 +160,8 @@ final class ProjectStore: ObservableObject {
         recents.filter { FileManager.default.fileExists(atPath: $0.appendingPathComponent("project.json").path) }
     }
 
-    func noteOpened(_ url: URL) {
-        openPaths.insert(url.standardizedFileURL.path)
+    func noteOpened(_ url: URL, by owner: GenerationViewModel) {
+        openOwners[url.standardizedFileURL.path] = WeakOwner(owner: owner)
         recents.removeAll { $0.standardizedFileURL == url.standardizedFileURL }
         recents.insert(url, at: 0)
         recents = Array(recents.prefix(Self.maxRecents))
@@ -160,11 +170,32 @@ final class ProjectStore: ObservableObject {
     }
 
     func noteClosed(_ url: URL, explicitly: Bool) {
-        openPaths.remove(url.standardizedFileURL.path)
+        openOwners[url.standardizedFileURL.path] = nil
         if explicitly { UserDefaults.standard.removeObject(forKey: Self.lastOpenKey) }
     }
 
-    func isOpen(_ url: URL) -> Bool { openPaths.contains(url.standardizedFileURL.path) }
+    /// The live model that has this project open, if any.
+    func owner(of url: URL) -> GenerationViewModel? {
+        let path = url.standardizedFileURL.path
+        guard let owner = openOwners[path]?.owner,
+              owner.project?.url.standardizedFileURL.path == path else {
+            openOwners[path] = nil
+            return nil
+        }
+        return owner
+    }
+
+    /// Whether a window shows this project. A project opened over the API
+    /// while no window shows the primary model doesn't count.
+    func isOpen(_ url: URL) -> Bool {
+        owner(of: url).map { AppModels.shared.isShown($0) } ?? false
+    }
+}
+
+enum PendingProjectAction {
+    case new
+    case choose
+    case open(URL)
 }
 
 // MARK: - Files
@@ -406,7 +437,12 @@ extension GenerationViewModel {
 
     private func attachProject(url: URL, file: ProjectFile, applyingDraft: Bool) throws {
         if project?.url.standardizedFileURL == url.standardizedFileURL { return }
-        if ProjectStore.shared.isOpen(url) { throw ProjectError.alreadyOpen(file.name) }
+        if let owner = ProjectStore.shared.owner(of: url), owner !== self {
+            guard !AppModels.shared.isShown(owner) else { throw ProjectError.alreadyOpen(file.name) }
+            // Opened over the API with no window showing the primary
+            // model: hand it over.
+            owner.closeProject(explicitly: false)
+        }
         closeProject(explicitly: false)
         if applyingDraft {
             let missing = applyDraft(file.draft, projectURL: url)
@@ -418,7 +454,7 @@ extension GenerationViewModel {
         batchCount = file.batchCount.clamped(to: batchCountRange)
         project = OpenProject(url: url, name: file.name, createdAt: file.createdAt)
         lastSavedProjectFile = file
-        ProjectStore.shared.noteOpened(url)
+        ProjectStore.shared.noteOpened(url, by: self)
         reloadProjectVideos()
         startProjectAutosave()
     }

@@ -86,7 +86,6 @@
 "最後の画像も指定…" = "Also Set the Last Image…";
 "参照画像・動画・音声" = "Reference images, videos and audio";
 "ファイルを選ぶ…" = "Choose Files…";
-"%lld. %@" = "%lld. %@";
 "取り除く" = "Remove";
 "Tabで入力 ・ Enterで生成 ・ Shift+Enterで改行" = "Tab to use · Enter to generate · Shift+Enter for a new line";
 "画面の形" = "Shape";
@@ -166,6 +165,7 @@
 
 /* GenerationViewModel+API.swift */
 "起動できませんでした（%@）" = "Couldn't start (%@)";
+"%@（別のウィンドウで受け付け中）" = "%@ (served by another window)";
 
 /* GenerationViewModel.swift */
 "シード値を入力してください" = "Enter a seed";
@@ -333,3 +333,4 @@
 "参照ファイルをプロジェクトにコピーできませんでした（詳細: %@）" = "Couldn't copy a reference file into the project (details: %@)";
 "表示中の動画を参照に使う" = "Use the Shown Video as Reference";
 "プロジェクトをFinderで表示" = "Show Project in Finder";
+"クリックで内容を確認" = "Click to preview";

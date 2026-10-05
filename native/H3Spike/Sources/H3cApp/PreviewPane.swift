@@ -69,6 +69,10 @@ struct PreviewPane: View {
                                  CGSize(width: CGFloat($0.sizeProfile.dimensions.width),
                                         height: CGFloat($0.sizeProfile.dimensions.height))
                              } ?? .zero)
+                // The player is created once per view; a new identity per
+                // video makes showing another saved video (or a new result)
+                // load it instead of keeping the previous one.
+                .id(url)
         } else if viewModel.isGenerating {
             generatingView
         } else {

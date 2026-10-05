@@ -347,8 +347,9 @@ final class GenerationViewModel: ObservableObject {
     // MARK: Local automation API (see GenerationViewModel+API.swift) -
     // replaces the old Python gui/server.py entirely: while this app runs,
     // the same job/state a person drives through the form is also reachable
-    // over HTTP, with no separate process or dependency to install.
-    var apiServer: HTTPServer?
+    // over HTTP, with no separate process or dependency to install. One
+    // server for the app (APIHost); this is what it says about this window,
+    // set when a window shows this model (AppModels).
     @Published var apiServerStatus: String = String(localized: "起動しています…")
 
     init() {
@@ -362,10 +363,9 @@ final class GenerationViewModel: ObservableObject {
             MainActor.assumeIsolated {
                 self?.saveProjectIfChanged()
                 self?.deleteTemporaryPreview()
-                self?.apiServer?.stop()
+                APIHost.shared.stop()
             }
         }
-        startAPIServer()
         followTurboLoRASteps()
     }
 

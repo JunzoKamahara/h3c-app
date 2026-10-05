@@ -16,22 +16,45 @@ import H3Engine
 /// current result until the next generate() call deletes it.
 let h3APIPort: UInt16 = 8420
 
-extension GenerationViewModel {
-    func startAPIServer() {
-        let server = HTTPServer(port: h3APIPort) { [weak self] request in
-            guard let self else { return .error(500, "app is shutting down") }
-            return await self.handleAPIRequest(request)
+/// The app's one API server, started at launch and kept until quit. It
+/// always talks to the primary model (AppModels), which outlives its window,
+/// so the API keeps working with every window closed while the app runs.
+@MainActor
+final class APIHost {
+    static let shared = APIHost()
+
+    private var server: HTTPServer?
+    private var startError: String?
+
+    func start() {
+        guard server == nil, startError == nil else { return }
+        let server = HTTPServer(port: h3APIPort) { request in
+            await AppModels.shared.primary.handleAPIRequest(request)
         }
         do {
             try server.start()
-            apiServer = server
-            apiServerStatus = "http://127.0.0.1:\(h3APIPort)"
+            self.server = server
         } catch {
-            let detail = String(describing: error)
-            apiServerStatus = String(localized: "起動できませんでした（\(detail)）")
+            startError = String(describing: error)
         }
     }
 
+    func stop() {
+        server?.stop()
+        server = nil
+    }
+
+    /// What 「APIサーバー」 says in `model`'s window.
+    func status(for model: GenerationViewModel) -> String {
+        if let startError { return String(localized: "起動できませんでした（\(startError)）") }
+        guard server != nil else { return String(localized: "起動しています…") }
+        let address = "http://127.0.0.1:\(h3APIPort)"
+        return model === AppModels.shared.primary
+            ? address : String(localized: "\(address)（別のウィンドウで受け付け中）")
+    }
+}
+
+extension GenerationViewModel {
     func handleAPIRequest(_ request: HTTPRequest) async -> HTTPResponse {
         switch (request.method, request.path) {
         case ("GET", "/api/status"):
