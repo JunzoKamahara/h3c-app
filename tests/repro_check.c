@@ -42,6 +42,8 @@ typedef struct {
     char reference[1024]; /* empty = T2V */
     int width;
     int height;
+    int render_width;  /* 0 = generate at width x height */
+    int render_height;
     int frames;
     int steps;
     int reuse;
@@ -270,9 +272,10 @@ static void usage(void) {
         "         [--core-reuse N] [--fast 0|1] [--seed N] [--prompt TEXT]\n"
         "         [--cache 0|1|LIST] [--run 'key=value;key=value' ...]\n"
         "  --run adds one run with the base request overridden by the given\n"
-        "  keys (prompt, ref, size or width/height, frames, steps, reuse,\n"
-        "  layers, core_reuse, fast, seed, cache); without --run the base\n"
-        "  request runs N times.\n"
+        "  keys (prompt, ref, size or width/height, render=WxH, frames,\n"
+        "  steps, reuse, layers, core_reuse, fast, seed, cache); without\n"
+        "  --run the base request runs N times. render generates at WxH and\n"
+        "  upscales to width x height (set those to the output size).\n"
         "  cache: 0, 1 (all) or a comma list of conditioning, dit, decoder,\n"
         "  refined, adaln.\n"
         "  Defaults: Ref2VA with a generated 512x512 reference image, 512x512,\n"
@@ -309,6 +312,10 @@ static int set_key(request *req, const char *key, const char *value) {
     else if (!strcmp(key, "size")) req->width = req->height = atoi(value);
     else if (!strcmp(key, "width")) req->width = atoi(value);
     else if (!strcmp(key, "height")) req->height = atoi(value);
+    else if (!strcmp(key, "render")) {
+        if (sscanf(value, "%dx%d", &req->render_width, &req->render_height) != 2)
+            return 0;
+    }
     else if (!strcmp(key, "frames")) req->frames = atoi(value);
     else if (!strcmp(key, "steps")) req->steps = atoi(value);
     else if (!strcmp(key, "reuse")) req->reuse = atoi(value);
@@ -342,6 +349,8 @@ static void parse_run(request *req, const char *spec) {
 static int same_request(const request *a, const request *b) {
     return !strcmp(a->prompt, b->prompt) && !strcmp(a->reference, b->reference) &&
            a->width == b->width && a->height == b->height &&
+           a->render_width == b->render_width &&
+           a->render_height == b->render_height &&
            a->frames == b->frames && a->steps == b->steps &&
            a->reuse == b->reuse && a->layers == b->layers &&
            a->core_reuse == b->core_reuse && a->fast == b->fast &&
@@ -349,9 +358,13 @@ static int same_request(const request *a, const request *b) {
 }
 
 static void describe(const request *req, char *out, size_t size) {
-    snprintf(out, size, "%s %dx%d %dfr %dst reuse%d seed%llu%s%s cache%s%s%s%s%s%s "
+    char render[32] = "";
+    if (req->render_width)
+        snprintf(render, sizeof(render), " (DiT %dx%d)", req->render_width,
+                 req->render_height);
+    snprintf(out, size, "%s %dx%d%s %dfr %dst reuse%d seed%llu%s%s cache%s%s%s%s%s%s "
              "\"%.40s\"",
-             req->reference[0] ? "Ref2VA" : "T2V", req->width, req->height,
+             req->reference[0] ? "Ref2VA" : "T2V", req->width, req->height, render,
              req->frames, req->steps, req->reuse,
              (unsigned long long)req->seed,
              req->fast ? " fast" : "",
@@ -379,6 +392,8 @@ static void run_one(h3_ctx *ctx, run_result *r, const char *home) {
     h3_params params = H3_PARAMS_DEFAULT;
     params.width = req->width;
     params.height = req->height;
+    params.render_width = req->render_width;
+    params.render_height = req->render_height;
     params.frames = req->frames;
     params.steps = req->steps;
     params.seed = req->seed;
