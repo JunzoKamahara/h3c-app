@@ -28,6 +28,9 @@ struct ProjectMenuItems: View {
     var body: some View {
         Button("新規プロジェクト…") { viewModel.showingNewProject = true }
             .keyboardShortcut(inMenuBar ? KeyboardShortcut("n", modifiers: [.command, .shift]) : nil)
+        Button("プロジェクトとして保存…") { viewModel.showingSaveAsProject = true }
+            .disabled(viewModel.project != nil)
+            .help("今のプロンプトと設定、プレビューの動画を、名前を付けてプロジェクトとして保存します")
         Button("プロジェクトを開く…") { viewModel.chooseAndOpenProject() }
             .keyboardShortcut(inMenuBar ? KeyboardShortcut("o", modifiers: .command) : nil)
         let recents = store.existingRecents.filter { $0.standardizedFileURL != viewModel.project?.url.standardizedFileURL }
@@ -54,9 +57,12 @@ struct ProjectMenuItems: View {
     }
 }
 
+/// 新規プロジェクト, and プロジェクトとして保存 (`savingAs`), which also moves
+/// in the temp video shown in the preview.
 struct NewProjectSheet: View {
     @ObservedObject var viewModel: GenerationViewModel
     @Binding var isPresented: Bool
+    var savingAs = false
     @State private var name = ""
     @State private var parent = ProjectStore.defaultParentDirectory
 
@@ -67,7 +73,7 @@ struct NewProjectSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: H3Spacing.md) {
-            Text("新規プロジェクト").font(.headline)
+            Text(savingAs ? "プロジェクトとして保存" : "新規プロジェクト").font(.headline)
             TextField("プロジェクト名", text: $name)
                 .textFieldStyle(.roundedBorder)
             HStack(alignment: .firstTextBaseline) {
@@ -80,7 +86,7 @@ struct NewProjectSheet: View {
                 Button("変更…") { chooseParent() }
             }
             .font(.callout)
-            Text("今のプロンプトと設定、参照ファイルがプロジェクトに入ります。生成した動画はこのフォルダに保存され、削除するまで残ります。")
+            Text(description)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -97,9 +103,13 @@ struct NewProjectSheet: View {
                     isPresented = false
                 }
                     .keyboardShortcut(.cancelAction)
-                Button("作成") {
+                Button(savingAs ? "保存" : "作成") {
                     viewModel.projectMessage = nil
-                    viewModel.createProject(name: name, parent: parent)
+                    if savingAs {
+                        viewModel.saveAsProject(name: name, parent: parent)
+                    } else {
+                        viewModel.createProject(name: name, parent: parent)
+                    }
                     if viewModel.project != nil { isPresented = false }
                 }
                 .keyboardShortcut(.defaultAction)
@@ -108,6 +118,16 @@ struct NewProjectSheet: View {
         }
         .padding(H3Spacing.lg)
         .frame(width: 480)
+    }
+
+    private var description: String {
+        guard savingAs else {
+            return String(localized: "今のプロンプトと設定、参照ファイルがプロジェクトに入ります。生成した動画はこのフォルダに保存され、削除するまで残ります。")
+        }
+        if let pending = viewModel.savableTemporaryResult {
+            return String(localized: "今のプロンプトと設定、参照ファイル、プレビューの動画（\(pending.url.lastPathComponent)）をプロジェクトとして保存します。これから生成する動画もこのフォルダに保存され、削除するまで残ります。")
+        }
+        return String(localized: "今のプロンプトと設定、参照ファイルをプロジェクトとして保存します（プレビューに保存できる動画はありません）。これから生成する動画はこのフォルダに保存され、削除するまで残ります。")
     }
 
     private func chooseParent() {

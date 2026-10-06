@@ -91,6 +91,9 @@ struct ContentView: View {
         .sheet(isPresented: $viewModel.showingNewProject) {
             NewProjectSheet(viewModel: viewModel, isPresented: $viewModel.showingNewProject)
         }
+        .sheet(isPresented: $viewModel.showingSaveAsProject) {
+            NewProjectSheet(viewModel: viewModel, isPresented: $viewModel.showingSaveAsProject, savingAs: true)
+        }
         .sheet(isPresented: $viewModel.showingBatchProject) {
             BatchProjectSheet(viewModel: viewModel, store: ProjectStore.shared,
                               isPresented: $viewModel.showingBatchProject)
@@ -100,7 +103,7 @@ struct ContentView: View {
         }
         .alert("プロジェクト", isPresented: Binding(
             get: { viewModel.projectMessage != nil && !viewModel.showingNewProject
-                && !viewModel.showingBatchProject },
+                && !viewModel.showingBatchProject && !viewModel.showingSaveAsProject },
             set: { if !$0 { viewModel.projectMessage = nil } }
         )) {
             Button("OK") { viewModel.projectMessage = nil }

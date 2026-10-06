@@ -370,6 +370,12 @@ final class GenerationViewModel: ObservableObject {
     @Published var showingProjectVideos = false
     /// Asked for when generating several videos with no project open.
     @Published var showingBatchProject = false
+    /// プロジェクトとして保存 (no project open): the form, and the temp video
+    /// in the preview if there is one.
+    @Published var showingSaveAsProject = false
+    /// The record of a video finished with no project open (its `video` is
+    /// the temp file's name), so saving as a project can keep it.
+    var temporaryResultRecord: ProjectVideoRecord?
     var projectAutosave: AnyCancellable?
     var lastSavedProjectFile: ProjectFile?
     /// Outside references being copied into the project (startReferenceImport).
@@ -838,21 +844,25 @@ final class GenerationViewModel: ObservableObject {
         let completedAt = Date()
         let generationSeconds = completedAt.timeIntervalSince(startedAt)
         var url = URL(fileURLWithPath: result.outputPath)
+        var draft = request.draft
+        draft.seed = String(result.seed)
+        let record = ProjectVideoRecord(
+            video: url.lastPathComponent, completedAt: completedAt, seed: String(result.seed),
+            seedWasRandom: seedWasRandom, generationSeconds: generationSeconds,
+            actualFrameCount: result.frames, fps: result.fps,
+            effectiveDenoiseReuse: request.effectiveDenoiseReuse,
+            ccvAttentionCalls: result.ccvAttentionCalls,
+            ccvAttentionDirectCalls: result.ccvAttentionDirectCalls,
+            deviceLine: request.deviceLine, appVersion: Self.appVersion, draft: draft)
         if let projectURL = request.projectURL {
-            var draft = request.draft
-            draft.seed = String(result.seed)
-            let record = ProjectVideoRecord(
-                video: "", completedAt: completedAt, seed: String(result.seed),
-                seedWasRandom: seedWasRandom, generationSeconds: generationSeconds,
-                actualFrameCount: result.frames, fps: result.fps,
-                effectiveDenoiseReuse: request.effectiveDenoiseReuse,
-                ccvAttentionCalls: result.ccvAttentionCalls,
-                ccvAttentionDirectCalls: result.ccvAttentionDirectCalls,
-                deviceLine: request.deviceLine, appVersion: Self.appVersion, draft: draft)
             if let stored = storeInProject(videoAt: url, projectURL: projectURL, record: record,
                                            completedAt: completedAt, seed: result.seed) {
                 url = stored
             }
+            temporaryResultRecord = nil
+        } else {
+            // Kept for プロジェクトとして保存, which can take this video along.
+            temporaryResultRecord = record
         }
         let dimensions = request.sizeProfile.dimensions
         resultURL = url

@@ -366,3 +366,10 @@
 "「%@」の設定を上書きしますか？" = "Overwrite the settings of “%@”?";
 "上書きして生成" = "Overwrite and Generate";
 "このプロジェクトに保存されているプロンプトと設定は、今のものと異なります。上書きすると、今のプロンプトと設定で生成し、プロジェクトに保存します。" = "The prompt and settings saved in this project differ from the current ones. Overwriting generates with the current prompt and settings and saves them in the project.";
+
+/* Save as project */
+"プロジェクトとして保存…" = "Save as Project…";
+"今のプロンプトと設定、プレビューの動画を、名前を付けてプロジェクトとして保存します" = "Saves the current prompt and settings, and the video in the preview, as a named project";
+"プロジェクトとして保存" = "Save as Project";
+"今のプロンプトと設定、参照ファイル、プレビューの動画（%@）をプロジェクトとして保存します。これから生成する動画もこのフォルダに保存され、削除するまで残ります。" = "Saves the current prompt and settings, the reference files and the video in the preview (%@) as a project. Videos you generate next are saved in this folder too and stay until you delete them.";
+"今のプロンプトと設定、参照ファイルをプロジェクトとして保存します（プレビューに保存できる動画はありません）。これから生成する動画はこのフォルダに保存され、削除するまで残ります。" = "Saves the current prompt and settings and the reference files as a project (there is no video in the preview to save). Videos you generate next are saved in this folder and stay until you delete them.";

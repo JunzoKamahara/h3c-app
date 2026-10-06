@@ -484,6 +484,64 @@ extension GenerationViewModel {
         return true
     }
 
+    // MARK: Save as project
+
+    /// The temp video in the preview with its record, if saving as a project
+    /// can take it along.
+    var savableTemporaryResult: (url: URL, record: ProjectVideoRecord)? {
+        guard !isGenerating, let resultURL, isTemporaryResult(resultURL),
+              let record = temporaryResultRecord, record.video == resultURL.lastPathComponent,
+              FileManager.default.fileExists(atPath: resultURL.path) else { return nil }
+        return (resultURL, record)
+    }
+
+    /// プロジェクトとして保存: a new project from the current form (as
+    /// 新規プロジェクト), also moving in the temp video shown in the preview
+    /// with its record.
+    func saveAsProject(name: String, parent: URL) {
+        let pending = savableTemporaryResult
+        createProject(name: name, parent: parent)
+        guard let project, let pending else { return }
+        guard let stored = storeInProject(videoAt: pending.url, projectURL: project.url,
+                                          record: pending.record,
+                                          completedAt: pending.record.completedAt,
+                                          seed: UInt64(pending.record.seed) ?? 0) else { return }
+        temporaryResultRecord = nil
+        resultURL = stored
+        importRecordReferences(
+            at: stored.deletingPathExtension().appendingPathExtension("json"), projectURL: project.url)
+    }
+
+    /// A record made outside a project points at its input files where they
+    /// were: copy them into the project (an identical file already there is
+    /// reused) off the main actor, and point the record at the copies.
+    private func importRecordReferences(at recordURL: URL, projectURL: URL) {
+        Task { [weak self] in
+            let changed = await Task.detached(priority: .utility) { () -> Bool in
+                guard let data = try? Data(contentsOf: recordURL),
+                      var record = try? ProjectFiles.decoder.decode(ProjectVideoRecord.self, from: data)
+                else { return false }
+                func imported(_ path: String) -> String {
+                    guard path.hasPrefix("/"), FileManager.default.fileExists(atPath: path),
+                          let copy = try? ProjectFiles.importReference(path, into: projectURL)
+                    else { return path }
+                    return ProjectFiles.stored(copy, in: projectURL)
+                }
+                let before = record.draft
+                record.draft.firstFrame = record.draft.firstFrame.map(imported)
+                record.draft.lastFrame = record.draft.lastFrame.map(imported)
+                record.draft.references = record.draft.references.map {
+                    .init(kind: $0.kind, path: imported($0.path))
+                }
+                guard record.draft != before,
+                      let encoded = try? ProjectFiles.encoder.encode(record) else { return false }
+                return (try? encoded.write(to: recordURL, options: .atomic)) != nil
+            }.value
+            guard let self, changed, self.project?.url == projectURL else { return }
+            self.reloadProjectVideos()
+        }
+    }
+
     func chooseAndOpenProject() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
