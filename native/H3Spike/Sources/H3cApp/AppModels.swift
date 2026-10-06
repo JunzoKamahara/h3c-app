@@ -82,5 +82,6 @@ struct WindowRoot: View {
     var body: some View {
         ContentView(viewModel: slot.model, fresh: slot.fresh)
             .background(WindowCloseObserver { AppModels.shared.release(slot.model) })
+            .modifier(FullScreenToolbarAutoHide())
     }
 }

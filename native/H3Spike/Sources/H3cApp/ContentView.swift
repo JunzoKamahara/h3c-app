@@ -192,3 +192,17 @@ struct WindowCloseObserver: NSViewRepresentable {
         }
     }
 }
+
+/// In full screen, hides the window's toolbar (project menu and title) so
+/// the preview takes the whole screen; moving the pointer to the top edge
+/// shows it. SwiftUI's own setting, macOS 15 and later: the app's
+/// presentation options (autoHideToolbar) didn't hide SwiftUI's toolbar.
+struct FullScreenToolbarAutoHide: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 15, *) {
+            content.windowToolbarFullScreenVisibility(.onHover)
+        } else {
+            content
+        }
+    }
+}
