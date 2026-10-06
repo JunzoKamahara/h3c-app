@@ -29,10 +29,12 @@ below.
 
 ## Requirements
 
-- Apple Silicon Mac, macOS 13+. An M5-class GPU (Metal 4 TensorOps) unlocks
-  the fastest int8 paths; older Apple Silicon works but falls back to
-  BF16/MPSGraph automatically. Hiding the toolbar in full screen needs
-  macOS 15 or later (see Window under [Features](#features)).
+- Apple Silicon Mac, macOS 15 (Sequoia) or later: the engine uses
+  MPSGraph's scaled dot-product attention (macOS 15) and BF16 (macOS 14).
+  Releases up to 0.4.3 listed macOS 13, but their engine already needed
+  these APIs. An M5-class GPU (Metal 4 TensorOps) unlocks the fastest int8
+  paths; older Apple Silicon works but falls back to BF16/MPSGraph
+  automatically.
 - Xcode Command Line Tools (`clang`, `swift`, `ar`) — only needed when
   building from source; not required for the prebuilt `.dmg`.
 - The MiniMax-H3 checkpoint from Hugging Face
@@ -144,8 +146,7 @@ to skip that step and stream the original BF16 weights instead.
   scroll wheel in the preview, and export that starts in Downloads and
   remembers the last folder. In full screen, the toolbar (project menu and
   title) hides so the preview takes the whole screen, and shows again when
-  the pointer reaches the top edge - on macOS 15 and later only (SwiftUI's
-  `windowToolbarFullScreenVisibility`); on macOS 13 and 14 it stays visible.
+  the pointer reaches the top edge.
 - **int8 video VAE on M5**: the video VAE decoder's transformer linears run
   on the int8 TensorOps kernels, about 3x faster decode than F32 at 46 dB
   PSNR against it (`H3_VAE_INT8=0` restores F32).

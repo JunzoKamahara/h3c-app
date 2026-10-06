@@ -29,10 +29,11 @@ Toolsもソースからのビルドも不要です。`.dmg`をダウンロード
 
 ## 動作要件
 
-- Apple Siliconを搭載したMac、macOS 13以降。M5クラスのGPU（Metal 4
-  TensorOps）で最速のint8経路が有効になる。それより古いApple Siliconでも
-  動作するが、BF16/MPSGraphに自動的にフォールバックする。全画面表示で
-  ツールバーを隠す動作はmacOS 15以降が必要（[機能](#機能)のウィンドウを参照）。
+- Apple Siliconを搭載したMac、macOS 15（Sequoia）以降。エンジンがMPSGraphの
+  Attention関数（macOS 15）とBF16（macOS 14）を使うため。0.4.3までは
+  macOS 13以降と表記していたが、エンジンはすでにこれらのAPIを必要としていた。M5クラスの
+  GPU（Metal 4 TensorOps）で最速のint8経路が有効になる。それより古いApple
+  Siliconでも動作するが、BF16/MPSGraphに自動的にフォールバックする。
 - Xcode Command Line Tools（`clang`、`swift`、`ar`） —
   ソースからビルドする場合のみ必要。ビルド済み`.dmg`では不要。
 - Hugging Faceの
@@ -141,9 +142,7 @@ MiniMax-H3を直接ダウンロードするか尋ねます（[機能](#機能)�
   ホイールでの拡大縮小、書き出し先の既定をダウンロードフォルダにし前回の
   フォルダを記憶、にも対応しています。全画面表示では上のツールバー（プロジェクト
   メニューとタイトル）を隠してプレビューを画面全体に表示し、マウスを画面の上端に
-  移動すると表示します。これはmacOS 15以降のみの動作で（SwiftUIの
-  `windowToolbarFullScreenVisibility`を使用）、macOS 13・14では全画面でも
-  ツールバーは表示されたままです。
+  移動すると表示します。
 - **M5でのint8動画VAE**: 動画VAEデコーダーのTransformer線形層をint8
   TensorOpsカーネルで計算し、F32比で約3倍速いデコードをPSNR 46dBの画質で
   実現しています（`H3_VAE_INT8=0`でF32に戻せます）。
