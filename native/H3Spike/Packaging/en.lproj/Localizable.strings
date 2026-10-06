@@ -94,8 +94,6 @@
 "動画をつくる（Enter / ⌘Return）" = "Generate (Enter / ⌘Return)";
 "動画をつくる" = "Generate";
 "大きさ" = "Size";
-"小（%@）" = "Small (%@)";
-"大（%@）" = "Large (%@)";
 "大" = "Large";
 "小" = "Small";
 "%lld 秒" = "%lld s";
@@ -335,3 +333,23 @@
 "プロジェクトをFinderで表示" = "Show Project in Finder";
 "クリックで内容を確認" = "Click to preview";
 "参照ファイルをプロジェクトにコピーしています" = "Copying references into the project";
+
+/* Size presets (小/中/大, 2x) and custom size */
+"中" = "Medium";
+"カスタム" = "Custom";
+"カスタム（%@）" = "Custom (%@)";
+"2倍に拡大（%@で生成）" = "Upscale 2x (generated at %@)";
+"%@ ×2" = "%@ ×2";
+"%@（%@から2倍）" = "%1$@ (2x from %2$@)";
+"サイズ" = "Size";
+"カスタムサイズを使う" = "Use a custom size";
+"幅" = "Width";
+"高さ" = "Height";
+"現在: %@。プリセットはプロンプト欄の「画面の形」「大きさ」で選びます。" = "Current: %@. Choose a preset with Shape and Size in the prompt area.";
+"このMacでの目安: 約%lld分（いまの設定・これまでの生成実績から）" = "Estimate on this Mac: about %lld min (from the current settings and past generations)";
+"完成まで1時間以上かかる見込みです。サイズ・長さ・ステップ数を下げることを検討してください。" = "This is expected to take over an hour. Consider a smaller size, a shorter length or fewer steps.";
+"完成 %@ ・ 生成 %@（%@ピクセル / 上限 %@）" = "Finished %1$@ · generated at %2$@ (%3$@ pixels / limit %4$@)";
+"このままでは生成できません。サイズを小さくするか、「半分のサイズで生成して2倍に拡大」をオンにしてください。" = "This size can’t be generated as is. Make it smaller, or turn on “Generate at half size and upscale 2x”.";
+"幅・高さは完成する動画のサイズです（32の倍数、2倍の拡大では64の倍数）。生成するサイズ（2倍の拡大ではその半分）が%@ピクセル以下になるようにしてください。拡大は生成後に行うため、時間はほとんど増えません。プロンプト欄の「大きさ」を選ぶとプリセットに戻ります。" = "Width and height are the finished video’s size (multiples of 32, or 64 with the 2x upscale). Keep the generated size (half of it with the 2x upscale) at %@ pixels or fewer. The upscale runs after generation, so it adds almost no time. Choosing a Size in the prompt area returns to the presets.";
+"半分のサイズで生成して2倍に拡大" = "Generate at half size and upscale 2x";
+"カスタムサイズの生成サイズが上限（%lldピクセル）を超えています。詳細設定で小さくするか、2倍の拡大を使ってください" = "The custom size is generated above the %lld-pixel limit. Make it smaller in Advanced Settings, or use the 2x upscale";

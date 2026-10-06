@@ -290,9 +290,11 @@ struct CreationFormView: View {
             Picker("画面の形", selection: Binding(
                 get: { viewModel.sizeProfile.shape },
                 set: { shape in
-                    // Keep 小/大 when the shape changes.
-                    viewModel.sizeProfile = SizeProfile.profile(
-                        for: shape, large: viewModel.sizeProfile.isLarge)
+                    // Keep 小/中/大 and the upscale when the shape changes; a
+                    // custom size goes back to the presets at 中.
+                    let current = viewModel.sizeProfile
+                    viewModel.sizeProfile = .preset(shape, current.tier ?? .medium,
+                                                    upscaled: current.upscaled)
                 }
             )) {
                 ForEach(AspectShape.allCases) { shape in
@@ -313,27 +315,44 @@ struct CreationFormView: View {
 
     private var sizeMenu: some View {
         Menu {
+            let current = viewModel.sizeProfile
             Picker("大きさ", selection: Binding(
-                get: { viewModel.sizeProfile.isLarge },
-                set: { large in
-                    viewModel.sizeProfile = SizeProfile.profile(
-                        for: viewModel.sizeProfile.shape, large: large)
+                get: { current.tier },
+                set: { tier in
+                    guard let tier else { return }
+                    viewModel.sizeProfile = .preset(current.shape, tier, upscaled: current.upscaled)
                 }
             )) {
-                let shape = viewModel.sizeProfile.shape
-                Text("小（\(SizeProfile.profile(for: shape, large: false).resolutionLabel)）").tag(false)
-                Text("大（\(SizeProfile.profile(for: shape, large: true).resolutionLabel)）").tag(true)
+                ForEach(SizeTier.allCases) { tier in
+                    let profile = SizeProfile.preset(current.shape, tier, upscaled: current.upscaled)
+                    Text("\(tier.label)（\(profile.resolutionLabel)）").tag(Optional(tier))
+                }
+                if current.isCustom {
+                    Text("カスタム（\(current.resolutionLabel)）").tag(SizeTier?.none)
+                }
             }
             .pickerStyle(.inline)
+            Divider()
+            Toggle(isOn: Binding(
+                get: { current.upscaled },
+                set: { viewModel.sizeProfile = viewModel.sizeProfile.withUpscale($0) }
+            )) {
+                Text("2倍に拡大（\(current.canvasLabel)で生成）")
+            }
         } label: {
-            composerChip(systemImage: "arrow.up.left.and.arrow.down.right",
-                         text: viewModel.sizeProfile.isLarge ? String(localized: "大") : String(localized: "小"))
+            composerChip(systemImage: "arrow.up.left.and.arrow.down.right", text: sizeChipText)
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()
-        .help("大きさ（\(viewModel.sizeProfile.resolutionLabel)）")
+        .help("大きさ（\(viewModel.sizeProfile.label)）")
+    }
+
+    private var sizeChipText: String {
+        let profile = viewModel.sizeProfile
+        let name = profile.tier?.label ?? String(localized: "カスタム")
+        return profile.upscaled ? String(localized: "\(name) ×2") : name
     }
 
     private var durationMenu: some View {

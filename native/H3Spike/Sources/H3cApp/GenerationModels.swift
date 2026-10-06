@@ -1,59 +1,208 @@
 import Foundation
 
-// Mirrors PROFILES in gui/server.py: only these validated combinations of
-// output size and (optional) lower internal render size are offered, rather
-// than letting arbitrary width/height reach h3_generate. Do not add sizes
-// (720p, 16:9, ...) that aren't one of these confirmed profiles.
-enum SizeProfile: String, CaseIterable, Identifiable {
-    // Declaration order matters: profiles(for:).first is each shape's
-    // default, so the previously-only upscaled variant stays first/default
-    // and the native (pre-upscale, half-size) variant is the alternative.
-    case smallSquare, square, landscapeUpscaled, landscapeNative, portraitUpscaled, portraitNative
+// Size tier of the preset sizes (プロンプト欄の「大きさ」).
+enum SizeTier: String, CaseIterable, Identifiable {
+    case small, medium, large
     var id: String { rawValue }
 
-    var label: String { "\(shape.label) \(resolutionLabel)" }
+    var label: String {
+        switch self {
+        case .small: return String(localized: "小")
+        case .medium: return String(localized: "中")
+        case .large: return String(localized: "大")
+        }
+    }
+}
+
+// What the DiT generates and what the video is delivered at: a preset
+// (shape x 小/中/大 - the DiT canvas, doubled by the upscale) or a custom
+// finished size from 詳細設定 (generated at half of it when upscaled),
+// either one optionally upscaled 2x on the host after decoding (Accelerate's high-quality
+// resampling in h3_resize_rgb24_high_quality). Stored as rawValue in
+// drafts, presets and project records; the six names from before the
+// 小/中/大 presets keep their meaning.
+struct SizeProfile: Hashable, Identifiable {
+    enum Base: Hashable {
+        case preset(AspectShape, SizeTier)
+        /// The finished (output) size.
+        case custom(width: Int32, height: Int32)
+    }
+
+    var base: Base
+    var upscaled: Bool
+
+    var id: String { rawValue }
+
+    // DiT canvases: the large ones stay within customMaxPixels like a custom
+    // size must. 960x544, 768x768 and 1920x1088/1536x1536 upscaled were
+    // measured on a 24 GB M5 (SPEEDUP_ROADMAP.md section 8).
+    private static func presetCanvas(_ shape: AspectShape, _ tier: SizeTier) -> (width: Int32, height: Int32) {
+        let landscape: (Int32, Int32)
+        switch (shape, tier) {
+        case (.square, .small): return (256, 256)
+        case (.square, .medium): return (512, 512)
+        case (.square, .large): return (768, 768)
+        case (_, .small): landscape = (448, 256)
+        case (_, .medium): landscape = (672, 384)
+        case (_, .large): landscape = (960, 544)
+        }
+        return shape == .portrait ? (landscape.1, landscape.0) : landscape
+    }
+
+    /// The custom limit on the generated (DiT) canvas, before any upscale.
+    static let customMaxPixels = 600_000
+    /// Sides of the generated canvas.
+    static let customCanvasSideRange: ClosedRange<Int32> = 256 ... 1344
+
+    /// A custom finished size's sides: multiples of 32, or of 64 when
+    /// upscaled (the generated canvas is half and must stay a multiple of 32).
+    static func customSideStep(upscaled: Bool) -> Int32 { upscaled ? 64 : 32 }
+
+    static func customSideRange(upscaled: Bool) -> ClosedRange<Int32> {
+        let factor: Int32 = upscaled ? 2 : 1
+        return customCanvasSideRange.lowerBound * factor ... customCanvasSideRange.upperBound * factor
+    }
+
+    /// Sides in range and on the step; the pixel limit is checked separately
+    /// (isWithinCustomLimit) so an over-limit draft still loads and is flagged.
+    static func isWellFormedCustom(width: Int32, height: Int32, upscaled: Bool) -> Bool {
+        let range = customSideRange(upscaled: upscaled)
+        let step = customSideStep(upscaled: upscaled)
+        return range.contains(width) && range.contains(height)
+            && width % step == 0 && height % step == 0
+    }
+
+    /// Whether a custom size is generated within customMaxPixels (presets
+    /// always are).
+    var isWithinCustomLimit: Bool { !isCustom || ditPixels <= Self.customMaxPixels }
+
+    static let square = SizeProfile(base: .preset(.square, .medium), upscaled: false)
+
+    static func preset(_ shape: AspectShape, _ tier: SizeTier, upscaled: Bool = false) -> SizeProfile {
+        SizeProfile(base: .preset(shape, tier), upscaled: upscaled)
+    }
+
+    static func custom(width: Int32, height: Int32, upscaled: Bool) -> SizeProfile {
+        SizeProfile(base: .custom(width: width, height: height), upscaled: upscaled)
+    }
+
+    /// Every preset (not custom sizes): the values the API lists.
+    static var allCases: [SizeProfile] {
+        AspectShape.allCases.flatMap { shape in
+            SizeTier.allCases.flatMap { tier in
+                [false, true].map { preset(shape, tier, upscaled: $0) }
+            }
+        }
+    }
+
+    var isCustom: Bool {
+        if case .custom = base { return true }
+        return false
+    }
+
+    var tier: SizeTier? {
+        if case .preset(_, let tier) = base { return tier }
+        return nil
+    }
+
+    /// The canvas the DiT runs at.
+    var canvas: (width: Int32, height: Int32) {
+        switch base {
+        case .preset(let shape, let tier): return Self.presetCanvas(shape, tier)
+        case .custom(let width, let height): return upscaled ? (width / 2, height / 2) : (width, height)
+        }
+    }
+
+    /// The same size with the 2x upscale switched on or off. A preset keeps
+    /// its canvas (so the output doubles); a custom size keeps its finished
+    /// size, rounded to a multiple of 64 when switching the upscale on.
+    func withUpscale(_ on: Bool) -> SizeProfile {
+        guard case .custom(let width, let height) = base, on, !upscaled else {
+            return SizeProfile(base: base, upscaled: on)
+        }
+        let range = Self.customSideRange(upscaled: true)
+        func rounded(_ side: Int32) -> Int32 {
+            min(max((side + 32) / 64 * 64, range.lowerBound), range.upperBound)
+        }
+        return .custom(width: rounded(width), height: rounded(height), upscaled: true)
+    }
+
+    var shape: AspectShape {
+        switch base {
+        case .preset(let shape, _): return shape
+        case .custom(let width, let height):
+            return width > height ? .landscape : width < height ? .portrait : .square
+        }
+    }
+
+    /// Output size and, when upscaled, the lower internal render size
+    /// (render 0 = generated directly at the output size).
+    var dimensions: (width: Int32, height: Int32, renderWidth: Int32, renderHeight: Int32) {
+        let canvas = canvas
+        return upscaled ? (canvas.width * 2, canvas.height * 2, canvas.width, canvas.height)
+                        : (canvas.width, canvas.height, 0, 0)
+    }
+
+    var ditPixels: Int { Int(canvas.width) * Int(canvas.height) }
+    var outputPixels: Int { Int(dimensions.width) * Int(dimensions.height) }
 
     var resolutionLabel: String {
         let d = dimensions
         return "\(d.width)×\(d.height)"
     }
 
-    var shape: AspectShape {
-        switch self {
-        case .smallSquare, .square: return .square
-        case .landscapeUpscaled, .landscapeNative: return .landscape
-        case .portraitUpscaled, .portraitNative: return .portrait
+    var canvasLabel: String { "\(canvas.width)×\(canvas.height)" }
+
+    var label: String {
+        let name = isCustom ? String(localized: "カスタム") : shape.label
+        let text = "\(name) \(resolutionLabel)"
+        return upscaled ? String(localized: "\(text)（\(canvasLabel)から2倍）") : text
+    }
+
+    private static let legacyNames: [String: SizeProfile] = [
+        "smallSquare": preset(.square, .small),
+        "square": preset(.square, .medium),
+        "landscapeNative": preset(.landscape, .medium),
+        "landscapeUpscaled": preset(.landscape, .medium, upscaled: true),
+        "portraitNative": preset(.portrait, .medium),
+        "portraitUpscaled": preset(.portrait, .medium, upscaled: true),
+    ]
+
+    /// Legacy names for the sizes that had one, else
+    /// "<shape>-<tier>[-x2]" or "custom-<W>x<H>[-x2]".
+    var rawValue: String {
+        if let legacy = Self.legacyNames.first(where: { $0.value == self }) { return legacy.key }
+        let suffix = upscaled ? "-x2" : ""
+        switch base {
+        case .preset(let shape, let tier): return "\(shape.rawValue)-\(tier.rawValue)\(suffix)"
+        case .custom(let width, let height): return "custom-\(width)x\(height)\(suffix)"
         }
     }
 
-    var dimensions: (width: Int32, height: Int32, renderWidth: Int32, renderHeight: Int32) {
-        switch self {
-        case .smallSquare: return (256, 256, 0, 0)
-        case .square: return (512, 512, 0, 0)
-        case .landscapeUpscaled: return (1344, 768, 672, 384)
-        // Same aspect as landscapeUpscaled at half the size, generated
-        // directly at output size (no internal upscale) - render size 0
-        // means "exact output canvas" the same way square does.
-        case .landscapeNative: return (672, 384, 0, 0)
-        case .portraitUpscaled: return (768, 1344, 384, 672)
-        case .portraitNative: return (384, 672, 0, 0)
+    init(base: Base, upscaled: Bool) {
+        self.base = base
+        self.upscaled = upscaled
+    }
+
+    init?(rawValue: String) {
+        if let legacy = Self.legacyNames[rawValue] {
+            self = legacy
+            return
         }
-    }
-
-    static func profiles(for shape: AspectShape) -> [SizeProfile] {
-        allCases.filter { $0.shape == shape }
-    }
-
-    private var pixelCount: Int { Int(dimensions.width) * Int(dimensions.height) }
-
-    /// 大 = the larger output of this shape's two profiles, 小 = the smaller.
-    var isLarge: Bool {
-        Self.profiles(for: shape).allSatisfy { $0.pixelCount <= pixelCount }
-    }
-
-    static func profile(for shape: AspectShape, large: Bool) -> SizeProfile {
-        let sorted = profiles(for: shape).sorted { $0.pixelCount < $1.pixelCount }
-        return (large ? sorted.last : sorted.first)!
+        var parts = rawValue.split(separator: "-").map(String.init)
+        let upscaled = parts.last == "x2"
+        if upscaled { parts.removeLast() }
+        if parts.count == 2, parts[0] == "custom" {
+            let size = parts[1].split(separator: "x").compactMap { Int32($0) }
+            guard size.count == 2,
+                  Self.isWellFormedCustom(width: size[0], height: size[1], upscaled: upscaled) else { return nil }
+            self = .custom(width: size[0], height: size[1], upscaled: upscaled)
+        } else if parts.count == 2, let shape = AspectShape(rawValue: parts[0]),
+                  let tier = SizeTier(rawValue: parts[1]) {
+            self = .preset(shape, tier, upscaled: upscaled)
+        } else {
+            return nil
+        }
     }
 }
 

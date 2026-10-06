@@ -237,11 +237,41 @@ final class GenerationViewModel: ObservableObject {
     /// canvases (e.g. 512x512-class) complete in the expected few minutes
     /// with no swapping, so this only warns at the largest profiles with a
     /// double-digit duration - not a precise model, just a conservative
-    /// flag for the one combination actually observed to be this bad.
+    /// flag for the one combination actually observed to be this bad, now
+    /// covering every size above the 512x512 DiT canvas or with an output
+    /// as large as 1344x768.
     var isHeavySsdStreamingConfig: Bool {
         guard computeMode == .ssdStreaming else { return false }
-        let isMaxResolution = sizeProfile == .landscapeUpscaled || sizeProfile == .portraitUpscaled
-        return isMaxResolution && seconds >= 10
+        let isLarge = sizeProfile.ditPixels > 512 * 512 || sizeProfile.outputPixels >= 1344 * 768
+        return isLarge && seconds >= 10
+    }
+
+    /// The whole generation as the progress estimator would predict it
+    /// before starting, from this Mac's past runs (TimingCalibration).
+    var draftEstimatedSeconds: Double? {
+        let frames = Int(h3AlignedFrameCount(seconds: Double(seconds.clamped(to: secondsRange))))
+        let calibration = TimingCalibration.load(for: computeMode, speed: speedMode,
+                                                 fastAttention: useFastAttention,
+                                                 ditLayers: ditLayers.clamped(to: ditLayersRange))
+        let shape = progressShape(sizeProfile: sizeProfile, frames: frames,
+                                  steps: steps.clamped(to: stepsRange), reuse: effectiveDenoiseReuse)
+        let now = Date()
+        return ProgressEstimator(shape: shape, calibration: calibration, start: now)
+            .snapshot(now: now).remaining
+    }
+
+    /// Estimates past this are flagged in 詳細設定.
+    static let longGenerationSeconds = 60.0 * 60
+
+    func progressShape(sizeProfile: SizeProfile, frames: Int, steps: Int, reuse: Int) -> ProgressEstimator.Shape {
+        // ditUnits use the canvas the DiT actually runs at (upscaled sizes
+        // generate at the render size, then upscale).
+        ProgressEstimator.Shape(
+            steps: steps,
+            reuse: reuse,
+            totalFrames: frames,
+            ditUnits: Double(frames) * Double(sizeProfile.ditPixels),
+            decodeUnits: Double(frames) * Double(sizeProfile.outputPixels))
     }
 
     /// Resident mode holds every DiT block in memory at once (h3_dit.c's
@@ -516,6 +546,9 @@ final class GenerationViewModel: ObservableObject {
             return String(localized: "動画の内容を入力してください")
         }
         if let seedValidationMessage { return seedValidationMessage }
+        if !sizeProfile.isWithinCustomLimit {
+            return String(localized: "カスタムサイズの生成サイズが上限（\(SizeProfile.customMaxPixels)ピクセル）を超えています。詳細設定で小さくするか、2倍の拡大を使ってください")
+        }
         if creationMethod == .image {
             switch imageInputMode {
             case .firstLastFrame:
@@ -656,11 +689,6 @@ final class GenerationViewModel: ObservableObject {
         let dimensions = sizeProfile.dimensions
         let requestedSeconds = seconds.clamped(to: secondsRange)
         let requestedFrames = Int(h3AlignedFrameCount(seconds: Double(requestedSeconds)))
-        // Which resolution the DiT actually runs at (the upscaled profiles
-        // generate at renderWidth x renderHeight, then upscale).
-        let ditPixels = dimensions.renderWidth > 0
-            ? Double(dimensions.renderWidth) * Double(dimensions.renderHeight)
-            : Double(dimensions.width) * Double(dimensions.height)
 
         // Design spec invariant #4: only the image state matching the
         // *current* mode reaches the engine - the rest stays in the draft,
@@ -717,12 +745,8 @@ final class GenerationViewModel: ObservableObject {
             loras: loras,
             referenceNames: referenceNames(draft),
             deviceLine: deviceLine,
-            shape: ProgressEstimator.Shape(
-                steps: steps.clamped(to: stepsRange),
-                reuse: effectiveDenoiseReuse,
-                totalFrames: requestedFrames,
-                ditUnits: Double(requestedFrames) * ditPixels,
-                decodeUnits: Double(requestedFrames) * Double(dimensions.width) * Double(dimensions.height)),
+            shape: progressShape(sizeProfile: sizeProfile, frames: requestedFrames,
+                                 steps: steps.clamped(to: stepsRange), reuse: effectiveDenoiseReuse),
             projectURL: project?.url,
             draft: draft)
     }
