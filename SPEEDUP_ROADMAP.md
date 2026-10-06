@@ -2204,6 +2204,22 @@ normal (one frame each checked; `~/Movies/H3cApp-grid/2026-10-05-960x544/`).
 `h3_repro_check` gained `width`/`height` keys and `H3_REPRO_KEEP_DIR`
 (keep each run's video) for these runs.
 
+768x768 vs 960x544 at the app's standard settings (T2V, 1 s = 25 frames
+requested / 39 output, 20 steps, reuse 2, 50 layers, int8 cache,
+`H3_ATTENTION_CACHE_STRICT=1`, seed 7, one process, 2026-10-06):
+
+| size | tokens per latent frame | denoise | video VAE | total | peak footprint |
+|---|---|---|---|---|---|
+| 512x512 | 256 | 76.6 s | 13.5 s | 107.4 s | 6.78 GiB |
+| 960x544 | 510 | 162.9 s | 26.4 s | 206.6 s | 7.16 GiB |
+| 768x768 | 576 | 188.2 s | 28.7 s | 234.3 s | 6.80 GiB |
+
+768x768 has 13% more tokens than 960x544 and took 1.16x the denoise
+(1.13x total) - about the token ratio, well short of attention's
+quadratic 1.27x. 512x512 to 768x768 is 2.25x the tokens for 2.46x the
+denoise. At these sizes the time is close to linear in tokens, so a
+custom-size estimate can scale from tokens; peak memory barely moves.
+
 ## Lower priority, noted but not planned
 
 MATLOWAI's fused model approximates Ref2VA as FL2VA + rank-1024 SVD delta so
