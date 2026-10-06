@@ -51,7 +51,7 @@ if let ccvDir {
 
 let package = Package(
     name: "H3Spike",
-    platforms: [.macOS(.v13)],
+    platforms: [.macOS("15.0")],
     targets: [
         .target(
             name: "CH3",
