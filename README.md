@@ -117,7 +117,9 @@ to skip that step and stream the original BF16 weights instead.
   project's different prompt and settings; after the first, each one
   reuses the encoded prompt and references (about 8 s saved for text,
   ~14 s with a reference image). Without a project the result
-  is a temp file, as before. The same request and seed give the same
+  is a temp file, as before; Save as Project names a project from the
+  current form and moves that video into it with its record (its input
+  files are copied in too). The same request and seed give the same
   frames, bit for bit; the H.264 file itself can still differ invisibly
   (around 57-60 dB PSNR) because the hardware encoder isn't bit-exact.
 - **Sizes**: the composer picks a shape (landscape / square / portrait)
