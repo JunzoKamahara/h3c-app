@@ -475,6 +475,15 @@ extension GenerationViewModel {
         saveProjectIfChanged()
         projectAutosave = nil
         ProjectStore.shared.noteClosed(project.url, explicitly: explicitly)
+        // A video of the closed project leaves the preview with it, so the
+        // next window (or the form without a project) starts empty. A temp
+        // result from before the project, or one still being made, stays.
+        let folder = project.url.standardizedFileURL.path + "/"
+        if !isGenerating, let resultURL,
+           resultURL.standardizedFileURL.path.hasPrefix(folder) {
+            self.resultURL = nil
+            lastResult = nil
+        }
         self.project = nil
         projectVideos = []
         lastSavedProjectFile = nil
