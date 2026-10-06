@@ -1,14 +1,21 @@
 CC := clang
 AR := ar
+# The oldest macOS the library supports, matching the app
+# (native/H3Spike/Package.swift, Info.plist): MPSGraph's scaled dot-product
+# attention (DiT and text encoder) is macOS 15 API, used unguarded like
+# BF16 (macOS 14). Without this, clang targets the build machine's macOS:
+# @available checks fold to true and the objects claim a newer minimum.
+MACOSX_MIN ?= 15.0
+MINOS_FLAG := -mmacosx-version-min=$(MACOSX_MIN)
 CFLAGS := -std=c11 -O3 -MMD -MP -Wall -Wextra -Wpedantic -Wshadow \
-	-Wconversion -Wno-sign-conversion -D_DARWIN_C_SOURCE
+	-Wconversion -Wno-sign-conversion -D_DARWIN_C_SOURCE $(MINOS_FLAG)
 OBJCFLAGS := $(CFLAGS) -fobjc-arc
 FRAMEWORKS := -framework Foundation -framework Metal \
 	-framework MetalPerformanceShaders -framework MetalPerformanceShadersGraph \
 	-framework Accelerate -framework AVFoundation -framework CoreMedia \
 	-framework CoreVideo -framework CoreAudio -framework CoreGraphics \
 	-framework ImageIO
-LDLIBS := $(FRAMEWORKS) -licucore -lm
+LDLIBS := $(FRAMEWORKS) -licucore -lm $(MINOS_FLAG)
 
 LIB_C := h3.c h3_host.c h3_safetensors.c h3_weights.c h3_text_encoder.c \
 	h3_dit_schedule.c h3_dit.c h3_lora.c
@@ -231,7 +238,7 @@ real-parity: h3_real_prompt_test h3_real_dit_block_test
 	$(CC) $(OBJCFLAGS) -I. -c $< -o $@
 
 h3_gpu_ccv_attention.o: h3_gpu_ccv_attention.mm
-	$(CC) -std=c++17 -O3 -fobjc-arc -fblocks -I. -I$(CCV_DIR) -I$(CCV_DIR)/lib \
+	$(CC) -std=c++17 -O3 -fobjc-arc -fblocks $(MINOS_FLAG) -I. -I$(CCV_DIR) -I$(CCV_DIR)/lib \
 		-D HAVE_CBLAS -D HAVE_PTHREAD -D HAVE_ACCELERATE_FRAMEWORK \
 		-D USE_DISPATCH -D HAVE_MPS -c $< -o $@
 

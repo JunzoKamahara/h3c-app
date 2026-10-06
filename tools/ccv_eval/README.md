@@ -64,7 +64,10 @@ brew install wget   # the default `make libccv.a` fetches an unrelated sample mo
 cd lib
 ./configure --enable-mps   # opt-in flag - NOT auto-detected, easy to miss
 cd ..
-make libccv.a
+# Target the app's oldest macOS, like this repo's Makefile (MACOSX_MIN);
+# otherwise clang targets the build machine's macOS and libccv.a's objects
+# claim that as their minimum.
+MACOSX_DEPLOYMENT_TARGET=15.0 make libccv.a
 ```
 
 ## 2. Capture real Q/K/V and the real production output from this app
