@@ -124,7 +124,9 @@ typedef struct {
      * next block from the checkpoint with execution of the current block. */
     int ssd_streaming;
     /* Optional lower internal model canvas. Both must be zero (exact output
-     * canvas) or valid same-aspect dimensions no larger than width/height. */
+     * canvas) or valid same-aspect dimensions no larger than width/height.
+     * The 768*1344 pixel limit applies to this canvas when set; the output
+     * may then reach four times that limit. */
     int render_width;
     int render_height;
     /* Force the portable close-reference BF16/MPS MLP implementation instead

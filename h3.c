@@ -541,8 +541,20 @@ static int h3_valid_params(h3_ctx *ctx, const h3_params *params) {
         h3_set_error(ctx, "width and height must be multiples of 32 and at least 32");
         return 0;
     }
-    if ((int64_t)params->width * params->height > H3_MAX_PIXELS) {
+    /* The released limit is on the canvas the DiT runs at. An internal
+     * render canvas is upscaled on the host after decoding, so its output
+     * may be larger: up to twice the limit's size per side. */
+    int64_t output_pixels = (int64_t)params->width * params->height;
+    int64_t dit_pixels = params->render_width
+        ? (int64_t)params->render_width * params->render_height
+        : output_pixels;
+    if (dit_pixels > H3_MAX_PIXELS) {
         h3_set_error(ctx, "canvas exceeds the released 768*1344 pixel limit");
+        return 0;
+    }
+    if (output_pixels > 4 * (int64_t)H3_MAX_PIXELS) {
+        h3_set_error(ctx,
+            "upscaled output exceeds twice the 768*1344 limit per side");
         return 0;
     }
     if ((params->render_width == 0) != (params->render_height == 0)) {

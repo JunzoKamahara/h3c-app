@@ -29,13 +29,18 @@ static void h3_av_set_error(char *error, size_t error_size, NSString *message) {
 static NSDictionary *h3_av_video_settings(int width, int height) {
     int64_t bitrate = (int64_t)width * (int64_t)height * 5;
     if (bitrate < 9500000) bitrate = 9500000;
+    /* Level 4.1 caps a frame at 8192 macroblocks (1920x1088 fits); larger
+     * upscaled outputs such as 1536x1536 let the encoder pick the level. */
+    int64_t macroblocks = (int64_t)((width + 15) / 16) * ((height + 15) / 16);
+    NSString *level = macroblocks > 8192 ? AVVideoProfileLevelH264HighAutoLevel
+                                         : AVVideoProfileLevelH264High41;
     return @{
         AVVideoCodecKey: AVVideoCodecTypeH264,
         AVVideoWidthKey: @(width),
         AVVideoHeightKey: @(height),
         AVVideoCompressionPropertiesKey: @{
             AVVideoAverageBitRateKey: @(bitrate),
-            AVVideoProfileLevelKey: AVVideoProfileLevelH264High41,
+            AVVideoProfileLevelKey: level,
             AVVideoMaxKeyFrameIntervalKey: @30,
             AVVideoAllowFrameReorderingKey: @YES,
         },
