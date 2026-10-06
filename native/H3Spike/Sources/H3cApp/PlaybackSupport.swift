@@ -9,8 +9,17 @@ import SwiftUI
 struct PlayerView: NSViewRepresentable {
     let player: AVPlayer
 
+    // Zoomed in, this view is larger than the stage: SwiftUI's clipping
+    // hides the overflow but AppKit still hit-tests it, so it swallowed
+    // clicks on the header's buttons and the transport bar. All its input
+    // is handled by the SwiftUI layer above it (ResultPlayerView), so it
+    // takes none itself.
+    final class PassThroughPlayerView: AVPlayerView {
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    }
+
     func makeNSView(context: Context) -> AVPlayerView {
-        let view = AVPlayerView()
+        let view = PassThroughPlayerView()
         view.player = player
         // AVKit's own transport bar only fades in on mouse hover and turned
         // out to be easy to miss; a small always-visible SwiftUI bar below
