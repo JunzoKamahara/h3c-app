@@ -117,6 +117,20 @@ to skip that step and stream the original BF16 weights instead.
   is a temp file, as before. The same request and seed give the same
   frames, bit for bit; the H.264 file itself can still differ invisibly
   (around 57-60 dB PSNR) because the hardware encoder isn't bit-exact.
+- **Sizes**: the composer picks a shape (landscape / square / portrait)
+  and a size 小/中/大 (small / medium / large), each optionally upscaled 2x
+  after generation (Accelerate's high-quality resampling; it adds seconds,
+  not minutes). Generated canvases: square 256 / 512 / 768, landscape
+  448x256 / 672x384 / 960x544, portrait the same turned upright - so the
+  largest upscaled outputs are 1536x1536 and 1920x1088 / 1088x1920. The
+  advanced settings take a custom finished size instead (multiples of 32;
+  with the 2x option it is generated at half that size, so multiples of
+  64) whose generated size must stay within 600,000 pixels (256-1344 per
+  side), and
+  show an estimate of the whole generation from this Mac's past runs,
+  flagging one over an hour. Time grows about with the generated pixels:
+  1 s at 20 steps took 107 s at 512x512, 207 s at 960x544 and 234 s at
+  768x768 on a 24 GB M5.
 - **Window**: a full-window preview with the prompt in a floating panel over
   it (Enter generates, Shift+Enter adds a line, Tab takes the suggested
   prompt; the panel collapses while generating, and clicking its prompt
@@ -468,7 +482,7 @@ plain filesystem paths, not uploads.
 | Field | Default | Notes |
 |---|---|---|
 | `prompt` | — | Required. |
-| `size_profile` | `"square"` | One of `smallSquare`, `square`, `landscapeUpscaled`, `landscapeNative`, `portraitUpscaled`, `portraitNative` (see `SizeProfile` in [GenerationModels.swift](native/H3Spike/Sources/H3cApp/GenerationModels.swift)). |
+| `size_profile` | `"square"` | A preset `<shape>-<size>` with shape `square`, `landscape` or `portrait` and size `small`, `medium` or `large`, plus `-x2` for the 2x upscaled output (e.g. `landscape-large-x2`: 960x544 upscaled to 1920x1088); or `custom-<W>x<H>` / `custom-<W>x<H>-x2` for a finished size of W x H (multiples of 32, or of 64 with `-x2`, which generates at half that size); the generated size must be at most 600,000 pixels with 256-1344 per side. The older names `smallSquare`, `square`, `landscapeNative`, `landscapeUpscaled`, `portraitNative` and `portraitUpscaled` still work and stand for the matching small/medium presets (see `SizeProfile` in [GenerationModels.swift](native/H3Spike/Sources/H3cApp/GenerationModels.swift)). |
 | `seconds` | `5` | 1–15. |
 | `steps` | `20`, or the first enabled Turbo LoRA's recommended steps | 3–40. |
 | `reuse` | `2` | 1–3. The faster speed modes run at 1 whatever this is. |

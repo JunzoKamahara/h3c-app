@@ -119,6 +119,15 @@ MiniMax-H3を直接ダウンロードするか尋ねます（[機能](#機能)�
   ビット単位で同じです。ただしH.264ファイル自体は、ハードウェアエンコーダーが
   ビット単位では再現しないため、見分けられない程度（PSNR約57〜60dB）に違うことが
   あります。
+- **サイズ**: プロンプト欄で画面の形（横長・正方形・縦長）と大きさ（小・中・大）を
+  選び、それぞれ生成後に2倍に拡大することもできます（Accelerateの高品質
+  リサンプリング。増えるのは数秒です）。生成サイズは正方形256・512・768、
+  横長448×256・672×384・960×544、縦長はその縦横を入れ替えたもので、拡大した
+  最大の出力は1536×1536と1920×1088・1088×1920です。詳細設定では完成サイズを
+  カスタムで指定できます（32の倍数。2倍拡大ではその半分で生成するため64の倍数）。
+  生成するサイズは60万ピクセル以下（1辺256〜1344）です。また、このMacの過去の
+  実績から全体の所要時間の目安を表示し、1時間を超える見込みなら警告します。時間はおおむね生成ピクセル数に比例し、24GBのM5で
+  1秒・20ステップは512×512で107秒、960×544で207秒、768×768で234秒でした。
 - **ウィンドウ**: プレビューをウィンドウ全体に表示し、プロンプトはその上に
   浮かぶパネルで入力します（Enterで生成、Shift+Enterで改行、Tabで入力例を
   入力。生成中はパネルが小さくなり、プロンプトの行をクリックすると開き
@@ -470,7 +479,7 @@ Network.frameworkやサードパーティ製サーバーは使っていません
 | フィールド | 既定値 | 備考 |
 |---|---|---|
 | `prompt` | — | 必須。 |
-| `size_profile` | `"square"` | `smallSquare`、`square`、`landscapeUpscaled`、`landscapeNative`、`portraitUpscaled`、`portraitNative`のいずれか（[GenerationModels.swift](native/H3Spike/Sources/H3cApp/GenerationModels.swift)の`SizeProfile`参照）。 |
+| `size_profile` | `"square"` | プリセット`<形>-<大きさ>`（形は`square`・`landscape`・`portrait`、大きさは`small`・`medium`・`large`）。2倍に拡大した出力は末尾に`-x2`（例: `landscape-large-x2`は960×544を1920×1088に拡大）。または完成サイズを表す`custom-<幅>x<高さ>`／`custom-<幅>x<高さ>-x2`（32の倍数。`-x2`はその半分で生成するため64の倍数）。生成するサイズは60万ピクセル以下で1辺256〜1344。以前の名前`smallSquare`、`square`、`landscapeNative`、`landscapeUpscaled`、`portraitNative`、`portraitUpscaled`もそのまま使え、対応する小・中のプリセットを表します（[GenerationModels.swift](native/H3Spike/Sources/H3cApp/GenerationModels.swift)の`SizeProfile`参照）。 |
 | `seconds` | `5` | 1〜15。 |
 | `steps` | `20`、またはオンにした最初のTurbo LoRAの推奨ステップ数 | 3〜40。 |
 | `reuse` | `2` | 1〜3。高速・最速ではこの値にかかわらず1で動く。 |
