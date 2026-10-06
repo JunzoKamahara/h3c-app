@@ -422,6 +422,68 @@ extension GenerationViewModel {
         }
     }
 
+    // MARK: Several videos without a project
+
+    /// The composer's generate action. Several videos are kept in a
+    /// project, so with none open it asks for one first (BatchProjectSheet),
+    /// which generates once the project is set - or not at all if cancelled.
+    func requestGenerate() {
+        guard canGenerate else { return }
+        if project == nil && batchCount > 1 {
+            projectMessage = nil
+            showingBatchProject = true
+        } else {
+            generate()
+        }
+    }
+
+    /// BatchProjectSheet: a new project from the current form, then the batch.
+    func createProjectAndGenerate(name: String, parent: URL) -> Bool {
+        let count = batchCount
+        createProject(name: name, parent: parent)
+        return generateBatchInAttachedProject(count: count)
+    }
+
+    /// Whether an existing project's saved prompt and settings differ from
+    /// the form's, so choosing it would overwrite them. Input files compare
+    /// by name: one from outside the project is copied in under its name.
+    func projectDraftDiffers(at url: URL) -> Bool {
+        guard let file = try? ProjectFiles.read(url) else { return false }
+        func byName(_ draft: ProjectDraft) -> ProjectDraft {
+            var draft = draft
+            let name = { (path: String) in URL(fileURLWithPath: path).lastPathComponent }
+            draft.firstFrame = draft.firstFrame.map(name)
+            draft.lastFrame = draft.lastFrame.map(name)
+            draft.references = draft.references.map { .init(kind: $0.kind, path: name($0.path)) }
+            return draft
+        }
+        return byName(currentDraft()) != byName(file.draft)
+    }
+
+    /// BatchProjectSheet: an existing project, keeping the current form (it
+    /// replaces the project's saved one, as a new project takes the form)
+    /// rather than loading the project's, then the batch.
+    func openProjectAndGenerate(at url: URL) -> Bool {
+        let count = batchCount
+        do {
+            let file = try ProjectFiles.read(url)
+            try attachProject(url: url, file: file, applyingDraft: false)
+        } catch {
+            projectMessage = error.localizedDescription
+            return false
+        }
+        return generateBatchInAttachedProject(count: count)
+    }
+
+    private func generateBatchInAttachedProject(count: Int) -> Bool {
+        guard project != nil else { return false }
+        // Attaching loads the project's own count; the one chosen stays.
+        batchCount = count
+        saveProjectIfChanged(force: true)
+        generate()
+        return true
+    }
+
     func chooseAndOpenProject() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true

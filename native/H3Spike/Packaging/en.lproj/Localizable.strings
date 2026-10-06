@@ -290,7 +290,6 @@
 "プロジェクト" = "Project";
 "%@ — H3cApp" = "%@ — H3cApp";
 "OK" = "OK";
-"同じプロンプトと設定で、シードを変えて続けて生成し、プロジェクトに保存します（シード固定のときは1ずつ増やします）" = "Generates one after another with the same prompt and settings and different seeds, saved in the project (a fixed seed counts up by 1)";
 "本数" = "Count";
 "%lld 本" = "%lld videos";
 "%lld本" = "×%lld";
@@ -353,3 +352,17 @@
 "幅・高さは完成する動画のサイズです（32の倍数、2倍の拡大では64の倍数）。生成するサイズ（2倍の拡大ではその半分）が%@ピクセル以下になるようにしてください。拡大は生成後に行うため、時間はほとんど増えません。プロンプト欄の「大きさ」を選ぶとプリセットに戻ります。" = "Width and height are the finished video’s size (multiples of 32, or 64 with the 2x upscale). Keep the generated size (half of it with the 2x upscale) at %@ pixels or fewer. The upscale runs after generation, so it adds almost no time. Choosing a Size in the prompt area returns to the presets.";
 "半分のサイズで生成して2倍に拡大" = "Generate at half size and upscale 2x";
 "カスタムサイズの生成サイズが上限（%lldピクセル）を超えています。詳細設定で小さくするか、2倍の拡大を使ってください" = "The custom size is generated above the %lld-pixel limit. Make it smaller in Advanced Settings, or use the 2x upscale";
+
+/* Several videos without a project */
+"同じプロンプトと設定で、シードを変えて続けて生成し、プロジェクトに保存します（シード固定のときは1ずつ増やします）。プロジェクトがないときは、生成するときに作成または選択します" = "Makes several videos in a row with the same prompt and settings and different seeds, saved in the project (a fixed seed counts up). Without a project, you create or choose one when generating";
+"プロジェクトを選んで生成" = "Choose a Project to Generate";
+"複数本（%lld本）を生成するには、できた動画を保存するプロジェクトが必要です。新しいプロジェクトを作るか、既存のプロジェクトを選んでください。今のプロンプトと設定、参照ファイルはそのプロジェクトに保存されます。" = "Generating several videos (%lld) needs a project to save them in. Create a new project or choose an existing one. The current prompt, settings and reference files are saved in that project.";
+"最近のプロジェクトはありません。「ほかのプロジェクトを選ぶ…」でフォルダを選んでください。" = "No recent projects. Choose a folder with “Choose Another Project…”.";
+"ほかのプロジェクトを選ぶ…" = "Choose Another Project…";
+"新しいプロジェクト" = "New Project";
+"既存のプロジェクト" = "Existing Project";
+"作成して生成" = "Create and Generate";
+"開いて生成" = "Open and Generate";
+"「%@」の設定を上書きしますか？" = "Overwrite the settings of “%@”?";
+"上書きして生成" = "Overwrite and Generate";
+"このプロジェクトに保存されているプロンプトと設定は、今のものと異なります。上書きすると、今のプロンプトと設定で生成し、プロジェクトに保存します。" = "The prompt and settings saved in this project differ from the current ones. Overwriting generates with the current prompt and settings and saves them in the project.";

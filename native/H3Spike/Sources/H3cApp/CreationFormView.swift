@@ -244,7 +244,7 @@ struct CreationFormView: View {
             VStack(spacing: 0) {
                 ZStack(alignment: .topLeading) {
                     PromptTextView(text: $viewModel.prompt, suggestion: promptSuggestion) {
-                        if viewModel.canGenerate { viewModel.generate() }
+                        viewModel.requestGenerate()
                     }
                     .frame(height: 84)
                     if viewModel.prompt.isEmpty {
@@ -264,9 +264,9 @@ struct CreationFormView: View {
                     aspectMenu
                     sizeMenu
                     durationMenu
-                    // Several videos per press only with a project, where
-                    // they are kept.
-                    if viewModel.project != nil { batchMenu }
+                    // Several videos are kept in a project: without one,
+                    // generating asks for it (BatchProjectSheet).
+                    batchMenu
                     Spacer(minLength: 0)
                     generateButton
                 }
@@ -389,7 +389,7 @@ struct CreationFormView: View {
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()
-        .help("同じプロンプトと設定で、シードを変えて続けて生成し、プロジェクトに保存します（シード固定のときは1ずつ増やします）")
+        .help("同じプロンプトと設定で、シードを変えて続けて生成し、プロジェクトに保存します（シード固定のときは1ずつ増やします）。プロジェクトがないときは、生成するときに作成または選択します")
     }
 
     private func composerChip(systemImage: String, text: String) -> some View {
@@ -470,7 +470,7 @@ struct CreationFormView: View {
     /// generation runs. ⌘Return also generates.
     private var generateButton: some View {
         Button {
-            if viewModel.isGenerating { viewModel.cancel() } else { viewModel.generate() }
+            if viewModel.isGenerating { viewModel.cancel() } else { viewModel.requestGenerate() }
         } label: {
             Image(systemName: viewModel.isGenerating ? "stop.fill" : "arrow.up")
                 .font(.system(size: 14, weight: .bold))

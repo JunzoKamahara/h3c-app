@@ -120,6 +120,164 @@ struct NewProjectSheet: View {
     }
 }
 
+/// Generating several videos with no project open: the videos are kept in
+/// a project, so this asks for a new or an existing one, then generates.
+/// Cancelling goes back to the prompt without generating.
+struct BatchProjectSheet: View {
+    @ObservedObject var viewModel: GenerationViewModel
+    @ObservedObject var store: ProjectStore
+    @Binding var isPresented: Bool
+
+    private enum Mode: Hashable { case new, existing }
+    @State private var mode = Mode.new
+    @State private var name = ""
+    @State private var parent = ProjectStore.defaultParentDirectory
+    @State private var selection: URL?
+    @State private var chosenElsewhere: URL?
+    @State private var overwriteTarget: URL?
+
+    private var folder: URL {
+        let folderName = ProjectFiles.folderName(for: name)
+        return parent.appendingPathComponent(folderName.isEmpty ? "…" : folderName)
+    }
+
+    private var candidates: [URL] {
+        var urls = store.existingRecents
+        if let chosenElsewhere,
+           !urls.contains(where: { $0.standardizedFileURL == chosenElsewhere.standardizedFileURL }) {
+            urls.insert(chosenElsewhere, at: 0)
+        }
+        return urls
+    }
+
+    private var canConfirm: Bool {
+        switch mode {
+        case .new: return !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .existing: return selection != nil
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: H3Spacing.md) {
+            Text("プロジェクトを選んで生成").font(.headline)
+            Text("複数本（\(viewModel.batchCount)本）を生成するには、できた動画を保存するプロジェクトが必要です。新しいプロジェクトを作るか、既存のプロジェクトを選んでください。今のプロンプトと設定、参照ファイルはそのプロジェクトに保存されます。")
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+            Picker("", selection: $mode) {
+                Text("新しいプロジェクト").tag(Mode.new)
+                Text("既存のプロジェクト").tag(Mode.existing)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+
+            switch mode {
+            case .new:
+                TextField("プロジェクト名", text: $name)
+                    .textFieldStyle(.roundedBorder)
+                HStack(alignment: .firstTextBaseline) {
+                    Text("保存先").foregroundStyle(.secondary)
+                    Text(folder.path)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer()
+                    Button("変更…") { chooseParent() }
+                }
+                .font(.callout)
+            case .existing:
+                if candidates.isEmpty {
+                    Text("最近のプロジェクトはありません。「ほかのプロジェクトを選ぶ…」でフォルダを選んでください。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    List(candidates, id: \.self, selection: $selection) { url in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(url.lastPathComponent)
+                            Text(url.deletingLastPathComponent().path)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
+                    .frame(height: 150)
+                }
+                Button("ほかのプロジェクトを選ぶ…") { chooseExisting() }
+            }
+
+            if let message = viewModel.projectMessage {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack {
+                Spacer()
+                Button("キャンセル") {
+                    viewModel.projectMessage = nil
+                    isPresented = false
+                }
+                .keyboardShortcut(.cancelAction)
+                Button(mode == .new ? "作成して生成" : "開いて生成") { confirm() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!canConfirm)
+            }
+        }
+        .padding(H3Spacing.lg)
+        .frame(width: 520)
+        .alert(Text("「\(overwriteTarget?.lastPathComponent ?? "")」の設定を上書きしますか？"),
+               isPresented: Binding(get: { overwriteTarget != nil },
+                                    set: { if !$0 { overwriteTarget = nil } })) {
+            Button("上書きして生成") {
+                if let url = overwriteTarget { openAndGenerate(url) }
+                overwriteTarget = nil
+            }
+            Button("キャンセル", role: .cancel) { overwriteTarget = nil }
+        } message: {
+            Text("このプロジェクトに保存されているプロンプトと設定は、今のものと異なります。上書きすると、今のプロンプトと設定で生成し、プロジェクトに保存します。")
+        }
+    }
+
+    private func confirm() {
+        viewModel.projectMessage = nil
+        switch mode {
+        case .new:
+            if viewModel.createProjectAndGenerate(name: name, parent: parent) { isPresented = false }
+        case .existing:
+            guard let selection else { return }
+            // Ask before replacing a project's own prompt and settings.
+            if viewModel.projectDraftDiffers(at: selection) {
+                overwriteTarget = selection
+            } else {
+                openAndGenerate(selection)
+            }
+        }
+    }
+
+    private func openAndGenerate(_ url: URL) {
+        if viewModel.openProjectAndGenerate(at: url) { isPresented = false }
+    }
+
+    private func chooseParent() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.directoryURL = parent
+        if panel.runModal() == .OK, let url = panel.url { parent = url }
+    }
+
+    private func chooseExisting() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = ProjectStore.defaultParentDirectory
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        chosenElsewhere = url
+        selection = url
+    }
+}
+
 /// The open project's videos, newest first.
 struct ProjectVideosSheet: View {
     @ObservedObject var viewModel: GenerationViewModel

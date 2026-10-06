@@ -359,7 +359,8 @@ final class GenerationViewModel: ObservableObject {
     // MARK: Project (see Projects.swift) - nil: results are temp files.
     @Published var project: OpenProject?
     @Published var projectVideos: [ProjectVideo] = []
-    /// 本数: videos per press of generate while a project is open.
+    /// 本数: videos per press of generate. Several need a project to keep
+    /// them in; without one, generating asks for it (BatchProjectSheet).
     @Published var batchCount: Int = 1
     @Published var batchProgress: BatchProgress?
     @Published var projectMessage: String?
@@ -367,6 +368,8 @@ final class GenerationViewModel: ObservableObject {
     // menu and from the menu bar's プロジェクト menu.
     @Published var showingNewProject = false
     @Published var showingProjectVideos = false
+    /// Asked for when generating several videos with no project open.
+    @Published var showingBatchProject = false
     var projectAutosave: AnyCancellable?
     var lastSavedProjectFile: ProjectFile?
     /// Outside references being copied into the project (startReferenceImport).
