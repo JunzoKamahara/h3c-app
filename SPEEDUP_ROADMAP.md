@@ -2174,12 +2174,69 @@ request, `count` 3): 404.2 / 384.2 / 385.5 s per item.
 
 ---
 
-## 8. Custom sizes (planned) - 960x544 measured
+## 8. Custom sizes - done in 0.4.1 (X2 VAE not adopted)
 
-Toward a custom-size setting with a time/memory warning, and later an X2
-VAE decode (community MiniMax-H3-X2-Detail-VAE: a fine-tuned decoder whose
-`proj_out` emits 12 packed channels per pixel, then PixelShuffle x2; not a
-drop-in for the released decoder's 3072x2048 `proj_out`).
+Shipped in v0.4.1: presets per shape at 小/中/大, each optionally upscaled
+2x on the host, and a custom finished size in the advanced settings with a
+time estimate. The X2 VAE was evaluated and dropped. Measurements and the
+decisions behind both follow.
+
+### What shipped
+
+| shape | 小 | 中 | 大 |
+|---|---|---|---|
+| square | 256 | 512 | 768 |
+| landscape | 448x256 | 672x384 | 960x544 |
+| portrait | 256x448 | 384x672 | 544x960 |
+
+- **2x upscale** of any preset (up to 1536x1536 and 1920x1088/1088x1920)
+  uses `h3_resize_rgb24_high_quality` (Accelerate `vImageScale_ARGB8888`,
+  high-quality resampling, Lanczos-class) per decoded chunk. It costs
+  ~0.1 s for a 5 s clip; 1 s at 20 steps took 204.8 s at 1920x1088 vs
+  206.6 s at 960x544 without it. No license or attribution is needed
+  (system framework).
+- **Engine limit**: the 768*1344 pixel cap now applies to the canvas the
+  DiT runs at (the render canvas when set); an upscaled output may reach
+  4x that. Outputs over H.264 level 4.1's 8192 macroblocks (1536x1536) let
+  the encoder pick the level (5.0 there).
+- **Custom size**: width/height are the *finished* size (multiples of 32,
+  or 64 with the 2x upscale, which generates at half). The generated canvas
+  must stay within 600,000 pixels and 256-1344 per side; over it, the
+  advanced settings show the error and generation is blocked.
+- **Estimate**: the advanced settings show the whole generation predicted
+  by the progress estimator from this Mac's past runs (TimingCalibration),
+  flagging over an hour.
+- **Small sizes keep the released RoPE**: the half-scale spatial RoPE that
+  `h3.c` applies only at 256x256 was tried at 448x256 and 256x448
+  (temporary `H3_EXP_ROPE_SCALE`, not committed; T2V, 39 frames, 20 steps,
+  seed 7; cat, night market, snowy mountains; 2026-10-07,
+  `~/Movies/H3cApp-grid/2026-10-07-small/`). Neither setting broke a
+  frame, but 0.5 framed every scene wider - smaller subjects, more distant
+  detail, the woman in the market seen from behind at the edge instead of
+  walking toward the camera - which suits a tiny canvas worse. Two frames
+  per video compared; a composition difference, not a measured quality
+  win either way, so the default stays.
+- **Frame grid**: the video VAE packs 17 frames into 5 latent frames, so
+  lengths snap up to 5 + 17k frames (`h3_align_frame_count`). The app's
+  "1 s" (24 frames) runs 39 frames = 1.63 s and "5 s" 124 frames = 5.17 s;
+  the "1 s" rows below are those 39 frames.
+
+### X2 VAE - evaluated, not adopted
+
+Community MiniMax-H3-X2-Detail-VAE (MiniMax H3 Community License): a
+fine-tuned decoder whose `proj_out` emits 12 packed channels per pixel
+(PixelShuffle x2) instead of the released 3072x2048 `proj_out`; only
+`decoder.norm_out` and `proj_out` differ, the 36 transformer blocks are
+identical. A working prototype (packed channel = c*4 + 2i + j, stats by
+colour channel, scaled tiling/stitching) decoded 960x544 to 1920x1088 for
+about 5% extra decode time (~4.6 s on a 5 s clip vs ~0.1 s for vImage).
+It measured ~5x the high-frequency energy of the Lanczos upscale but also
+a stronger 32-px grid (which its authors document; they also report the
+real-detail recovery failed), and side by side on three scenes at 20
+steps the user saw no visible difference from Lanczos. Dropped: no gain
+for the license terms, weight download (5.2 GB) and decoder changes.
+
+### Measurements
 
 960x544 (multiples of 32, 522k pixels, within the 768x1344 limit; 510 DiT
 tokens per latent frame vs 256 at 512x512), M5 24 GB, `h3_repro_check`
