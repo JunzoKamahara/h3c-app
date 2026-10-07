@@ -74,21 +74,30 @@ struct TimingSample: Codable {
 // estimate of a new session isn't blind. Each list is the last few samples.
 struct TimingCalibration: Codable {
     // The initial values are timings measured on this project's dev machine
-    // (M5, 24GB, H3_INT8_STREAM_MLP=1) from timestamped real runs at two
-    // sizes - 22 frames @256x256 and 124 frames @512x512 - so the very first
-    // job has an estimate too. Real jobs then append their own samples and
-    // the seeds age out after `keep` runs; live measurement inside a job
-    // overrides them as soon as a step / chunk completes.
+    // (M5, 24GB, int8 cache) from real runs - 22 frames @256x256, 124 frames
+    // @512x512, and 39 frames (the app's 1 s) at 512x512, 960x544 and
+    // 768x768 (SPEEDUP_ROADMAP.md section 8) - so the very first job has an
+    // estimate at the larger sizes too. Real jobs then append their own
+    // samples and the seeds age out after `keep` runs; live measurement
+    // inside a job overrides them as soon as a step / chunk completes.
     var setup: [Double] = [17.2]             // seconds: start -> first denoise event
     var denoisePerStep: [TimingSample] = [   // units = frames x DiT pixels, seconds = per evaluated step
         TimingSample(units: 22.0 * 256 * 256, seconds: 3.64),
+        TimingSample(units: 39.0 * 512 * 512, seconds: 6.96),
+        TimingSample(units: 39.0 * 960 * 544, seconds: 14.8),
+        TimingSample(units: 39.0 * 768 * 768, seconds: 17.1),
         TimingSample(units: 124.0 * 512 * 512, seconds: 31.3),
     ]
-    var decode: [TimingSample] = [           // units = frames x output pixels, seconds = audio+video VAE decode
+    // The 124-frame 512x512 decode was 112 s before the int8 video VAE;
+    // 38.4 s since.
+    var decode: [TimingSample] = [           // units = frames x DiT pixels, seconds = audio+video VAE decode
         TimingSample(units: 22.0 * 256 * 256, seconds: 5.5),
-        TimingSample(units: 124.0 * 512 * 512, seconds: 112),
+        TimingSample(units: 39.0 * 512 * 512, seconds: 14.1),
+        TimingSample(units: 39.0 * 960 * 544, seconds: 27.0),
+        TimingSample(units: 39.0 * 768 * 768, seconds: 29.3),
+        TimingSample(units: 124.0 * 512 * 512, seconds: 38.4),
     ]
-    var encode: [TimingSample] = [           // units = frames x output pixels, seconds = encode stage
+    var encode: [TimingSample] = [           // units = frames x DiT pixels, seconds = encode stage
         TimingSample(units: 22.0 * 256 * 256, seconds: 0.11),
         TimingSample(units: 124.0 * 512 * 512, seconds: 0.27),
     ]

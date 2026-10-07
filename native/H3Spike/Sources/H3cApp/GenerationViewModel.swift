@@ -264,14 +264,15 @@ final class GenerationViewModel: ObservableObject {
     static let longGenerationSeconds = 60.0 * 60
 
     func progressShape(sizeProfile: SizeProfile, frames: Int, steps: Int, reuse: Int) -> ProgressEstimator.Shape {
-        // ditUnits use the canvas the DiT actually runs at (upscaled sizes
-        // generate at the render size, then upscale).
+        // Both use the canvas the DiT runs at: an upscaled size is also
+        // decoded at that canvas, and the 2x upscale per chunk (vImage) adds
+        // ~0.1 s for a 5 s clip, so output pixels would overstate it 4x.
         ProgressEstimator.Shape(
             steps: steps,
             reuse: reuse,
             totalFrames: frames,
             ditUnits: Double(frames) * Double(sizeProfile.ditPixels),
-            decodeUnits: Double(frames) * Double(sizeProfile.outputPixels))
+            decodeUnits: Double(frames) * Double(sizeProfile.ditPixels))
     }
 
     /// Resident mode holds every DiT block in memory at once (h3_dit.c's
