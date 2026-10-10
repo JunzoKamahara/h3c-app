@@ -147,10 +147,10 @@ screenshot (assets.st-note.com, older UI) is not used.
 
 ## Open points for the editor
 
-- The public URL `https://junzokamahara.github.io/H3cApp/` is assumed
-  (no Pages site, no user site or custom domain on 2026-10-10) and needs
-  the repository rename. Whether `/h3capp/` (lower case) also resolves is
-  unchecked; use `/H3cApp/`. canonical,
+- Published 2026-10-10 at `https://junzokamahara.github.io/H3cApp/` (Pages
+  from main `/docs`, repository renamed to H3cApp, About → Website set).
+  The path is case-sensitive: `/h3capp/` and the old `/h3c-app/` return
+  404, so always link `/H3cApp/`. canonical,
   og:url, og:image, robots.txt and sitemap.xml use it; recheck after Pages
   is enabled.
 - Speed on non-M5 Apple Silicon and with less than 24 GB is not measured.

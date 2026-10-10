@@ -6,9 +6,8 @@
 
 ## サイトの状態
 
-- 公開状態：**未公開**（2026年10月10日時点）。GitHub Pagesの設定はまだありません。
-- 予定URL：https://junzokamahara.github.io/H3cApp/
-  （リポジトリ名を h3c-app から H3cApp に変更して公開する予定。公開後に、実際のURLを確認してから記事に使ってください）
+- 公開状態：**公開済み**（2026年10月10日）。https://junzokamahara.github.io/H3cApp/
+  （URLは大文字・小文字を区別します。/h3capp/ や旧 /h3c-app/ では開けないので、必ず /H3cApp/ と書いてください）
 - リポジトリ：https://github.com/JunzoKamahara/H3cApp （旧名 h3c-app。旧URLはGitHubが転送）
 - ローカルでの確認：リポジトリの `docs/` フォルダ（`website-maintenance.md` の「Local preview」参照）
 
