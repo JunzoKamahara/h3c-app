@@ -7,6 +7,9 @@ of them, then the pages (see `website-maintenance.md`).
 - Checked: 2026-10-10
 - Version described: **v0.4.4** (latest release; published 2026-10-07)
 - Tag commit: `3c2eeefe4ccf60f3c498d44f8737dd2598897b51`
+- Repository: renamed from `h3c-app` to `H3cApp` for the site URL
+  `https://junzokamahara.github.io/H3cApp/` (decided 2026-10-10); the site
+  links to `github.com/JunzoKamahara/H3cApp`. Old URLs redirect on GitHub.
 - `main` at check time: `a72a839`. The only changes after v0.4.4 are the
   progress-estimate decode units/seeds (`84bffed`) and the roadmap. No
   user-facing feature exists only on `main`, so nothing main-only is
@@ -17,8 +20,8 @@ of them, then the pages (see `website-maintenance.md`).
 | item | value | source |
 |---|---|---|
 | DMG | `H3cApp-0.4.4.dmg`, 18,910,925 bytes (about 18.9 MB) | `gh release view v0.4.4` |
-| Direct URL | https://github.com/JunzoKamahara/h3c-app/releases/download/v0.4.4/H3cApp-0.4.4.dmg | same |
-| Site link target | https://github.com/JunzoKamahara/h3c-app/releases/latest (no version-specific link on the buttons) | |
+| Direct URL | https://github.com/JunzoKamahara/H3cApp/releases/download/v0.4.4/H3cApp-0.4.4.dmg | same |
+| Site link target | https://github.com/JunzoKamahara/H3cApp/releases/latest (no version-specific link on the buttons) | |
 | Signing | Developer ID, notarized and stapled; `spctl` reports "Notarized Developer ID" for the DMG and for the app inside it | checked 2026-10-10 on the mounted DMG |
 | Install | open the DMG, drag H3cApp to Applications | |
 | Minimum macOS | 15.0 (`LSMinimumSystemVersion` in the v0.4.4 Info.plist). Releases up to 0.4.3 said 13, which was wrong (engine uses macOS 15 MPSGraph SDPA, macOS 14 BF16) | `native/H3Spike/Packaging/Info.plist` at v0.4.4, release notes |
@@ -144,8 +147,10 @@ screenshot (assets.st-note.com, older UI) is not used.
 
 ## Open points for the editor
 
-- The public URL `https://junzokamahara.github.io/h3c-app/` is assumed
-  (no Pages site, no user site or custom domain on 2026-10-10). canonical,
+- The public URL `https://junzokamahara.github.io/H3cApp/` is assumed
+  (no Pages site, no user site or custom domain on 2026-10-10) and needs
+  the repository rename. Whether `/h3capp/` (lower case) also resolves is
+  unchecked; use `/H3cApp/`. canonical,
   og:url, og:image, robots.txt and sitemap.xml use it; recheck after Pages
   is enabled.
 - Speed on non-M5 Apple Silicon and with less than 24 GB is not measured.

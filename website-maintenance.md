@@ -22,10 +22,16 @@ note-handoff.md           brief for the note article (not published)
 ```
 
 All links inside the site are relative, so it works under the project
-path `/h3c-app/` and from a local folder.
+path `/H3cApp/` and from a local folder.
 
 ## Publishing (first time)
 
+0. The site URL is `https://junzokamahara.github.io/H3cApp/`, which needs
+   the repository to be named **H3cApp** (Settings → General → Repository
+   name; renamed from h3c-app). GitHub redirects the old repository URLs
+   (web, clone, release downloads); update a local clone with
+   `git remote set-url origin https://github.com/JunzoKamahara/H3cApp.git`.
+   Never create another repository named h3c-app, or the redirects stop.
 1. Merge the site branch into `main` (the site must be on the branch Pages
    serves).
 2. GitHub → repository **Settings → Pages** → **Build and deployment** →
@@ -33,7 +39,7 @@ path `/h3c-app/` and from a local folder.
    Save. (No Actions workflow is needed for a static site; see
    https://docs.github.com/en/pages/getting-started-with-github-pages/creating-a-github-pages-site)
 3. After the first deployment finishes (Settings → Pages shows the URL),
-   open `https://junzokamahara.github.io/h3c-app/` and check the four pages,
+   open `https://junzokamahara.github.io/H3cApp/` and check the four pages,
    the videos and the copy button.
 4. If the URL differs (custom domain, renamed repository), update in every
    page: `<link rel="canonical">`, `og:url`, `og:image`; and
@@ -42,14 +48,14 @@ path `/h3c-app/` and from a local folder.
 
 ## Local preview
 
-The site must also work under `/h3c-app/`, so preview it there:
+The site must also work under `/H3cApp/`, so preview it there:
 
 ```bash
-mkdir -p /tmp/h3c-site && ln -sfn "$PWD/docs" /tmp/h3c-site/h3c-app
+mkdir -p /tmp/h3c-site && ln -sfn "$PWD/docs" /tmp/h3c-site/H3cApp
 python3 -m http.server 8765 --directory /tmp/h3c-site
 ```
 
-Then open http://localhost:8765/h3c-app/. Check widths around 1440, 768
+Then open http://localhost:8765/H3cApp/. Check widths around 1440, 768
 and 390 px (no horizontal scroll), the anchors in the table of contents,
 video playback with sound, and the copy button (it needs a secure context
 - localhost counts - and falls back to selecting the text).

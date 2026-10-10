@@ -1,5 +1,5 @@
 /* H3cApp site - plain CSS, no build step. Paths in the HTML are relative so
-   the site works under the /h3c-app/ project path and from a local folder. */
+   the site works under the /H3cApp/ project path and from a local folder. */
 
 :root {
   --bg: #f6f6f7;

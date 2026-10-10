@@ -7,8 +7,9 @@
 ## サイトの状態
 
 - 公開状態：**未公開**（2026年10月10日時点）。GitHub Pagesの設定はまだありません。
-- 予定URL：https://junzokamahara.github.io/h3c-app/
-  （公開後に、実際のURLを確認してから記事に使ってください）
+- 予定URL：https://junzokamahara.github.io/H3cApp/
+  （リポジトリ名を h3c-app から H3cApp に変更して公開する予定。公開後に、実際のURLを確認してから記事に使ってください）
+- リポジトリ：https://github.com/JunzoKamahara/H3cApp （旧名 h3c-app。旧URLはGitHubが転送）
 - ローカルでの確認：リポジトリの `docs/` フォルダ（`website-maintenance.md` の「Local preview」参照）
 
 ## 対象版と確認日
@@ -20,12 +21,12 @@
 
 | 内容 | URL |
 |---|---|
-| トップ | https://junzokamahara.github.io/h3c-app/ |
-| 生成例 | https://junzokamahara.github.io/h3c-app/#examples |
-| 動作条件 | https://junzokamahara.github.io/h3c-app/#requirements |
-| 生成時間の目安 | https://junzokamahara.github.io/h3c-app/#performance |
-| ダウンロード | https://junzokamahara.github.io/h3c-app/#download |
-| はじめ方 | https://junzokamahara.github.io/h3c-app/getting-started.html |
+| トップ | https://junzokamahara.github.io/H3cApp/ |
+| 生成例 | https://junzokamahara.github.io/H3cApp/#examples |
+| 動作条件 | https://junzokamahara.github.io/H3cApp/#requirements |
+| 生成時間の目安 | https://junzokamahara.github.io/H3cApp/#performance |
+| ダウンロード | https://junzokamahara.github.io/H3cApp/#download |
+| はじめ方 | https://junzokamahara.github.io/H3cApp/getting-started.html |
 | インストール | …/getting-started.html#install |
 | モデルの準備 | …/getting-started.html#models |
 | 計算方式 | …/getting-started.html#compute |
@@ -38,7 +39,7 @@
 
 ## ダウンロードとはじめ方への導線
 
-- 最新版：https://github.com/JunzoKamahara/h3c-app/releases/latest
+- 最新版：https://github.com/JunzoKamahara/H3cApp/releases/latest
   （AssetsのH3cApp-0.4.4.dmgを選ぶ。「Source code」は開発者向け）
 - はじめ方：上の getting-started.html
 

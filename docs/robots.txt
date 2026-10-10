@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://junzokamahara.github.io/h3c-app/sitemap.xml
+Sitemap: https://junzokamahara.github.io/H3cApp/sitemap.xml
