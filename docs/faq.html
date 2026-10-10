@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>困ったとき — H3cApp</title>
+  <meta name="description" content="H3cAppで困ったときの確認事項。モデルが見つからない、生成が遅い、ダウンロードが止まった、高速モードが表示されない、保存先、対応OS、不具合の報告、ライセンス。">
+  <link rel="canonical" href="https://junzokamahara.github.io/h3c-app/faq.html">
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ja_JP">
+  <meta property="og:site_name" content="H3cApp">
+  <meta property="og:title" content="困ったとき — H3cApp">
+  <meta property="og:description" content="モデルが見つからない、生成が遅いなど、困ったときの確認事項。">
+  <meta property="og:url" content="https://junzokamahara.github.io/h3c-app/faq.html">
+  <meta property="og:image" content="https://junzokamahara.github.io/h3c-app/assets/images/og-image.jpg">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="icon" type="image/png" sizes="32x32" href="assets/images/favicon-32.png">
+  <link rel="icon" type="image/png" sizes="64x64" href="assets/images/favicon-64.png">
+  <link rel="apple-touch-icon" href="assets/images/apple-touch-icon.png">
+  <link rel="stylesheet" href="assets/css/style.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">本文へ移動</a>
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="brand" href="./"><img src="assets/images/favicon-64.png" alt="" width="32" height="32">H3cApp</a>
+      <nav class="site-nav" aria-label="サイト内">
+        <ul>
+          <li><a href="./#examples">生成例</a></li>
+          <li><a href="./#requirements">動作条件</a></li>
+          <li><a href="getting-started.html">はじめ方</a></li>
+          <li><a href="guide.html">使い方</a></li>
+          <li><a href="faq.html" aria-current="page">困ったとき</a></li>
+          <li><a href="https://github.com/JunzoKamahara/h3c-app">GitHub</a></li>
+        </ul>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <div class="page-head">
+      <h1>困ったとき</h1>
+      <p class="lead">よくあるつまずきと、確認する順番をまとめました。内容はH3cApp v0.4.4に合わせています。</p>
+      <nav class="toc" aria-label="このページの目次">
+        <p>このページの内容</p>
+        <ol>
+          <li><a href="#model-not-found">「モデルが見つかりません」と表示される</a></li>
+          <li><a href="#slow">生成がとても遅い</a></li>
+          <li><a href="#download">ダウンロードが止まった・空き容量が足りない</a></li>
+          <li><a href="#fast-mode">「高速モード（試験的）」が表示されない</a></li>
+          <li><a href="#saved">動画はどこに保存される？</a></li>
+          <li><a href="#project-required">複数本の生成にプロジェクトが必要な理由</a></li>
+          <li><a href="#old-mac">古いmacOS・Intel Macで動かない</a></li>
+          <li><a href="#gatekeeper">起動時に警告が出る</a></li>
+          <li><a href="#update">以前の版から更新する</a></li>
+          <li><a href="#report">不具合を報告したい</a></li>
+          <li><a href="#license">ライセンスと利用条件</a></li>
+        </ol>
+      </nav>
+    </div>
+
+    <section class="section section-narrow" id="model-not-found" aria-labelledby="q1">
+      <h2 id="q1">「モデルが見つかりません」と表示される</h2>
+      <ol class="steps">
+        <li>ウィンドウ右上の状態アイコンをクリックし、「使用中のモデル」と「読み込みエラー」を確認します。</li>
+        <li>登録したフォルダが、<code>FL2VA</code> フォルダ（参照機能を使うなら <code>Ref2VA</code> も）を直接含む「MiniMax-H3」フォルダかを確認します。FL2VAフォルダそのものや、さらに上のフォルダを登録すると読み込めません。</li>
+        <li>モデルのフォルダを移動した場合は、「<span class="ui">モデル管理</span>」の「<span class="ui">フォルダを追加…</span>」で新しい場所を登録し直し、そのモデルを選びます。</li>
+        <li>参照画像・動画・音声を使うときにだけ失敗する場合は、Ref2VAがダウンロードされていない可能性があります。<a href="getting-started.html#models">モデルの準備</a>から追加します。</li>
+      </ol>
+    </section>
+
+    <section class="section section-narrow" id="slow" aria-labelledby="q2">
+      <h2 id="q2">生成がとても遅い</h2>
+      <p>次の順に確認してください。</p>
+      <ol class="steps">
+        <li><strong>大きさ</strong>：大きいほど時間がかかります。まず「小」や「中」で試します。</li>
+        <li><strong>長さ</strong>：長い動画は、長さ以上に時間が伸びます（512×512の標準設定で、5秒が約6分、15秒が約30分の実測例があります）。</li>
+        <li><strong>参照ファイル</strong>：参照画像・動画・音声を使う生成は時間が長くなりがちです。とくに大きな参照動画は、生成全体を大きく遅くします。</li>
+        <li><strong>計算方式</strong>：M5クラスのMacなら「高速（int8キャッシュ）」になっているか確認します。「省メモリ（SSDストリーミング）」は必要なメモリが少ない代わりに時間がかかります。</li>
+        <li><strong>空きメモリ</strong>：ほかのアプリを閉じてから生成します。メモリが足りずにスワップが起きると、大幅に遅くなります。</li>
+      </ol>
+      <p>「<span class="ui">詳細設定</span>」の「サイズ」に、今の設定でのおおよその所要時間が表示されます。1時間を超える見込みのときは注意が表示されます。</p>
+    </section>
+
+    <section class="section section-narrow" id="download" aria-labelledby="q3">
+      <h2 id="q3">ダウンロードが止まった・空き容量が足りない</h2>
+      <ul>
+        <li>ダウンロードは途中から再開できます。止まった場合は、ダウンロード画面の「<span class="ui">再開</span>」を押すか、アプリを開き直して同じ保存先でもう一度始めます。ダウンロード済みのファイルは飛ばされます。</li>
+        <li>空き容量が足りないときは、「<span class="ui">保存先</span>」の「<span class="ui">変更…</span>」で容量に余裕のあるディスクを選びます（ダウンロード中は変更できません）。FL2VAだけで約144.1GB、Ref2VAも含めると約288.1GB必要です。int8キャッシュ（1つ約19.3GB）は、モデルの保存先とは別に内蔵ディスクへ作られます。</li>
+        <li>はじめは「<span class="ui">Ref2VA も含める</span>」をオフにして、FL2VAだけをダウンロードすると容量を抑えられます。</li>
+      </ul>
+    </section>
+
+    <section class="section section-narrow" id="fast-mode" aria-labelledby="q4">
+      <h2 id="q4">「高速モード（試験的）」が表示されない</h2>
+      <p>「高速モード（試験的）」は、M5クラスのGPU（ハードウェアのTensor演算ユニットを持つGPU）で、対応するビルドのときだけ詳細設定に表示されます。GitHubで配布しているDMGは対応ビルドです。M4以前のチップでは表示されません。</p>
+      <p>計算方式の「高速（int8キャッシュ）」や、速度の「高速」とは別の機能です。違いは<a href="guide.html#speed">速度に関わる3つの設定</a>をご覧ください。</p>
+    </section>
+
+    <section class="section section-narrow" id="saved" aria-labelledby="q5">
+      <h2 id="q5">動画はどこに保存される？</h2>
+      <div class="table-wrap">
+        <table>
+          <tbody>
+            <tr><th scope="row">プロジェクトを開いていないとき</th><td>一時ファイルです。次に生成すると消えます。「<span class="ui">動画を書き出す…</span>」（最初はダウンロードフォルダ）か「<span class="ui">プロジェクトとして保存…</span>」で保存してください。</td></tr>
+            <tr><th scope="row">プロジェクトを開いているとき</th><td>プロジェクトのフォルダ（既定は <code>~/Movies/H3cApp/&lt;名前&gt;</code>）に、日付・時刻・シードを含む名前のMP4と、設定の記録（.json）が保存されます。削除するまで残ります。</td></tr>
+            <tr><th scope="row">モデル</th><td>ダウンロード時に選んだ保存先（既定は <code>~/Library/Application Support/h3c-app/MiniMax-H3</code>）。</td></tr>
+            <tr><th scope="row">int8キャッシュ</th><td><code>~/Library/Application Support/h3c-app/cache</code> の中。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="section section-narrow" id="project-required" aria-labelledby="q6">
+      <h2 id="q6">複数本の生成にプロジェクトが必要な理由</h2>
+      <p>プロジェクトを開いていないときの動画は一時ファイルで、次の生成で消えてしまいます。複数本を続けてつくると前の動画が残らないため、保存先となるプロジェクトが必要です。プロジェクトなしで2本以上を選んで生成すると、新しいプロジェクトをつくるか既存のプロジェクトを選ぶ画面が出ます。くわしくは<a href="guide.html#projects">プロジェクトと複数生成</a>をご覧ください。</p>
+    </section>
+
+    <section class="section section-narrow" id="old-mac" aria-labelledby="q7">
+      <h2 id="q7">古いmacOS・Intel Macで動かない</h2>
+      <p>H3cAppはApple SiliconのMac・macOS 15 Sequoia以降が対象です。macOS 14以前では起動できず、Intel Macには対応していません。</p>
+      <p class="small muted">v0.4.3までの説明には「macOS 13以降」とありましたが、生成に使う仕組みが実際にはmacOS 15を必要としていたため、v0.4.4で動作条件を改めました。</p>
+    </section>
+
+    <section class="section section-narrow" id="gatekeeper" aria-labelledby="q8">
+      <h2 id="q8">起動時に警告が出る</h2>
+      <p>GitHubのリリースページで配布しているDMGは、署名とAppleの公証を済ませています。それでも警告が出る場合は、次を確認してください。</p>
+      <ul>
+        <li><a href="https://github.com/JunzoKamahara/h3c-app/releases/latest">公式のリリースページ</a>からダウンロードしたものか。</li>
+        <li>アプリの版（メニューの「H3cAppについて」）と、Macの対応OS（macOS 15以降）。</li>
+      </ul>
+      <p>Gatekeeperを無効にするなどの操作はおすすめしません。判断に迷うときは、Appleの案内「<a href="https://support.apple.com/ja-jp/102445">Macでアプリを安全に開く</a>」を参照してください。</p>
+    </section>
+
+    <section class="section section-narrow" id="update" aria-labelledby="q9">
+      <h2 id="q9">以前の版から更新する</h2>
+      <p>新しいDMGを開き、H3cAppをアプリケーションフォルダへドラッグして置き換えます。設定、プリセット、登録したモデルは引き継がれます。v0.3.0以前は「h3c-app」という名前のアプリだったため、v0.4.0以降を入れたら古い <code>h3c-app.app</code> は削除してかまいません。</p>
+    </section>
+
+    <section class="section section-narrow" id="report" aria-labelledby="q10">
+      <h2 id="q10">不具合を報告したい</h2>
+      <p><a href="https://github.com/JunzoKamahara/h3c-app/issues">GitHubのIssues</a>で受け付けています。次の情報があると調べやすくなります。</p>
+      <ul>
+        <li>アプリの版（例：0.4.4）、macOSの版、チップ（例：M5）、メモリ容量</li>
+        <li>作り方、画面の形・大きさ・長さ、詳細設定（計算方式・速度・高速モードなど）</li>
+        <li>何をしたら、どうなったか（再現する手順）と、表示されたエラーの文言</li>
+      </ul>
+      <p>Issuesは公開されます。人に見せたくないプロンプトや、名前を含むファイルの場所などは書かないでください。</p>
+    </section>
+
+    <section class="section section-narrow" id="license" aria-labelledby="q11">
+      <h2 id="q11">ライセンスと利用条件</h2>
+      <ul>
+        <li><strong>アプリ本体（H3cApp）</strong>：<a href="https://github.com/JunzoKamahara/h3c-app/blob/main/LICENSE">MIT License</a>。Salvatore Sanfilippo氏（antirez）の<a href="https://github.com/antirez/h3.c">h3.c</a>をもとにしています。同梱しているほかのソフトウェアの表記は<a href="https://github.com/JunzoKamahara/h3c-app/blob/main/THIRD_PARTY_NOTICES.md">THIRD_PARTY_NOTICES.md</a>にあります。</li>
+        <li><strong>動画生成モデル（MiniMax-H3）</strong>：アプリとは別のライセンス（MiniMax H3 Community License）です。利用の前に<a href="https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/LICENSE">ライセンス本文</a>と、提供元の<a href="https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/docs/QA-about-License.md">ライセンスに関するQ&amp;A</a>を確認してください。</li>
+        <li><strong>追加モデル（LoRA）</strong>：それぞれの配布元の条件に従います。</li>
+      </ul>
+      <p>商用利用などの可否は、このサイトでは判断できません。上記の最新のライセンスを確認してください。アプリは無料で配布していますが、モデルのダウンロードの通信量や、生成にかかる電力などは利用者の負担になります。</p>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <ul class="footer-links">
+        <li><a href="https://github.com/JunzoKamahara/h3c-app">GitHub</a></li>
+        <li><a href="https://github.com/JunzoKamahara/h3c-app/issues">不具合の報告（Issues）</a></li>
+        <li><a href="https://github.com/JunzoKamahara/h3c-app/blob/main/README.ja.md">README</a></li>
+        <li><a href="faq.html#license">ライセンス</a></li>
+      </ul>
+      <p>H3cApp：大阪成蹊大学データサイエンス学部 鎌原淳三／Junzo Kamahara</p>
+      <p class="small muted">H3cAppは、Salvatore Sanfilippo氏（antirez）による<a href="https://github.com/antirez/h3.c">h3.c</a>をもとにしたmacOSアプリです（MIT License）。動画生成モデルはMiniMaxの<a href="https://huggingface.co/MiniMaxAI/MiniMax-H3">MiniMax-H3</a>（MiniMax H3 Community License）を使います。</p>
+    </div>
+  </footer>
+  <script src="assets/js/main.js" defer></script>
+</body>
+</html>

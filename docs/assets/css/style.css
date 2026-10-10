@@ -1,0 +1,805 @@
+/* H3cApp site - plain CSS, no build step. Paths in the HTML are relative so
+   the site works under the /h3c-app/ project path and from a local folder. */
+
+:root {
+  --bg: #f6f6f7;
+  --surface: #ffffff;
+  --text: #1d1d1f;
+  --text-muted: #55565b;
+  --border: #dcdce0;
+  --accent: #1557c8;
+  --accent-hover: #0f469f;
+  --accent-soft: #e8effc;
+  --stage: #121214;
+  --stage-text: #e9e9ec;
+  --warn-bg: #fff6e5;
+  --warn-border: #e5b65c;
+  --radius: 12px;
+  --max: 1080px;
+  --prose: 40em;
+  --font: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Hiragino Kaku Gothic ProN",
+    "Noto Sans JP", "Yu Gothic", "Segoe UI", sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  scroll-padding-top: 76px;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 17px;
+  line-height: 1.85;
+  overflow-wrap: anywhere;
+}
+
+img,
+video {
+  max-width: 100%;
+  height: auto;
+  display: block;
+}
+
+a {
+  color: var(--accent);
+  text-underline-offset: 0.2em;
+}
+
+a:hover {
+  color: var(--accent-hover);
+}
+
+:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  background: var(--surface);
+  padding: 8px 12px;
+  z-index: 100;
+}
+
+.skip-link:focus {
+  left: 8px;
+  top: 8px;
+}
+
+/* ---------- Header ---------- */
+
+.site-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: rgba(246, 246, 247, 0.94);
+  border-bottom: 1px solid var(--border);
+  backdrop-filter: saturate(160%) blur(10px);
+  -webkit-backdrop-filter: saturate(160%) blur(10px);
+}
+
+.header-inner {
+  max-width: var(--max);
+  margin: 0 auto;
+  padding: 10px 20px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 20px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 700;
+  font-size: 18px;
+  color: var(--text);
+  text-decoration: none;
+  margin-right: auto;
+}
+
+.brand img {
+  width: 32px;
+  height: 32px;
+}
+
+.site-nav ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 16px;
+  font-size: 15px;
+}
+
+.site-nav li {
+  margin: 0;
+}
+
+.site-nav a {
+  color: var(--text);
+  text-decoration: none;
+  padding: 4px 0;
+  display: inline-block;
+}
+
+.site-nav a:hover,
+.site-nav a[aria-current="page"] {
+  color: var(--accent);
+}
+
+.site-nav a[aria-current="page"] {
+  font-weight: 700;
+}
+
+/* ---------- Layout ---------- */
+
+main {
+  display: block;
+}
+
+.section {
+  max-width: var(--max);
+  margin: 0 auto;
+  padding: 56px 20px;
+}
+
+.section + .section {
+  border-top: 1px solid var(--border);
+}
+
+.section-narrow {
+  max-width: calc(var(--prose) + 40px);
+}
+
+h1,
+h2,
+h3,
+h4 {
+  line-height: 1.35;
+  letter-spacing: 0.01em;
+  margin: 0 0 0.6em;
+}
+
+h1 {
+  font-size: clamp(30px, 5vw, 48px);
+}
+
+h2 {
+  font-size: clamp(24px, 3.4vw, 32px);
+}
+
+h3 {
+  font-size: 21px;
+  margin-top: 1.6em;
+}
+
+h4 {
+  font-size: 18px;
+  margin-top: 1.4em;
+}
+
+p,
+ul,
+ol,
+dl {
+  margin: 0 0 1em;
+  max-width: var(--prose);
+}
+
+li + li {
+  margin-top: 0.3em;
+}
+
+.lead {
+  font-size: 19px;
+  color: var(--text-muted);
+}
+
+.muted {
+  color: var(--text-muted);
+}
+
+.small {
+  font-size: 15px;
+}
+
+/* UI labels as shown in the app: distinct from headings and prose. */
+.ui {
+  font-weight: 700;
+  background: var(--accent-soft);
+  border-radius: 4px;
+  padding: 0 0.3em;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+kbd {
+  font-family: var(--font);
+  font-size: 0.9em;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  padding: 0 0.35em;
+  background: var(--surface);
+}
+
+code {
+  font-family: var(--mono);
+  font-size: 0.88em;
+  background: #ececef;
+  border-radius: 4px;
+  padding: 0.05em 0.3em;
+}
+
+/* ---------- Buttons ---------- */
+
+.cta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 24px 0 12px;
+}
+
+.button {
+  display: inline-block;
+  padding: 12px 22px;
+  border-radius: 999px;
+  font-weight: 700;
+  text-decoration: none;
+  border: 2px solid var(--accent);
+  line-height: 1.4;
+}
+
+.button-primary {
+  background: var(--accent);
+  color: #fff;
+}
+
+.button-primary:hover {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+  color: #fff;
+}
+
+.button-secondary {
+  background: transparent;
+  color: var(--accent);
+}
+
+.button-secondary:hover {
+  background: var(--accent-soft);
+}
+
+/* ---------- Hero ---------- */
+
+.hero {
+  max-width: var(--max);
+  margin: 0 auto;
+  padding: 56px 20px 40px;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 32px;
+}
+
+.hero-copy .eyebrow {
+  font-weight: 700;
+  color: var(--accent);
+  margin-bottom: 8px;
+}
+
+.cta-note {
+  font-size: 15px;
+  color: var(--text-muted);
+  margin: 0;
+}
+
+.hero-shot {
+  margin: 0;
+}
+
+.hero-shot img {
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.12);
+  width: 100%;
+}
+
+.hero-shot figcaption {
+  font-size: 14px;
+  color: var(--text-muted);
+  margin-top: 8px;
+}
+
+@media (min-width: 960px) {
+  .hero {
+    grid-template-columns: 5fr 7fr;
+    align-items: center;
+    padding-top: 72px;
+  }
+}
+
+/* ---------- Examples (dark stage only around media) ---------- */
+
+.examples {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 24px;
+  margin-top: 24px;
+}
+
+@media (min-width: 760px) {
+  .examples {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+.example {
+  margin: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.example .media {
+  background: var(--stage);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 1 / 1;
+}
+
+@media (max-width: 759px) {
+  .example .media {
+    aspect-ratio: auto;
+  }
+}
+
+.example video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: var(--stage);
+}
+
+.example figcaption {
+  padding: 14px 16px 16px;
+  font-size: 15px;
+  line-height: 1.7;
+}
+
+.example .spec {
+  font-weight: 700;
+  margin: 0 0 6px;
+}
+
+.example .prompt {
+  color: var(--text-muted);
+  margin: 6px 0 0;
+  font-size: 14px;
+}
+
+/* ---------- Feature list ---------- */
+
+.features {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 20px;
+  list-style: none;
+  padding: 0;
+  max-width: none;
+}
+
+@media (min-width: 760px) {
+  .features {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+.features li {
+  margin: 0;
+}
+
+.features h3 {
+  margin-top: 0;
+  font-size: 19px;
+}
+
+.features p {
+  margin: 0 0 0.5em;
+}
+
+/* ---------- Tables ---------- */
+
+.table-wrap {
+  overflow-x: auto;
+  margin: 0 0 1.2em;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 15.5px;
+  line-height: 1.65;
+}
+
+th,
+td {
+  text-align: left;
+  vertical-align: top;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+tr:last-child th,
+tr:last-child td {
+  border-bottom: 0;
+}
+
+thead th {
+  background: #f0f0f3;
+  font-size: 14.5px;
+  white-space: nowrap;
+}
+
+tbody th {
+  font-weight: 700;
+  min-width: 8em;
+}
+
+caption {
+  caption-side: bottom;
+  text-align: left;
+  font-size: 14px;
+  color: var(--text-muted);
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ---------- Steps ---------- */
+
+.flow {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+  list-style: none;
+  padding: 0;
+  counter-reset: flow;
+  max-width: none;
+}
+
+@media (min-width: 760px) {
+  .flow {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+.flow > li {
+  counter-increment: flow;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+  margin: 0;
+}
+
+.flow > li::before {
+  content: counter(flow);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.flow h3 {
+  margin-top: 0;
+  font-size: 19px;
+}
+
+.flow p {
+  margin-bottom: 0.4em;
+}
+
+.steps {
+  padding-left: 1.4em;
+}
+
+.steps > li {
+  margin-bottom: 0.9em;
+  padding-left: 0.2em;
+}
+
+.steps > li::marker {
+  font-weight: 700;
+  color: var(--accent);
+}
+
+/* ---------- Callouts ---------- */
+
+.note,
+.warn {
+  border-radius: var(--radius);
+  padding: 14px 18px;
+  margin: 0 0 1.2em;
+  max-width: var(--prose);
+}
+
+.note {
+  background: var(--accent-soft);
+  border-left: 4px solid var(--accent);
+}
+
+.warn {
+  background: var(--warn-bg);
+  border-left: 4px solid var(--warn-border);
+}
+
+.note p:last-child,
+.warn p:last-child,
+.note ul:last-child,
+.warn ul:last-child {
+  margin-bottom: 0;
+}
+
+.checkpoint {
+  background: var(--surface);
+  border: 2px solid var(--accent);
+  border-radius: var(--radius);
+  padding: 14px 18px;
+  margin: 0 0 1.4em;
+  max-width: var(--prose);
+}
+
+.checkpoint p {
+  margin: 0;
+}
+
+/* ---------- Prompt copy block ---------- */
+
+.copy-block {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  margin: 0 0 1.2em;
+  max-width: var(--prose);
+}
+
+.copy-block textarea {
+  width: 100%;
+  min-height: 9.5em;
+  resize: vertical;
+  font-family: var(--mono);
+  font-size: 14.5px;
+  line-height: 1.6;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  background: #fafafb;
+  color: var(--text);
+}
+
+.copy-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.copy-button {
+  font: inherit;
+  font-size: 15px;
+  font-weight: 700;
+  padding: 8px 16px;
+  border-radius: 999px;
+  border: 2px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+}
+
+.copy-button:hover {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.copy-status {
+  font-size: 14.5px;
+  color: var(--text-muted);
+}
+
+.copy-status.ok {
+  color: #1b7a3a;
+}
+
+.copy-status.error {
+  color: #b3261e;
+}
+
+/* ---------- Figures in guides ---------- */
+
+.shot {
+  margin: 0 0 1.4em;
+}
+
+.shot img {
+  border-radius: 10px;
+  border: 1px solid var(--border);
+}
+
+.shot figcaption {
+  font-size: 14px;
+  color: var(--text-muted);
+  margin-top: 6px;
+}
+
+/* ---------- Details (advanced topics) ---------- */
+
+details {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 4px 18px;
+  margin: 0 0 12px;
+  max-width: var(--prose);
+}
+
+details[open] {
+  padding-bottom: 12px;
+}
+
+summary {
+  cursor: pointer;
+  font-weight: 700;
+  padding: 10px 0;
+}
+
+/* ---------- Page header (guides) ---------- */
+
+.page-head {
+  max-width: var(--max);
+  margin: 0 auto;
+  padding: 48px 20px 8px;
+}
+
+.toc {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 18px;
+  margin: 16px 0 0;
+  max-width: var(--prose);
+}
+
+.toc p {
+  margin: 0 0 4px;
+  font-weight: 700;
+}
+
+.toc ol {
+  margin: 0;
+  padding-left: 1.3em;
+}
+
+/* ---------- Footer ---------- */
+
+.site-footer {
+  border-top: 1px solid var(--border);
+  background: #eeeef1;
+  font-size: 15px;
+}
+
+.footer-inner {
+  max-width: var(--max);
+  margin: 0 auto;
+  padding: 32px 20px 40px;
+}
+
+.footer-inner p {
+  max-width: none;
+}
+
+.footer-links {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  max-width: none;
+}
+
+.footer-links li {
+  margin: 0;
+}
+
+/* ---------- Motion ---------- */
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
+}
+
+/* ---------- Small screens ---------- */
+
+@media (max-width: 520px) {
+  body {
+    font-size: 16.5px;
+  }
+  .site-header {
+    position: static;
+  }
+  tbody th {
+    min-width: 5.5em;
+  }
+  th,
+  td {
+    padding: 9px 10px;
+  }
+  html {
+    scroll-padding-top: 8px;
+  }
+  .section {
+    padding: 40px 16px;
+  }
+  .hero,
+  .page-head,
+  .header-inner,
+  .footer-inner {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+  .site-nav ul {
+    gap: 2px 12px;
+    font-size: 14.5px;
+  }
+  .button {
+    width: 100%;
+    text-align: center;
+  }
+}

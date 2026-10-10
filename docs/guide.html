@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>使い方 — H3cApp</title>
+  <meta name="description" content="H3cAppの使い方。画像から動画をつくる2つの方法、プロジェクトと複数生成、速度の設定、サイズと2倍拡大、プロンプトの書き方。">
+  <link rel="canonical" href="https://junzokamahara.github.io/h3c-app/guide.html">
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="ja_JP">
+  <meta property="og:site_name" content="H3cApp">
+  <meta property="og:title" content="使い方 — H3cApp">
+  <meta property="og:description" content="画像からの生成、プロジェクトと複数生成、速度の設定、サイズと2倍拡大。">
+  <meta property="og:url" content="https://junzokamahara.github.io/h3c-app/guide.html">
+  <meta property="og:image" content="https://junzokamahara.github.io/h3c-app/assets/images/og-image.jpg">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="icon" type="image/png" sizes="32x32" href="assets/images/favicon-32.png">
+  <link rel="icon" type="image/png" sizes="64x64" href="assets/images/favicon-64.png">
+  <link rel="apple-touch-icon" href="assets/images/apple-touch-icon.png">
+  <link rel="stylesheet" href="assets/css/style.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">本文へ移動</a>
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="brand" href="./"><img src="assets/images/favicon-64.png" alt="" width="32" height="32">H3cApp</a>
+      <nav class="site-nav" aria-label="サイト内">
+        <ul>
+          <li><a href="./#examples">生成例</a></li>
+          <li><a href="./#requirements">動作条件</a></li>
+          <li><a href="getting-started.html">はじめ方</a></li>
+          <li><a href="guide.html" aria-current="page">使い方</a></li>
+          <li><a href="faq.html">困ったとき</a></li>
+          <li><a href="https://github.com/JunzoKamahara/h3c-app">GitHub</a></li>
+        </ul>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <div class="page-head">
+      <h1>使い方</h1>
+      <p class="lead">最初の1本ができたら、画像を使った生成やプロジェクトでの複数生成に進みましょう。内容はH3cApp v0.4.4の画面に合わせています。</p>
+      <nav class="toc" aria-label="このページの目次">
+        <p>このページの内容</p>
+        <ol>
+          <li><a href="#images">画像から動画をつくる</a></li>
+          <li><a href="#projects">プロジェクトと複数生成</a></li>
+          <li><a href="#speed">速度に関わる3つの設定</a></li>
+          <li><a href="#size">サイズと2倍拡大</a></li>
+          <li><a href="#prompts">プロンプトの書き方</a></li>
+          <li><a href="#advanced">上級者向け</a></li>
+        </ol>
+      </nav>
+    </div>
+
+    <section class="section section-narrow" id="images" aria-labelledby="images-title">
+      <h2 id="images-title">画像から動画をつくる</h2>
+      <p>パネル左上で「<span class="ui">画像から</span>」を選ぶと、画像の使い方を2つから選べます。意味が大きく違うので、目的に合わせて選んでください。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th scope="col"></th><th scope="col">最初・最後の画像</th><th scope="col">参照画像・動画・音声</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">何をするか</th><td>指定した画像から動き始める動画をつくります。最後の画像も指定すると、そこで終わるようにつながります。</td><td>画像・動画・音声の特徴（人物、雰囲気、音など）を参考にして新しい動画をつくります。最初のフレームが参照画像と同じになるとは限りません。</td></tr>
+            <tr><th scope="row">必要なモデル</th><td>FL2VA（最初にダウンロードするもの）</td><td>Ref2VA（<a href="getting-started.html#models">あとから追加</a>）。M5クラスで「高速（int8キャッシュ）」を使うなら、Ref2VA用のキャッシュも作ります。</td></tr>
+            <tr><th scope="row">指定のしかた</th><td>「<span class="ui">最初の画像</span>」で画像を選び、必要なら「<span class="ui">最後の画像も指定…</span>」</td><td>「<span class="ui">ファイルを選ぶ…</span>」で追加。追加した順に1つ目、2つ目…として扱われます。順番を変えたいときは、取り除いてから追加し直します。</td></tr>
+            <tr><th scope="row">注意</th><td>画像は生成する画面の形に合わせて中央を切り抜きます。</td><td>音声だけを参照にはできません。画像か動画と組み合わせてください。大きな参照動画は時間が長くなります。</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <h3>例</h3>
+      <ul>
+        <li><strong>最初の画像</strong>：自分で撮った風景写真を指定し、「ゆっくり雲が流れ、木の葉が揺れる」といったプロンプトで動かす。</li>
+        <li><strong>参照</strong>：キャラクターの画像を参照に入れ、「そのキャラクターが公園を歩く」といったプロンプトで新しい場面をつくる。</li>
+      </ul>
+      <p class="small">プロンプト欄のファイル名をクリックすると、使っている画像や動画の中身を確認できます。生成した動画も、プレビューの「<span class="ui">参照に使う</span>」で参照に追加できます。</p>
+    </section>
+
+    <section class="section section-narrow" id="projects" aria-labelledby="projects-title">
+      <h2 id="projects-title">プロジェクトと複数生成</h2>
+      <p>プロジェクトは、プロンプトと設定、参照ファイルのコピー、生成した動画をまとめて保存するフォルダです。既定の保存先は <code>~/Movies/H3cApp/&lt;名前&gt;</code> です。プロジェクトを開いていないときにできた動画は一時ファイルで、次の生成で消えます。</p>
+      <h3>プロジェクトをつくる・開く</h3>
+      <ul>
+        <li>左上のプロジェクトメニュー（フォルダのアイコン）、またはメニューバーの「プロジェクト」から操作します。</li>
+        <li>「<span class="ui">新規プロジェクト…</span>」：名前と保存先を決めて作成します。今のプロンプトと設定、参照ファイルが入ります。</li>
+        <li>「<span class="ui">プロジェクトとして保存…</span>」：プロジェクトを開いていないときに、今のプロンプトと設定、プレビューに表示中の動画をまとめて保存します。</li>
+        <li>「<span class="ui">プロジェクトを開く…</span>」「最近のプロジェクト」：保存したプロジェクトを開くと、プロンプトと設定が保存時の状態に戻ります。</li>
+      </ul>
+      <h3>同じ設定で複数本つくる</h3>
+      <ol class="steps">
+        <li>プロンプト欄の下の本数ボタンで「<span class="ui">3 本</span>」などを選びます（1〜20本）。</li>
+        <li>生成ボタンを押すと、シードを変えながら続けて生成し、プロジェクトに保存します。「ランダムさ」を「固定する」にしているときは、シードを1ずつ増やします。</li>
+        <li>プロジェクトを開いていない状態で2本以上を選んで生成すると、「<span class="ui">プロジェクトを選んで生成</span>」の画面が出ます。「<span class="ui">新しいプロジェクト</span>」をつくるか、「<span class="ui">既存のプロジェクト</span>」を選びます。「<span class="ui">キャンセル</span>」なら生成せずに戻ります。</li>
+        <li>既存のプロジェクトを選んだとき、そこに保存されているプロンプトと設定が今のものと違うと、上書きしてよいか確認されます。「<span class="ui">上書きして生成</span>」で、今のプロンプトと設定で生成してプロジェクトに保存します。</li>
+      </ol>
+      <h3>できた動画を見る・使う</h3>
+      <p>プロジェクトメニューの「<span class="ui">プロジェクトの動画…</span>」で一覧が開きます。</p>
+      <ul>
+        <li>「<span class="ui">表示</span>」：プレビューに表示します。</li>
+        <li>「<span class="ui">設定を戻す</span>」：その動画のプロンプトと設定を、シードを固定してパネルに戻します。そのまま生成すると同じ動画をつくり直せます。</li>
+        <li>「<span class="ui">参照に使う</span>」：その動画を参照動画として追加します（Ref2VAが必要）。</li>
+        <li>「<span class="ui">削除…</span>」：動画と設定の記録をゴミ箱に移動します。</li>
+      </ul>
+      <p class="small">プレビュー上部の「<span class="ui">使用した設定…</span>」では、表示中の動画の設定を確認したり、「<span class="ui">フォームに戻す</span>」でパネルに戻したりできます。</p>
+    </section>
+
+    <section class="section section-narrow" id="speed" aria-labelledby="speed-title">
+      <h2 id="speed-title">速度に関わる3つの設定</h2>
+      <p>「<span class="ui">詳細設定</span>」には、速さに関わる設定が3つあります。名前が似ていますが、それぞれ別のものです。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th scope="col">設定</th><th scope="col">選択肢</th><th scope="col">何が変わるか</th></tr></thead>
+          <tbody>
+            <tr>
+              <th scope="row">計算方式</th>
+              <td>高速（int8キャッシュ）／常駐（大容量メモリ向け、キャッシュ不要）／省メモリ（SSDストリーミング）</td>
+              <td>モデルの読み込み方と計算のしかた。Macの性能に合わせて選びます。「高速（int8キャッシュ）」はM5クラスのGPUが必要です。常駐はメモリに大きな余裕があるMac向けです。</td>
+            </tr>
+            <tr>
+              <th scope="row">速度</th>
+              <td>標準（高品質）／高速／最速</td>
+              <td>処理の一部を省いて速くします。省き方が変わるので、同じシードでも仕上がりが変わることがあります。</td>
+            </tr>
+            <tr>
+              <th scope="row">高速モード（試験的）</th>
+              <td>オン／オフ（既定はオフ）</td>
+              <td>M5の対応環境でだけ表示される別の機能です。長い動画ほど効果があり、短い・小さな動画では速くならないこともあります。同じシードでも仕上がりが変わります。</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p>まずは既定の設定で小さな動画をつくり、待ち時間が長すぎるときに速度設定を試すのがおすすめです。詳細設定の「サイズ」には、今の設定でのおおよその所要時間が、このMacのこれまでの生成実績から表示されます。</p>
+      <p class="small muted">詳細設定には「生成ステップ数」「ノイズ除去の再利用」「使用する層数」もあります。層数を減らすと音声が壊れることがあるため、慣れるまでは変えないでください。</p>
+    </section>
+
+    <section class="section section-narrow" id="size" aria-labelledby="size-title">
+      <h2 id="size-title">サイズと2倍拡大</h2>
+      <p>プロンプト欄の下の「<span class="ui">画面の形</span>」と「<span class="ui">大きさ</span>」で選びます。大きいほど時間がかかります。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th scope="col">画面の形</th><th scope="col">小</th><th scope="col">中</th><th scope="col">大</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">正方形</th><td class="num">256×256</td><td class="num">512×512</td><td class="num">768×768</td></tr>
+            <tr><th scope="row">横長</th><td class="num">448×256</td><td class="num">672×384</td><td class="num">960×544</td></tr>
+            <tr><th scope="row">縦長</th><td class="num">256×448</td><td class="num">384×672</td><td class="num">544×960</td></tr>
+          </tbody>
+          <caption>生成するサイズ（v0.4.4）。最初に選ばれているのは正方形・中です。</caption>
+        </table>
+      </div>
+      <ul>
+        <li><strong>2倍に拡大</strong>：「<span class="ui">大きさ</span>」メニューの「<span class="ui">2倍に拡大</span>」をオンにすると、生成した動画を高品質なリサンプリングで縦横2倍にします。AIで細部を描き足す超解像ではありません。拡大にかかる時間はわずかです。例：横長・大を2倍にすると1920×1088になります（1920×1080ちょうどではありません）。</li>
+        <li><strong>カスタムサイズ</strong>：「<span class="ui">詳細設定</span>」の「<span class="ui">サイズ</span>」で「<span class="ui">カスタムサイズを使う</span>」をオンにすると、完成サイズを幅と高さで指定できます。生成するサイズは60万ピクセル以下という上限があります。</li>
+        <li><strong>長さ</strong>：1〜15秒から選びます。モデルの仕組み上、実際の長さは少し長めになります（例：5秒を選ぶと約5.2秒）。</li>
+      </ul>
+    </section>
+
+    <section class="section section-narrow" id="prompts" aria-labelledby="prompts-title">
+      <h2 id="prompts-title">プロンプトの書き方</h2>
+      <p>映っているもの、動き、カメラ、音を、短い文で順に書くと伝わりやすくなります。</p>
+      <ul>
+        <li><strong>何が映っているか</strong>：A small orange cat on a wooden floor</li>
+        <li><strong>どう動くか</strong>：plays with a ball of yarn, gentle movement</li>
+        <li><strong>カメラ</strong>：Static camera / Slow push-in camera</li>
+        <li><strong>音</strong>：Soft room ambience, no speech, no music</li>
+      </ul>
+      <p>音の様子もプロンプトで指定できます。話し声や音楽が不要なら「no speech」「no music」のように書きます。</p>
+      <p class="small">モデル提供元の<a href="https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/docs/VIDEO_PROMPT_WRITING_GUIDE_base_en.md">プロンプト作成ガイド（英語）</a>も参考になります。このサイトの例は英語です。日本語のプロンプトでの仕上がりは確認していません。</p>
+    </section>
+
+    <section class="section section-narrow" id="advanced" aria-labelledby="advanced-title">
+      <h2 id="advanced-title">上級者向け</h2>
+      <details>
+        <summary>追加モデル（LoRA）</summary>
+        <p>「<span class="ui">モデル管理</span>」でLoRAファイルを登録し、「<span class="ui">詳細設定</span>」の「<span class="ui">追加モデル（LoRA）</span>」でオンにすると、重ねて適用できます（最大8個）。4ステップで生成するTurbo LoRAにも対応しています。すべてのLoRAが使えるとは限らず、読み込めない場合はアプリが表示します。LoRAそれぞれの利用条件にも従ってください。</p>
+      </details>
+      <details>
+        <summary>ローカルAPI</summary>
+        <p>H3cAppは、同じMacの中からだけ使えるHTTP APIを持っています（<code>127.0.0.1</code>）。スクリプトから生成を指示したい場合に使います。仕様はREADMEの<a href="https://github.com/JunzoKamahara/h3c-app/blob/main/README.ja.md#api">API</a>をご覧ください。</p>
+      </details>
+      <details>
+        <summary>ソースからのビルド</summary>
+        <p>配布アプリを使う場合は不要です。開発者向けの手順はREADMEの<a href="https://github.com/JunzoKamahara/h3c-app/blob/main/README.ja.md#ソースからのビルド">ソースからのビルド</a>にあります。</p>
+      </details>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <ul class="footer-links">
+        <li><a href="https://github.com/JunzoKamahara/h3c-app">GitHub</a></li>
+        <li><a href="https://github.com/JunzoKamahara/h3c-app/issues">不具合の報告（Issues）</a></li>
+        <li><a href="https://github.com/JunzoKamahara/h3c-app/blob/main/README.ja.md">README</a></li>
+        <li><a href="faq.html#license">ライセンス</a></li>
+      </ul>
+      <p>H3cApp：大阪成蹊大学データサイエンス学部 鎌原淳三／Junzo Kamahara</p>
+      <p class="small muted">H3cAppは、Salvatore Sanfilippo氏（antirez）による<a href="https://github.com/antirez/h3.c">h3.c</a>をもとにしたmacOSアプリです（MIT License）。動画生成モデルはMiniMaxの<a href="https://huggingface.co/MiniMaxAI/MiniMax-H3">MiniMax-H3</a>（MiniMax H3 Community License）を使います。</p>
+    </div>
+  </footer>
+  <script src="assets/js/main.js" defer></script>
+</body>
+</html>

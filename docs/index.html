@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>H3cApp — Macで、音のあるAI動画を。</title>
+  <meta name="description" content="H3cAppは、Apple SiliconのMac上で文章や画像から音声付きの動画をつくるmacOSアプリです。ダウンロード、インストール、モデルの準備、最初の動画づくりまでを案内します。">
+  <link rel="canonical" href="https://junzokamahara.github.io/h3c-app/">
+  <meta property="og:type" content="website">
+  <meta property="og:locale" content="ja_JP">
+  <meta property="og:site_name" content="H3cApp">
+  <meta property="og:title" content="H3cApp — Macで、音のあるAI動画を。">
+  <meta property="og:description" content="Apple SiliconのMac上で、文章や画像から音声付きの動画をつくるmacOSアプリ。配布アプリなので、PythonやPyTorchの環境構築は不要です。">
+  <meta property="og:url" content="https://junzokamahara.github.io/h3c-app/">
+  <meta property="og:image" content="https://junzokamahara.github.io/h3c-app/assets/images/og-image.jpg">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="icon" type="image/png" sizes="32x32" href="assets/images/favicon-32.png">
+  <link rel="icon" type="image/png" sizes="64x64" href="assets/images/favicon-64.png">
+  <link rel="apple-touch-icon" href="assets/images/apple-touch-icon.png">
+  <link rel="stylesheet" href="assets/css/style.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">本文へ移動</a>
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="brand" href="./"><img src="assets/images/favicon-64.png" alt="" width="32" height="32">H3cApp</a>
+      <nav class="site-nav" aria-label="サイト内">
+        <ul>
+          <li><a href="#examples">生成例</a></li>
+          <li><a href="#requirements">動作条件</a></li>
+          <li><a href="getting-started.html">はじめ方</a></li>
+          <li><a href="guide.html">使い方</a></li>
+          <li><a href="faq.html">困ったとき</a></li>
+          <li><a href="https://github.com/JunzoKamahara/h3c-app">GitHub</a></li>
+        </ul>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="hero-copy">
+        <p class="eyebrow">H3cApp for macOS</p>
+        <h1 id="hero-title">Macで、音のあるAI動画を。</h1>
+        <p class="lead">H3cAppは、文章や画像から音声付きの動画をつくるmacOSアプリです。生成はApple SiliconのMacの中で行います。ダウンロードして使う配布アプリなので、PythonやPyTorchの環境構築は必要ありません。</p>
+        <div class="cta-row">
+          <a class="button button-primary" href="https://github.com/JunzoKamahara/h3c-app/releases/latest">最新版をダウンロード</a>
+          <a class="button button-secondary" href="getting-started.html">はじめ方を見る</a>
+        </div>
+        <p class="cta-note">Apple SiliconのMac・macOS 15 Sequoia以降が対象です。アプリとは別に、AIモデル（約144GB〜）のダウンロードが必要です。</p>
+      </div>
+      <figure class="hero-shot">
+        <img src="assets/images/app-window.jpg" width="1520" height="1304" alt="H3cAppのウィンドウ。プレビューに生成した横長の動画（夕暮れの石畳の広場でギターを弾く人）が表示され、上に「動画を書き出す…」「使用した設定…」「参照に使う」のボタン、下に折りたたんだパネルとプロンプトの要約、上向き矢印の生成ボタンがある。">
+        <figcaption>H3cApp v0.4.4の実際の画面（生成例3を表示したところ。生成中はパネルが小さくなります）。</figcaption>
+      </figure>
+    </section>
+
+    <section class="section" id="examples" aria-labelledby="examples-title">
+      <h2 id="examples-title">生成例</h2>
+      <p>H3cApp v0.4.4で、下のプロンプトから実際に生成した動画です。どれも音声付きです。再生ボタンを押すと音も流れます（自動では再生しません）。</p>
+      <div class="examples">
+        <figure class="example">
+          <div class="media">
+            <video controls playsinline preload="none" width="512" height="512" poster="assets/video/ex2-poster.jpg" aria-label="生成例2：木の床で毛糸玉と遊ぶ猫（512×512）">
+              <source src="assets/video/ex2.mp4" type="video/mp4">
+              <a href="assets/video/ex2.mp4">動画ファイルを開く</a>
+            </video>
+          </div>
+          <figcaption>
+            <p class="spec">正方形・中（512×512）・5秒・音声あり</p>
+            <p class="small muted">文章から／20ステップ／速度「標準」／シード7。生成時間 5分59秒（M5・24GB）</p>
+            <p class="prompt">A small orange cat plays with a ball of yarn on a wooden floor in soft afternoon light. Static camera, gentle movement. Soft room ambience, no speech, no music.</p>
+          </figcaption>
+        </figure>
+        <figure class="example">
+          <div class="media">
+            <video controls playsinline preload="none" width="1344" height="768" poster="assets/video/ex3-poster.jpg" aria-label="生成例3：夕暮れの石畳の広場でギターを弾く人（横長・2倍拡大）">
+              <source src="assets/video/ex3.mp4" type="video/mp4">
+              <a href="assets/video/ex3.mp4">動画ファイルを開く</a>
+            </video>
+          </div>
+          <figcaption>
+            <p class="spec">横長・中（672×384で生成し、2倍に拡大して1344×768）・5秒・音声あり</p>
+            <p class="small muted">文章から／20ステップ／速度「標準」／シード7。生成時間 6分09秒（M5・24GB）。2倍拡大は生成後の高品質リサンプリングです。</p>
+            <p class="prompt">A street musician plays an acoustic guitar in a quiet stone plaza at dusk, warm lights in the windows behind him. Slow push-in camera. Gentle guitar melody, distant footsteps, no speech.</p>
+          </figcaption>
+        </figure>
+        <figure class="example">
+          <div class="media">
+            <video controls playsinline preload="none" width="256" height="256" poster="assets/video/ex1-poster.jpg" aria-label="生成例1：例2と同じプロンプトを正方形・小（256×256）で生成した動画">
+              <source src="assets/video/ex1.mp4" type="video/mp4">
+              <a href="assets/video/ex1.mp4">動画ファイルを開く</a>
+            </video>
+          </div>
+          <figcaption>
+            <p class="spec">正方形・小（256×256）・5秒・音声あり</p>
+            <p class="small muted">1つ目の猫と同じプロンプト・シード・設定で、大きさだけ「小」。<a href="getting-started.html#first-video">はじめ方</a>で最初に試す設定です。細部は粗くなります。生成時間 1分44秒（M5・24GB）</p>
+          </figcaption>
+        </figure>
+      </div>
+      <p class="small muted">表示用に動画を圧縮し直しています。同じプロンプトとシードでも、Macの機種や設定によって結果は変わることがあります。<a href="https://youtu.be/PZrm470rGo0">作者がYouTubeで公開している動画</a>もあります（外部サイト）。</p>
+    </section>
+
+    <section class="section" id="features" aria-labelledby="features-title">
+      <h2 id="features-title">できること</h2>
+      <ul class="features">
+        <li>
+          <h3>文章を動画に</h3>
+          <p>文章（プロンプト）から、映像と音声がそろった動画（MP4）をつくります。長さは1〜15秒、画面の形は横長・正方形・縦長から選べます。</p>
+          <p class="small"><a href="getting-started.html#first-video">最初の1本をつくる</a></p>
+        </li>
+        <li>
+          <h3>画像から動きを作る</h3>
+          <p>最初（と最後）の画像を指定してそこから動かしたり、画像・動画・音声を参考にして新しい動画をつくったりできます。</p>
+          <p class="small"><a href="guide.html#images">画像の使い方</a></p>
+        </li>
+        <li>
+          <h3>同じ設定で複数案を作る</h3>
+          <p>プロジェクトにまとめておけば、シードを変えて何本か続けて生成し、気に入ったものの設定をあとから呼び戻せます。</p>
+          <p class="small"><a href="guide.html#projects">プロジェクトと複数生成</a></p>
+        </li>
+      </ul>
+    </section>
+
+    <section class="section" id="requirements" aria-labelledby="req-title">
+      <h2 id="req-title">自分のMacで使えるか</h2>
+      <p>ダウンロードの前に、対応OSと空き容量を確認してください。とくにAIモデルは非常に大きく、アプリ本体とは別にダウンロードが必要です。</p>
+      <div class="table-wrap">
+        <table>
+          <tbody>
+            <tr>
+              <th scope="row">Mac</th>
+              <td>Apple Silicon（Mシリーズのチップ）を搭載したMac。Intel Macには対応していません。</td>
+            </tr>
+            <tr>
+              <th scope="row">macOS</th>
+              <td>macOS 15 Sequoia以降</td>
+            </tr>
+            <tr>
+              <th scope="row">M5クラスのGPUの場合</th>
+              <td>最も速い計算方式「高速（int8キャッシュ）」と、「高速モード（試験的）」が使えます。</td>
+            </tr>
+            <tr>
+              <th scope="row">それ以外のApple Silicon</th>
+              <td>「省メモリ（SSDストリーミング）」や「常駐（大容量メモリ向け）」で動きます。速度と必要なメモリは機種と条件によって変わり、M5と同じ速さにはなりません。</td>
+            </tr>
+            <tr>
+              <th scope="row">メモリ</th>
+              <td>作者の確認環境はM5・メモリ24GBです（512×512・15秒まで24GBに収まりました）。それより少ないメモリでの動作は確認していません。</td>
+            </tr>
+            <tr>
+              <th scope="row">アプリ本体</th>
+              <td>DMG 約18.9MB（署名・公証済み）</td>
+            </tr>
+            <tr>
+              <th scope="row">AIモデル（文章・最初/最後の画像から）</th>
+              <td>FL2VA：約144.1GB（134.2GiB）。最初に必要です。</td>
+            </tr>
+            <tr>
+              <th scope="row">AIモデル（参照画像・動画・音声を使う場合）</th>
+              <td>Ref2VA：さらに約144.1GB。合計約288.1GB（268.3GiB）。必要になってから追加できます。</td>
+            </tr>
+            <tr>
+              <th scope="row">そのほかに必要な容量</th>
+              <td>int8キャッシュ（M5クラスで使う場合）1つにつき約19.3GB、生成した動画、参照ファイルのコピー、作業用の空き容量。</td>
+            </tr>
+          </tbody>
+          <caption>2026年10月10日時点・v0.4.4の情報。モデルの容量はHugging Faceのファイル一覧の合計です。アプリの画面では「GB」と表示されますが、計算はGiB（1GiB＝1,073,741,824バイト）で、FL2VAは約134.2と表示されます。</caption>
+        </table>
+      </div>
+      <p class="small">モデルの初回ダウンロードにはインターネット接続が必要です。動画の生成そのものはMacの中で行います。くわしくは<a href="getting-started.html#models">モデルの準備</a>をご覧ください。</p>
+    </section>
+
+    <section class="section" id="flow" aria-labelledby="flow-title">
+      <h2 id="flow-title">始める流れ</h2>
+      <ol class="flow">
+        <li>
+          <h3>アプリを入れる</h3>
+          <p>GitHubのリリースページからDMGをダウンロードし、H3cAppをアプリケーションフォルダへドラッグします。</p>
+          <p class="small"><a href="getting-started.html#install">インストール手順</a></p>
+        </li>
+        <li>
+          <h3>モデルを用意する</h3>
+          <p>初回起動時の画面から、約144GBのモデルをダウンロードします。回線の速さによっては数時間以上かかります。中断しても続きから再開できます。</p>
+          <p class="small"><a href="getting-started.html#models">モデルの準備</a></p>
+        </li>
+        <li>
+          <h3>動画を作る</h3>
+          <p>小さなサイズ・5秒で1本つくり、再生して保存するところまで試します。</p>
+          <p class="small"><a href="getting-started.html#first-video">最初の動画</a></p>
+        </li>
+      </ol>
+    </section>
+
+    <section class="section" id="performance" aria-labelledby="perf-title">
+      <h2 id="perf-title">生成時間の目安</h2>
+      <p>作者のMacでの実測です。設定を変えると時間も仕上がりも変わります。</p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">動画の長さ</th>
+              <th scope="col">速度「標準」</th>
+              <th scope="col">速度「最速」＋高速モード（試験的）</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><th scope="row">5秒</th><td class="num">5分59秒</td><td class="num">2分38秒</td></tr>
+            <tr><th scope="row">10秒</th><td class="num">15分56秒</td><td class="num">5分39秒</td></tr>
+            <tr><th scope="row">15秒</th><td class="num">30分08秒</td><td class="num">9分25秒</td></tr>
+          </tbody>
+          <caption>M5・メモリ24GB／正方形512×512／文章から／20ステップ／計算方式「高速（int8キャッシュ）」／プロンプト「A cat playing with a ball of yarn.」・シード7／各条件1回の目安（2026年10月2〜3日に測定）。生成ボタンを押してから動画ファイルができるまでの時間で、モデルのダウンロード時間は含みません。「標準」と「最速」では処理の省き方が違い、同じ仕上がりを保証する比較ではありません。</caption>
+        </table>
+      </div>
+      <p class="small">ほかの大きさ・速度設定との組み合わせはREADMEの<a href="https://github.com/JunzoKamahara/h3c-app/blob/main/README.ja.md#生成時間の実測">生成時間の実測</a>にあります。</p>
+    </section>
+
+    <section class="section" id="download" aria-labelledby="dl-title">
+      <h2 id="dl-title">ダウンロード</h2>
+      <p>最新版はGitHubのリリースページで配布しています。2026年10月10日時点の最新版はv0.4.4（2026年10月7日公開）です。</p>
+      <div class="cta-row">
+        <a class="button button-primary" href="https://github.com/JunzoKamahara/h3c-app/releases/latest">最新版をダウンロード</a>
+        <a class="button button-secondary" href="getting-started.html#install">インストール手順</a>
+      </div>
+      <div class="note">
+        <p>リリースページの<strong>Assets</strong>にある <code>H3cApp-0.4.4.dmg</code> のような <strong>.dmg</strong> ファイルを選んでください。「Source code (zip)」「Source code (tar.gz)」は開発者向けのソースコードで、通常のインストールには使いません。</p>
+      </div>
+      <p class="small">各版の変更点はリリースページの説明をご覧ください。</p>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <ul class="footer-links">
+        <li><a href="https://github.com/JunzoKamahara/h3c-app">GitHub</a></li>
+        <li><a href="https://github.com/JunzoKamahara/h3c-app/issues">不具合の報告（Issues）</a></li>
+        <li><a href="https://github.com/JunzoKamahara/h3c-app/blob/main/README.ja.md">README</a></li>
+        <li><a href="faq.html#license">ライセンス</a></li>
+      </ul>
+      <p>H3cApp：大阪成蹊大学データサイエンス学部 鎌原淳三／Junzo Kamahara</p>
+      <p class="small muted">H3cAppは、Salvatore Sanfilippo氏（antirez）による<a href="https://github.com/antirez/h3.c">h3.c</a>をもとにしたmacOSアプリです（MIT License）。動画生成モデルはMiniMaxの<a href="https://huggingface.co/MiniMaxAI/MiniMax-H3">MiniMax-H3</a>（MiniMax H3 Community License）を使います。</p>
+    </div>
+  </footer>
+  <script src="assets/js/main.js" defer></script>
+</body>
+</html>

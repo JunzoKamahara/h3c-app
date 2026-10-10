@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://junzokamahara.github.io/h3c-app/sitemap.xml
