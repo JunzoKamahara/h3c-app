@@ -18,8 +18,11 @@ so it can be driven from a script as well as from its own window — see
 
 ## Download
 
+A Japanese guide for first-time users - requirements, installation, model
+download and a first video - is at https://junzokamahara.github.io/H3cApp/.
+
 The easiest way to install H3cApp is the prebuilt, signed and notarized
-`.dmg` on the [Releases page](https://github.com/JunzoKamahara/h3c-app/releases/latest) —
+`.dmg` on the [Releases page](https://github.com/JunzoKamahara/H3cApp/releases/latest) —
 no Xcode Command Line Tools or building from source needed. Download the
 `.dmg`, open it, and drag `H3cApp` into `Applications`; Gatekeeper accepts
 it on first launch with no "unidentified developer" warning.

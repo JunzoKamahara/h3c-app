@@ -18,7 +18,9 @@ Sanfilippo氏（antirez）の[h3.c](https://github.com/antirez/h3.c)を
 
 ## ダウンロード
 
-もっとも簡単なインストール方法は、[リリースページ](https://github.com/JunzoKamahara/h3c-app/releases/latest)
+はじめての方は、日本語の案内サイト（https://junzokamahara.github.io/H3cApp/ ）で、動作条件の確認から最初の動画づくりまでを順に確認できます。
+
+もっとも簡単なインストール方法は、[リリースページ](https://github.com/JunzoKamahara/H3cApp/releases/latest)
 にある署名・公証済みのビルド済み`.dmg`を使うことです — Xcode Command Line
 Toolsもソースからのビルドも不要です。`.dmg`をダウンロードして開き、
 `H3cApp`を`Applications`にドラッグしてください。初回起動時もGatekeeperに
